@@ -1,0 +1,9 @@
+# ???? local dev/verify artifacts (not committed)
+__pycache__/
+*.py[cod]
+tests/.tmp-*/
+tests/.run-*.log
+src/last-data-dir.txt
+*.db-wal
+*.db-shm
+.DS_Store

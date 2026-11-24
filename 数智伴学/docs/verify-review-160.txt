@@ -1,0 +1,169 @@
+时间：2026-11-24T16:07:41+08:00
+命令：python.exe tests\verify_review_160.py
+目录：E:\Agent\小挑
+环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
+
+
+== 一、数据结构与迁移 ==
+PASS 新库有 answer_reviews 表
+PASS 有按作答查审核记录的索引
+PASS 同一条作答只允许一条已确认记录（部分唯一索引）
+PASS answer_reviews 有 answer_id 列
+PASS answer_reviews 有 status 列
+PASS answer_reviews 有 causes 列
+PASS answer_reviews 有 note 列
+PASS answer_reviews 有 uncertain 列
+PASS answer_reviews 有 answer_fingerprint 列
+PASS answer_reviews 有 mistake_id 列
+PASS answer_reviews 有 decided_at 列
+PASS 模拟 1.5.0 库：迁移前没有审核表
+PASS 旧库自动补建审核表
+PASS 迁移前留下备份文件
+PASS 重复迁移是空操作
+PASS 迁移中途失败会抛错
+PASS 失败后没有留下半张审核表
+PASS 失败后旧数据仍在
+PASS 失败后备份文件保留
+
+== 二、提示词与解析 ==
+PASS 提示词不含 张三
+PASS 提示词不含 XY001
+PASS 提示词不含 七年级 1 班
+PASS 提示词不含 9月作业
+PASS 提示词带分析标记
+PASS 提示词包含学生步骤
+PASS 丢弃原文里找不到的证据
+PASS 保留可核对的证据原文
+PASS 证据匹配忽略空格与换行
+PASS 证据全部不成立时标为不确定
+PASS 不确定时保留模型说明
+PASS 最多保留 3 条错因
+PASS 返回内容不是 JSON 时报错
+
+== 三、导入不联网，模拟模式不发请求 ==
+PASS 导入成功两条
+PASS CSV 导入没有发任何网络请求
+PASS 模拟模式不发请求
+PASS 模拟模式给出待核对记录
+PASS 模拟模式明确说不确定
+PASS 模拟模式不编造错因
+PASS 缺测作答不发请求也不给错因
+
+== 四、真实通道（本地桩） ==
+PASS 真实模式返回成功
+PASS 只发了一次请求
+PASS 请求带作答分析标记
+PASS 请求不含 张三
+PASS 请求不含 XY001
+PASS 请求不含 七年级 1 班
+PASS 请求不含 teacher
+PASS 建议标为待核对
+PASS 桩返回两条错因都被接受
+PASS 建议带证据
+PASS 模型说信息不足时如实展示
+PASS 真实模式没有确认就不发送
+
+== 五、老师修改、确认、拒绝 ==
+PASS 修改保存到这条建议
+PASS 修改后仍是待核对
+PASS 确认后状态为已确认
+PASS 确认后记录错题编号
+PASS 生成的是已确认错题
+PASS 错题保留老师的错因
+PASS 错题保留老师备注
+PASS 原始作答没有被改写
+PASS 列表显示已确认
+PASS 重复确认被拒绝
+PASS 重复确认没有多建错题
+PASS 拒绝后状态为已拒绝
+PASS 拒绝不生成错题
+
+== 六、统计口径 ==
+PASS 已确认错题进入统计
+PASS 未确认建议不计入统计
+
+== 七、账号与班级隔离 ==
+PASS 另一个账号看不到这个班的作答
+PASS 同一账号可以看自己的新班级
+
+== 八、备份与恢复 ==
+PASS 备份清单包含审核记录
+PASS 恢复成功
+PASS 恢复后审核记录仍指向正确的错题与作答
+
+== 九、五类作答场景（本地桩按场景返回） ==
+PASS 场景作答已导入
+PASS 正确步骤：不给错因
+PASS 正确步骤：写明未发现明确错误
+PASS 符号错误：给出一条错因
+PASS 符号错误：证据取自原始步骤
+PASS 符号错误：不确定标为否
+PASS 步骤缺失：给出一条错因
+PASS 步骤缺失：证据取自原始步骤
+PASS 步骤缺失：保留不确定标记
+PASS 答案与步骤矛盾：指出不一致
+PASS 答案与步骤矛盾：证据是最后那行
+PASS 信息不足：不强行给错因
+PASS 信息不足：标为不确定
+PASS 信息不足：保留模型说明
+PASS 编造的证据被丢弃
+PASS 丢弃证据时写明已忽略
+PASS 丢弃证据后标为不确定
+
+== 十、服务失败与主动重试 ==
+PASS 服务失败时返回失败
+PASS 失败时给出可读原因
+PASS 失败后没有新增建议记录
+PASS 失败后原来的建议还在
+PASS 失败后原始作答没有变化
+PASS 失败没有静默改用模拟分析
+PASS 重试仍需老师确认发送范围
+PASS 老师确认后重试成功
+PASS 重试结果仍是待核对
+
+== 十一、关闭重开后状态与关联 ==
+PASS 重开后已确认状态仍在
+PASS 重开后仍指向同一错题
+PASS 重开后待核对仍是待核对
+PASS 新增待核对建议不计入已审核统计
+
+== 十二、输出上限、截断与失败处理 ==
+PASS 图片请求（Chat Completions）带 max_tokens 32000
+PASS 图片请求（Messages）带 max_tokens 32000
+PASS 文字请求（Chat Completions）带 max_tokens 32000
+PASS 文字请求（Messages）带 max_tokens 32000
+PASS finish_reason=length 时按失败返回
+PASS 截断时说明没有完整结果
+PASS 截断时说明作答未被改动
+PASS 截断没有新增建议记录
+PASS 截断后原始作答不变
+PASS 截断后原建议与错因不变
+PASS stop_reason=max_tokens 时也按截断处理
+PASS 服务拒绝时返回失败
+PASS 服务拒绝时说明是请求被拒
+PASS 服务拒绝时不写模拟结果
+PASS 超时提示可以重试
+PASS 返回不是 JSON 时明确提示
+PASS 连不上服务时提示检查网络或地址
+PASS 失败后主动重试可以拿到结果
+PASS 重试结果仍是待核对
+PASS 重试结果带证据
+PASS 同一条作答只留一条待核对建议
+
+== 十三、1.6.0 数据在 1.6.2 上打开、备份与恢复 ==
+PASS 1.6.0 数据能登录并读到班级
+PASS 1.6.0 作答记录仍在
+PASS 1.6.0 已确认记录仍指向错题
+PASS 1.6.0 原始作答仍可读
+PASS 1.6.0 列表按最新一条建议展示
+PASS 1.6.0 已确认错题仍计入统计
+FAIL 1.8.0 版本号 1.8.1
+PASS 数据库结构版本为 4
+PASS 备份格式为 6
+PASS 旧格式仍在可读列表
+PASS 1.6.0 数据导出的是 format 6 备份
+PASS 恢复后审核记录数与导出时一致
+PASS 恢复后已确认记录仍指向同一条错题
+
+合计 135 项，通过 134，失败 1
+退出码：1

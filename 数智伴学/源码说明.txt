@@ -1,0 +1,282 @@
+数智伴学 1.6.2 源码说明
+================================
+
+一、目录
+  src/app/         数据、错题、作答导入、作答分析、个人学情与辅导建议、照片、AI 请求、备份与统计
+  src/desktop/     PySide6 原生桌面界面与账号会话
+  src/web/         便携版网页界面与静态资源
+  src/server.py    便携版/网页端 HTTP 服务入口
+  src/launcher.py  便携版启动器
+  tests/           1.8.1 测试脚本与本地模拟服务
+  tools/           构建、打包与维护脚本
+  docs/            说明、模板、截图与最近测试日志
+  交付/1.8.1/      程序包、源码包、报告与校验值
+
+二、运行源码
+  Python 3.11 + PySide6 + Pillow：
+    python -m venv .venv
+    .venv\Scripts\python.exe -m pip install pyside6 pillow
+    set PYTHONPATH=src
+    .venv\Scripts\python.exe -m desktop
+
+  便携版/网页端：python src\launcher.py（launcher 会把 src 加入模块路径）。
+
+三、构建
+  .venv\Scripts\python.exe tools\build_desktop.py
+    入口 tools/desktop_entry.py，PyInstaller --paths src，
+    产物 build\程序包\数智伴学-1.6.2.zip。
+  .venv\Scripts\python.exe tools\pack_source_146.py
+    产物 build\源码\数智伴学-源码-1.6.2.zip。
+
+四、作答 CSV 导入实现
+  src/app/answers.py
+    表头 12 列（中文标签，也认英文键），必需列缺失时整份文件拒收。
+    逐行校验必填、长度、日期、缺测词；缺步骤按缺测处理，不补写内容；
+    学生匹配先按学校编号再按姓名，同班同名只给候选，由老师选择。
+    fingerprint 只取含义字段（学生、题号、题目、单元、标准解法、步骤、
+    日期、缺测与原因），不含批次、来源批次与姓名编号；同编号同内容判重复，
+    同编号不同内容判冲突，冲突只有 overwrite=True 才替换。
+    写入在 Database.tx 单事务内完成，失败整批回滚。
+
+  src/app/db.py
+    answers 表与三个索引、students.code 列。SCHEMA_VERSION 从 "2" 升到 "3"
+    （"3" 由第六节的 tutor_advice 表带来）；
+    旧库由 ensure_answers_schema 先备份到 app.db.bak-<时间戳>-<随机>，
+    再在 BEGIN IMMEDIATE 里 ALTER/建表/建索引；可重复执行，已齐全时返回 None。
+
+  src/desktop/service.py
+    打开数据目录时先 add_student_active，再 ensure_answers_schema；
+    作答相关方法：answer_batches / preview_answers / import_answers /
+    answer_template；界面所需数据都经这些方法读取与写入。
+
+  src/app/api.py
+    GET  /api/classes/<id>/answers           批次汇总与明细
+    POST /api/classes/<id>/answers/preview   预览（可带老师选择）
+    POST /api/classes/<id>/answers/import    确认导入（必须 confirm）
+    GET  /api/answers/template               模板文本
+    学生新增/修改接口支持 code，同班重复时拒绝。
+
+  src/app/backup.py
+    students 列增加 code；answers 表参与备份与恢复，恢复时按学生映射重写
+    student_id；旧备份没有 code/answers 时按默认值处理，不报错不丢数据。
+    备份格式从 3 升到 4：1.4.6 及更早版本会拒绝格式 4 并提示
+    “备份格式不受支持，请用同一版本软件导出的备份”，不会写入任何数据；
+    本版本仍可读格式 3 和 2，恢复后作答表为空。
+
+  src/desktop/ui.py
+    学生名单新增「学校编号」列与「导入作答 CSV」入口；
+    AnswerImportWindow 在本机校验并逐行展示状态，导入前二次确认，
+    完成后显示计数，问题行可导出 CSV。导入不发网络请求、不调 AI、不读照片。
+
+五、作答分析实现（1.6.2）
+  src/app/answer_review.py
+    只分析七年级一元一次方程的解题步骤。build_prompt 只放题号、单元、题目、
+    标准解法、学生步骤与输出格式，不含姓名、学校编号、班级、批次或账号。
+    parse_suggestion 解析模型返回的 JSON：每条错因的证据去掉空白后必须能在
+    学生步骤里逐字找到，找不到就丢弃；全部被丢弃时 uncertain=true，界面显示
+    “不确定”而不是硬给原因；最多保留 3 条。
+    analyse：模拟模式（provider 为 None）不发请求，只落本地判断；真实模式走
+    vision.chat_text（纯文字 messages，不含图片）。每次分析前删掉该作答旧的
+    pending 记录，保持一条待核对。
+    confirm：校验 pending、作答仍在、作答 fingerprint 未变、没有已确认记录，
+    然后 records.insert_mistake（错因=possible_causes、证据=observed_errors、
+    备注=advice_text），同一事务把错题置 confirmed 并回写 mistake_id；
+    重复确认返回 409，不会生成第二条错题。reject 只改状态。
+    原始 answers 行从不被修改。
+
+  src/app/db.py
+    answer_reviews 表（status/provider/model/causes/note/uncertain/raw/
+    answer_fingerprint/mistake_id/时间戳）与两个索引，其中部分唯一索引
+    idx_reviews_answer_confirmed 保证一条作答最多一条已确认记录。
+    ensure_answers_schema 同时负责 answers 与 answer_reviews，仍先备份、
+    可重复执行、失败回滚；当前 SCHEMA_VERSION 为 "3"（见第六节）。
+
+  src/app/api.py
+    GET  /api/classes/<id>/answer-reviews               列表（带最近审核状态）
+    GET  /api/classes/<id>/answers/<answer_id>/review   单条详情
+    POST /api/classes/<id>/answers/<answer_id>/review/analyse  老师主动分析
+    POST /api/classes/<id>/reviews/<review_id>          保存老师修改
+    POST /api/classes/<id>/reviews/<review_id>/confirm  确认生成错题
+    POST /api/classes/<id>/reviews/<review_id>/reject   拒绝
+    真实模式没有 consent 时直接拒绝；模型调用失败返回
+    {"ok": false, "error", "error_code"}，不写库。
+
+  src/app/vision.py
+    chat_text(prompt, system) 复用同一套 HTTP 错误映射与 Go 计费拦截，
+    max_tokens 32000，输出被截断时报错；照片分析同样是 32000。
+
+  src/app/backup.py
+    answer_reviews 参与备份与恢复；恢复时按新的学生、作答、错题 id 重映射，
+    找不到所属作答就整份备份拒绝，不写半份数据。
+
+  src/desktop/ui.py
+    学生名单新增“作答分析”入口；AnswerListWindow 列出状态、记录编号、学生、
+    题号、单元、批次、日期，缺测不能分析；真实服务先弹 AnswerConsentDialog，
+    勾选才开始。AnswerReviewDialog 显示三列（可能错因、原始步骤证据、判断理由，
+    均可编辑），可保存、确认、拒绝；确认前不会生成错题，确认后才进入正式错题流程。
+
+六、个人学情与辅导建议实现（1.7.0）
+  目标：一个学生自己的已确认问题按近期权重排序，老师主动发起才生成辅导建议，
+  建议可改写保存；不把班级汇总当成个人结果，也不把加权分当成绩或能力评级。
+
+  src/app/tutor.py
+    汇总：只取 status='confirmed' 的错题；按知识点分组，没有知识点的归「未分类」。
+    权重：最近 30 天每次 3 分、31–90 天 2 分、更早 1 分；缺日期与日期无法识别或
+    晚于今天的记录单列，不参与加权。排序键为（是否未分类、加权分降序、次数降序、名称）。
+    提示词只含问题名称、次数、加权分、最近日期和题目/过程原文，没有姓名、学校编号、
+    班级名或账号。解析时问题名必须来自汇总、证据必须逐字出现在原文里，找不到就丢弃
+    并写明「已忽略」；没有可用项时写明证据不足，不作确定诊断。
+    每条建议存 fingerprint（问题、次数、分值、日期、错题编号的哈希）；读取时与当前
+    汇总比对，不同即标 stale，界面提示「可能需要更新」。保存时记录老师版本与
+    teacher_edited；重新生成会覆盖为新的候选建议。
+
+  src/app/db.py
+    新增 tutor_advice 表（一人一行，student_id 唯一）；1.8.0 又加了追问相关的
+    followups 与 followup_updates 两张表，schema_version 现为 4（见第七节）。
+    迁移先备份为 app.db.bak-<时间戳>-<随机>，再在事务里建表、建索引；
+    失败不动原库并报错；重复迁移是空操作。
+
+  src/app/backup.py
+    备份格式现为 6，仍可读 5、4、3、2；counts 增加 tutor_advice、followups 与
+    followup_updates；恢复与跨电脑导入按学生重新映射 student_id，找不到学生时报错不写入。
+
+  src/app/api.py
+    GET  /api/classes/{id}/students/{student_id}/insight
+    POST /api/classes/{id}/students/{student_id}/insight/advice/generate
+    PATCH /api/classes/{id}/students/{student_id}/insight/advice
+    生成接口要求 consent=1；学生不属于该班时 404；失败返回 error/error_code，
+    不写库、不降级为模拟结果。
+
+  src/desktop/ui.py
+    学生名单新增「个人学情」按钮；窗口标题写明班级与学生，主表五列（问题、次数、
+    加权分、最近发生、主要证据），选中一行在下面列出对应错题、原题、学生步骤与日期。
+    生成前弹确认框说明发送内容；模拟模式直接提示不生成；过期建议显示提示条；
+    老师可改写并保存，保存后以老师版本为准。
+
+七、教师短追问与界面主题实现（1.8.0）
+  目标：老师从一个问题出发，选一句追问问学生，记录回答，再让 AI 依据回答给出
+  待核对的错因候选；同时让主要窗口看起来一致、清楚。追问与候选都不会自动改写
+  已确认错题。
+
+  src/app/followup.py
+    取依据：只取该学生在这个问题下 status='confirmed' 的错题，再从
+    answer_reviews 关联的 answers 里取学生步骤原文；没有已确认错题时 404
+    「没有找到这个问题对应的已确认错题」。
+    提示词只含问题名、题目原文、学生过程原文、已确认错因（追问后更新时再加
+    这次追问与回答），不含姓名、学校编号、班级名或账号。
+    校验：追问候选最多 3 条，依据必须逐字出现在原文里，找不到即丢弃并写
+    「已忽略」；没有可用候选时标「证据不足」。错因候选的 evidence 必须出现在
+    原文或这次回答里；空结果标 uncertain。
+    记录：只有老师点「记下这次追问」才写 followups（提问时间、来源 ai/teacher）；
+    保存回答写 answer 与 answered_at；AI 更新写 followup_updates（pending，
+    同时存 before_json 与 raw）；接受时把候选并入该错题 possible_causes 并保留
+    原错因，update 置 accepted；拒绝只置 rejected；已处理的候选再处理返回 409。
+    模拟模式（没有配置服务）直接返回 409，不生成、不落库。
+
+  src/app/db.py
+    followups（学生、问题名、错题与审核记录关联、追问、来源、候选、依据、
+    状态、提问时间、回答、回答时间）与 followup_updates（所属追问、候选、
+    说明、是否不确定、before/after、状态、时间），schema_version 升为 4；
+    迁移同样先备份、事务内建表、失败回滚，重复迁移是空操作。
+
+  src/app/backup.py
+    备份格式升为 6，counts 增加 followups 与 followup_updates；恢复与跨电脑
+    导入按新的学生、错题、审核记录 id 重新映射；1.7.0 及更早版本读到格式 6
+    会提示「备份格式不受支持」，不能回退读取。
+
+  src/app/api.py
+    GET/POST /api/classes/{id}/students/{student_id}/followups
+    GET      .../followups/context
+    POST     .../followups/suggest
+    GET      .../followups/{fid}
+    POST     .../followups/{fid}/answer
+    POST     .../followups/{fid}/updates
+    POST     .../followups/{fid}/updates/{uid}/decide
+    suggest 与 updates 都要求 consent=1；失败返回 error/error_code，不写库。
+
+  src/desktop/theme.py
+    一份调色板加一份 QSS：页面标题、分区标题、提示行、状态行、按钮层级
+    （primary/danger/ghost）、输入框、表格与表头、滚动条、分组框、标签页。
+    apply() 给整个程序设字体与样式；各窗口只设 role 属性或 objectName。
+
+  src/desktop/ui.py
+    学生名单、作答分析、个人学情、追问窗口与 AI 设置统一标题字号、边距与
+    按钮层级；表格行高与表头留白加宽。两个追问入口：个人学情选中问题点
+    「追问这个问题」，已确认错题详情点「追问这个问题」。追问窗口包括依据区、
+    候选表、自己写一句、追问记录、学生回答、更新前后对比与接受/拒绝按钮；
+    AI 调用前弹确认框，模拟模式直接提示不发送。
+八、自定义 AI 服务实现
+  src/app/vision.py
+    MODE_CUSTOM 与自定义地址规则：custom_address_error 校验协议、主机、
+    禁止查询参数/#/OpenCode Go 地址；custom_request_url 去掉末尾斜杠与
+    已填的 /chat/completions 后只拼一次；resolve_config 只认本账号显式
+    填写的地址和模型，不继承 Console 默认值或环境变量。
+    请求为 OpenAI 兼容 Chat Completions：Bearer 密钥、图片 data URL、
+    User-Agent math-mistakes-desktop/<版本>；自定义模式不带 Go 会话头。
+    错误按实际响应映射为 auth/payment/quota/timeout/network/format/
+    request/server；失败只提示，不自动改用模拟，也不自动换服务。
+    返回结果标为真实 AI 分析；未返回的用量字段保留缺失，由界面显示
+    “尚未确认”，数值 0 原样保留。
+
+  src/desktop/service.py
+    自定义服务名称、地址、模型按账号写入 app_meta；API 密钥只保存在本次
+    登录的内存会话，切换账号、退出或关闭程序即清除，不写入数据库、日志、
+    截图、报告或备份。地址或名称变化时清空该账号此前的自定义密钥。
+
+  src/desktop/ui.py
+    “自定义 AI 服务”设置页实时显示完整请求地址；保存只表示已记录，
+    状态显示“尚未验证”。试分析展示服务、模型、连接结果与错误；
+    正式分析发送前弹确认框，说明不单独发送姓名、班级、账号字段，
+    照片文字本身可能包含这些信息。结果先“待核对”，老师修改后再确认。
+
+九、测试脚本
+  tests\verify_answers_150.py    作答解析、匹配、重复、冲突、覆盖、隔离、
+                                 事务、迁移、备份恢复、零网络、备份格式，60 项
+  tests\verify_core_150.py       1.4.6 原有错题、照片、模拟 AI 核对、统计、
+                                 备份恢复与旧格式回归，18 项
+  tests\verify_answers_ui.py     导入窗口与学生编号界面，50 项（offscreen）
+  tests\verify_answers_exe.py    最终 EXE 的 CSV 导入流程，28 项
+  tests\verify_review_160.py     作答分析：提示词、证据校验、确认/拒绝、迁移、
+                                 备份、隔离、零网络、五类作答场景、失败重试
+                                 与重开、32000 输出上限与截断、1.6.0 数据兼容，
+                                 135 项
+  tests\verify_review_ui.py      作答分析窗口、确认框、失败重试与任务未收尾时的
+                                 重复点击、已确认的作答不再重新分析，67 项（offscreen）
+  tests\verify_review_exe.py     最终 EXE 的作答分析全流程（拒绝、再分析确认、重开），48 项
+  tests\verify_tutor_170.py      个人学情汇总、权重边界、隐私、证据校验、编辑保存与过期、隔离、迁移与备份，98 项
+  tests\verify_tutor_ui.py       个人学情窗口、确认框、空状态、过期提示与保存，54 项（offscreen）
+  tests\verify_followup_180.py   教师短追问：建表与迁移、依据原文与隐私、候选生成、
+                                 编造丢弃、老师确认才记录、回答保存、按回答更新候选、
+                                 接受/拒绝、失败不覆盖、重开、隔离、旧库与备份，126 项
+  tests\verify_followup_ui.py    追问窗口：入口、依据、手写与候选、确认框、回答、
+                                 更新前后对比、接受/拒绝、失败、重开与已确认错题入口，
+                                 72 项（offscreen）
+  tests\verify_followup_exe.py   最终 EXE 的追问全流程（生成、记下、回答、更新、接受、
+                                 拒绝、取消、重开），并给五个窗口出两种尺寸的截图，94 项
+  tests\verify_layout_exe.py     最终 EXE 的小屏与缩放：1366×768、1920×1080、
+                                 1366×768@125%（逻辑 1093×614）三种情形下窗口不超出、
+                                 关键按钮在窗口内、内容可滚动且区块不重叠，80 项
+  tests\verify_ai_146.py         自定义 AI 源码级地址、请求、错误与隔离，195 项
+  tests\verify_ai_146_ui.py      AI 设置、试分析与确认框，85 项（offscreen）
+  tests\verify_ai_146_exe.py     桌面 EXE 的自定义 AI 全流程，82 项
+  tests\verify_mistakes_pack.py  原有错题/统计/备份主流程回归
+  tests\ai_stub_server.py        本地模拟服务；用量 full/partial/zeros/nulls/none，
+                                 /__fail 注入失败（ok/400/length/maxtokens/slow/garbage），
+                                 /__review 切换作答分析结果，/__tutor 切换辅导建议结果，
+                                 /__followup 切换追问候选与错因候选结果
+  tests\run_hidden.py            在独立 Windows 桌面运行 GUI 测试，窗口不出现
+  tests\real_ai_probe.py         真实服务探针；读取环境变量或 tests\real_ai.env，
+                                 不打印密钥，结果写 docs\verify-ai-146-real.json
+
+  测试日志写入 docs\；EXE 测试读取 build\程序包\ 下的 ZIP。
+  tests\README.md 写明 Python 版本、依赖安装与十组命令。
+  tests\fixtures\legacy146\ 是 1.4.6 的 db.py 与 backup.py 快照，仅用于构造旧库
+  和验证旧版对格式 4 备份的拒绝；不含真实数据，不参与软件运行。
+  docs\verify-146-format4.txt 是用 1.4.6 真实代码读格式 4 备份的一次性实测记录。
+
+十、已知限制
+  真实云端调用由用户自行验证可用，自动化测试只用本地模拟服务，不发真实请求；
+  兼容范围为 Bearer + OpenAI Chat Completions
+  图片输入；单次请求超时 180 秒；未提供代理设置界面；程序包未做代码签名；
+  作答导入只接受 CSV，不做 Excel 直接读取与 OCR；
+  作答分析只面向七年级一元一次方程，没有教材版本绑定，也不做照片 OCR。
