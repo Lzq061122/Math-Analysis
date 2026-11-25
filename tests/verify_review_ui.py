@@ -180,6 +180,15 @@ def main():
     log("== 四、真实模式必须先确认发送范围 ==")
     st = Stub(os.path.join(WORK, "stub.jsonl"))
     svc.save_ai_settings("real", st.base, "stub-vision", "sk-test")
+    # T26 改写①（本节前提）
+    # 原断言：配好真实通道后，老师点确认即与模型通信，建议里出现桩返回的两条错因。
+    # 原依据：1.8.1「真实模式 = 老师点确认就发送」（数智伴学_Agent开发规格.md 1.8.1 章）。
+    # 新断言：先把当前账号的个体 AI 开关显式置为开启（并断言真的生效），下游断言不变。
+    # 改写依据：R1-07 + R1-14 裁定「默认不外发；教师账号显式开启后才真调用」。
+    individual = svc.set_ai_individual(True)
+    check("四.0 账号级个体 AI 开关已显式开启（否则真实通道一律 403 ai_isolation）",
+          individual.get("ai_individual_allowed") is True,
+          (individual.get("ai_individual_allowed"), individual.get("ai_egress_available")))
     before = len(st.records())
 
     original_exec = ui.AnswerConsentDialog.exec
@@ -221,7 +230,15 @@ def main():
         wait_for(app, lambda: len(captured) >= 2, 10)
         real_review = captured[-1]
         check("真实建议有两条错因", len(real_review.get("causes") or []) == 2, real_review.get("causes"))
-        record = st.records()[-1]
+        # T26 改写②（空态不再以崩溃形式出现）
+        # 原断言：record = st.records()[-1]（隐含「同意后桩一定收到过请求」）
+        # 原依据：1.8.1「同意即外发」，于是旧套件直接取最后一条记录。
+        # 新断言：先用一条断言确认桩确实收到 ≥1 条，再取最后一条做字段检查；空态本身是断言。
+        # 改写依据：R1-14 下开关关闭时 403、桩 0 条，`st.records()[-1]` 抛 IndexError
+        #           （旧套件在 :224 崩溃）——崩溃不是断言失败，空态必须显式写成断言。
+        check("四.1 桩至少收到一条请求（空态有明确断言，不再以崩溃形式出现）",
+              len(st.records()) > before, len(st.records()) - before)
+        record = st.records()[-1] if len(st.records()) > before else {}
         check("请求不含学生姓名", "张三" not in (record.get("text") or ""))
         check("请求不含学校编号", "XY001" not in (record.get("text") or ""))
     finally:

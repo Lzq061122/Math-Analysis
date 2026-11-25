@@ -479,7 +479,7 @@ def main():
                      lambda: svc.suggest_followup(cls["id"], zhang["id"], "移项", consent=True))
     expect_isolation("T26.3 追问后的错因候选生成 → 403 ai_isolation",
                      lambda: svc.update_followup_causes(cls["id"], zhang["id"],
-                                                        window.followup_id, consent=True))
+                                                        items[0]["id"], consent=True))
     check("T26.4 关闭期间桩一条请求都没收到（拦在组装请求之前）",
           len(stub_server.records()) == before_requests,
           [r.get("kind") for r in stub_server.records()])

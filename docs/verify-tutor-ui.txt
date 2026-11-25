@@ -1,4 +1,4 @@
-时间：2026-11-25T20:56:17+08:00
+时间：2026-11-25T21:02:47+08:00
 命令：python.exe tests\verify_tutor_ui.py
 目录：E:\Agent\小挑
 环境：Python 3.12.10 / Windows-11-10.0.26300-SP0

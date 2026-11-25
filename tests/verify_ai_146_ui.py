@@ -412,6 +412,68 @@ def main():
           any("费用或消耗" in item for item in labels), labels)
     consent.close()
 
+    # ------------------------------------------------------------------
+    # T26 新增（整段为新断言，不替换任何既有断言）：个体 AI 开关与本套件管辖的两个错题入口。
+    # 为什么加：R1-14 之后「真实通道」默认不外发，只有教师账号显式开启才真调用；
+    # 本套件原来只验设置页与试分析，没验「关闸门时错题分析入口必须 403」这一档。
+    # ------------------------------------------------------------------
+    LOG.write("")
+    LOG.write("== 十、个体 AI 开关：关闭 → 错题分析入口 403；开启 → 立即可用")
+    state = service.ai_individual_state()
+    check("T26.1 新账号默认未开启个体 AI 外发", state.get("ai_individual_allowed") is False, state)
+    check("T26.2 状态回执写明关闭即 403 ai_isolation 与审计",
+          "403" in (state.get("note") or "") and "审计" in (state.get("note") or ""),
+          state.get("note"))
+
+    class_row = service.create_class("T26 闸门校验班", grade="七年级")
+    student = service.create_student(class_row["id"], "学生甲", "")
+    created = service.create_mistake(
+        class_row["id"], student["id"],
+        {"question_text": "2x+3=7", "solution_text": "2x=4\nx=2",
+         "observed_errors": ["移项没有变号"], "knowledge_points": ["移项"],
+         "error_type": "", "possible_causes": ["移项没有变号"], "advice_text": "",
+         "source_type": "作业", "source_detail": "", "occurred_on": "2026-11-20",
+         "teacher_note": ""},
+        photo, 240, 120,
+    )
+    mistake_id = created["id"] if isinstance(created, dict) else created
+
+    from app import api as api_mod
+
+    def expect_isolation(name, call):
+        try:
+            result = call()
+        except api_mod.ApiError as exc:
+            check(name,
+                  exc.status == 403 and exc.code == "ai_isolation" and "已停用" in exc.message,
+                  (exc.status, exc.code, (exc.message or "")[:60]))
+            return
+        except Exception as exc:  # noqa: BLE001
+            check(name, False, "未按 403 拦断，而是 %s: %s" % (type(exc).__name__, exc))
+            return
+        check(name, False, "没有抛 403，而是返回了 %r" % (result,))
+
+    expect_isolation("T26.3 关闭时「错题照片分析建议」→ 403 ai_isolation",
+                     lambda: service.preview_analysis(mistake_id, consent=True, task_id="t26-a"))
+    expect_isolation("T26.4 关闭时「错题重新分析」（旧入口同一道闸门）→ 403 ai_isolation",
+                     lambda: api_mod.api_reanalyze(
+                         service._ctx(params={"id": mistake_id}, body={"consent": True})))
+
+    opened = service.set_ai_individual(True)
+    check("T26.5 显式开启后账号状态已授权", opened.get("ai_individual_allowed") is True, opened)
+    preview = service.preview_analysis(mistake_id, consent=True, task_id="t26-b")
+    # 说明（如实）：本套件的这条错题是脚本造的最小样本，照片字节没有进 uploads 存储，
+    # 所以开启闸门后 preview 会以「没有可发送的图片数据」失败——但那已经**不是闸门**拦的。
+    # 这条断言验的是「闸门已放开」，因此只要求失败原因不再是 403 ai_isolation / 「已停用」。
+    check("T26.6 开启后同一入口不再被闸门拦（失败原因不再是 ai_isolation / 已停用）",
+          preview.get("error_code") != "ai_isolation"
+          and "已停用" not in (preview.get("error") or ""),
+          (preview.get("ok"), preview.get("error_code"), (preview.get("error") or "")[:60]))
+    closed = service.set_ai_individual(False)
+    check("T26.7 再关闭立即恢复拦截，不需要重启",
+          closed.get("ai_individual_allowed") is False,
+          closed.get("ai_individual_allowed"))
+
     failed = sum(1 for _, ok, _ in CHECKS if not ok)
     LOG.write("")
     LOG.write("合计 %d 项，通过 %d 项，失败 %d 项" % (len(CHECKS), len(CHECKS) - failed, failed))
