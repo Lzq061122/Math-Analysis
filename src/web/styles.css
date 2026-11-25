@@ -361,3 +361,7 @@ dialog .dlg-foot { padding: 12px 18px; border-top: 1px solid var(--line); displa
 .check-edit > summary { cursor: pointer; font-weight: 600; }
 .check-edit[open] > summary { margin-bottom: 8px; }
 .manual-check-entry { margin-top: 10px; border-color: #fcd34d; background: var(--warn-weak); }
+
+/* R1-14/T17：设置页「个体 AI 外发」开关。只做最小排版，复用现有 .card/.row/.field/.btn。 */
+.ai-individual .row { flex-wrap: wrap; }
+.ai-individual ul li { word-break: break-word; }

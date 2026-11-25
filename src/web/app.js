@@ -1441,6 +1441,16 @@ async function renderMistake(mistakeId) {
 /* 设置                                                                */
 /* ------------------------------------------------------------------ */
 async function renderSettings() {
+  // R1-14/T17：个体 AI 开关的初始状态**必须来自后端**（GET /api/account/ai-individual），
+  // 不在前端假设默认值；读不到就把错误原样显示，并且不让人在「不知道真实状态」时乱点保存。
+  let individualAi = null;
+  let individualAiError = '';
+  try {
+    individualAi = await api('/api/account/ai-individual');
+  } catch (err) {
+    individualAiError = (err && err.message) || '读取开关状态失败';
+  }
+
   const oldPwd = h('input', { type: 'password', autocomplete: 'current-password' });
   const newPwd = h('input', { type: 'password', autocomplete: 'new-password' });
   const errorLine = h('div', { class: 'small', style: 'color:var(--danger);min-height:20px' }, '');
@@ -1484,6 +1494,7 @@ async function renderSettings() {
           h('a', { href: state.meta.ai_policy_url, target: '_blank', rel: 'noopener' }, '官方说明'))
         : null,
     ),
+    individualAiCard(individualAi, individualAiError),
     h('div', { class: 'card stack' },
       h('h3', {}, '数据与隐私'),
       h('ul', { class: 'small', style: 'padding-left:18px;line-height:1.9' },
@@ -1495,6 +1506,73 @@ async function renderSettings() {
     ),
     dataCard(),
   ));
+}
+
+// R1-14/T17：账号级「个体 AI 外发」开关。网页端只能改偏好（服务端 ai_egress_available=false），
+// 真正外发只在注入了 provider 的桌面端生效——所以这里既要说清「能改」，也要说清「不一定能发」。
+function individualAiCard(state, loadError) {
+  const info = state || {};
+  const allowed = info.ai_individual_allowed === true;
+  const egressAvailable = info.ai_egress_available === true;
+  const statusLine = h('p', { class: 'small ai-status' }, '当前状态：',
+    h('b', {}, allowed ? '已开启' : '已关闭'));
+  const toggle = h('input', { type: 'checkbox' });
+  toggle.checked = allowed;
+  const receipt = h('p', { class: 'small ai-receipt', style: 'margin:6px 0 0' }, '');
+  const error = h('p', { class: 'small ai-error', style: 'color:var(--danger);margin:6px 0 0' }, '');
+  if (loadError) {
+    error.textContent = '读取开关状态失败：' + loadError + '。刷新页面后可重试；在读到真实状态前请不要保存开关。';
+  }
+  const saveBtn = h('button', {
+    class: 'btn ai-save',
+    disabled: Boolean(loadError),
+    onclick: async () => {
+      error.textContent = '';
+      receipt.textContent = '';
+      saveBtn.disabled = true;
+      try {
+        // 保存走 POST（服务端没有 do_PUT，PUT 会 405）。
+        const result = await api('/api/account/ai-individual',
+          { method: 'POST', body: { allowed: !!toggle.checked } }) || {};
+        const now = result.ai_individual_allowed === true;
+        // 回执只读服务端返回：不拿请求里的值冒充结果。
+        toggle.checked = now;
+        statusLine.replaceChildren('当前状态：', h('b', {}, now ? '已开启' : '已关闭'));
+        receipt.textContent = '已保存：' + (now ? '已开启' : '已关闭') + '（服务端回执）'
+          + (result.note ? ' ' + result.note : '');
+        toast(now ? '已开启个体 AI 外发' : '已关闭个体 AI 外发');
+      } catch (err) {
+        error.textContent = '保存失败：' + ((err && err.message) || '请稍后重试')
+          + (err && err.code ? '（' + err.code + '）' : '') + '。本次没有改动开关。';
+      } finally {
+        saveBtn.disabled = false;
+      }
+    },
+  }, '保存开关');
+
+  return h('div', { class: 'card stack ai-individual' },
+    h('h3', {}, '个体 AI 外发（账号级开关）'),
+    statusLine,
+    h('label', { class: 'row', style: 'gap:8px;align-items:center;margin:6px 0' },
+      toggle, h('span', {}, '允许个体诊断使用我配置的 AI 通道')),
+    h('p', { class: 'tiny muted' }, egressAvailable
+      ? '这台机器（桌面端）可以真的外发；开关是账号级的，网页与桌面端读同一个值。'
+      : '网页端只记录你的选择、不能外发：真正的外发只在桌面端生效（同一账号在桌面端会读到这个开关）。'),
+    h('ul', { class: 'small', style: 'padding-left:18px;line-height:1.9;margin:6px 0' },
+      h('li', {}, '打开后会把：题目原文、学生步骤、题图发给你配置的 AI 通道'
+        + '（错题重新分析、错题照片分析建议、个人辅导建议、追问候选、追问后的错因候选、作答分析）。'),
+      h('li', {}, '不会发：姓名、学号、班级名、作答编号（answer_id）；外发字段只允许 '
+        + 'messages / model / temperature / max_tokens。'),
+      h('li', {}, '每次真实外发都会写一条审计（谁、何时、哪个功能、发了哪些字段）；'
+        + '审计只记字段名、不记取值，写不进审计就不发送。'),
+      h('li', {}, '关闭后六个入口立即恢复拒绝（错误码 ai_isolation），不需要重启。'),
+    ),
+    h('p', { class: 'tiny muted' }, '这是账号级开关：在这里打开后，同一账号在桌面端也生效；'
+      + '桌面端不显示这个开关。'),
+    h('div', { class: 'check-actions', style: 'margin-top:6px' }, saveBtn),
+    receipt,
+    error,
+  );
 }
 
 function dataCard() {

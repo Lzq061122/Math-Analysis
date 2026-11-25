@@ -35,6 +35,7 @@ from logmeta import environment_lines, exit_line  # noqa: E402
 import server as server_mod  # noqa: E402
 
 from app import demo_answers as _demo_answers  # noqa: E402  （sys.path 已含 src）
+from app import api as _api_mod  # noqa: E402  T17：进程内取证六个个体 AI 入口的闸门
 
 WORK = os.path.join(ROOT, "tests", ".tmp-e2e-web")
 SHOTS = os.path.join(ROOT, "docs", "screenshots")
@@ -2092,6 +2093,268 @@ def stage_t12_flows(cdp, ctx):
         conn.close()
 
 
+
+class _StubReached(Exception):
+    """冒充真实通道被真的调用到了（证明闸门放行、且全程没有任何网络请求）。"""
+
+
+class _RealStubProvider:
+    """mode=real 的假 provider：过 `_is_mock_provider` 的判定，但一被调用就抛 _StubReached。"""
+
+    mode = "real"
+    service = "stub"
+    last_payload = None
+
+    def __init__(self):
+        self.individual_allowed = False
+        self.audit_sink = None
+
+    def analyze(self, job):
+        raise _StubReached("stub-analyze")
+
+    def chat_text(self, prompt, system="", purpose=""):
+        raise _StubReached("stub-chat")
+
+
+class _GateCtx:
+    """进程内调 api 处理器所需的最小上下文（与网页 Ctx 同字段，provider 换成 stub）。"""
+
+    def __init__(self, db, user, provider, params=None, body=None, uploads=None, previews=None):
+        self.server = None
+        self.db = db
+        self.user = user
+        self.params = dict(params or {})
+        self.body = dict(body or {})
+        self.query = {}
+        self.uploads = uploads
+        self.previews = previews
+        self.token = ""
+        self.client_ip = "127.0.0.1"
+        self.session_current = lambda: True
+        self.ai_config = {"mode": "real", "api_key": "stub", "base_url": "http://127.0.0.1:9/v1"}
+        self.ai_provider = provider
+
+
+def stage_t17_ai_switch(cdp, ctx):
+    """T17：网页设置页「允许个体诊断使用我配置的 AI 通道」开关（桌面端零改动）。
+
+    取证三件事：① 页面初始状态来自后端 GET（不是前端默认值）；② 保存只认服务端回执、
+    失败显示后端原文；③ 关闭时六个个体 AI 入口仍 403 ai_isolation，打开后闸门放行。
+    """
+    section("13.18 T17 个体 AI 外发开关：设置页入口 / 后端回执 / 六入口闸门")
+
+    http = ctx["http"]
+    server = ctx["server"]
+    base_url = "http://127.0.0.1:%d" % PORT
+    demo_user_id = db_query("SELECT id FROM users WHERE username='demo'")[0]["id"]
+
+    def switch_state():
+        return http.get("/api/account/ai-individual")[1] or {}
+
+    def set_switch_db(value):
+        conn = sqlite3.connect(DB_PATH, timeout=15)
+        try:
+            with conn:
+                conn.execute("UPDATE users SET ai_individual_allowed=? WHERE id=?",
+                             (1 if value else 0, demo_user_id))
+        finally:
+            conn.close()
+
+    # 归一化起点：关
+    http.post("/api/account/ai-individual", {"allowed": False})
+
+    # ---------------- ① 接口自检 + 页面默认关 ----------------
+    status, payload = http.get("/api/account/ai-individual")
+    check("13.18.0 后端开关接口可读：默认关、网页端 ai_egress_available=false、note 写明 ai_isolation",
+          status == 200 and payload.get("ai_individual_allowed") is False
+          and payload.get("ai_egress_available") is False
+          and payload.get("ai_individual_switch") == "account"
+          and "ai_isolation" in (payload.get("note") or ""), payload)
+
+    cdp.navigate(base_url + "/#/settings")
+    cdp.wait_selector(".ai-individual", 25)
+    page = cdp.evaluate(
+        "(() => { const card = document.querySelector('.ai-individual');"
+        " const row = card ? card.innerText : '';"
+        " const box = card ? card.querySelector('input[type=checkbox]') : null;"
+        " return {text: row, checked: box ? box.checked : null,"
+        "         status: (card && card.querySelector('.ai-status')) ? card.querySelector('.ai-status').innerText : ''}; })()")
+    check("13.18.1 设置页出现「允许个体诊断使用我配置的 AI 通道」开关，默认未勾选且显示「已关闭」",
+          "允许个体诊断使用我配置的 AI 通道" in page["text"]
+          and page["checked"] is False and "已关闭" in (page["status"] or ""), page)
+
+    # 初始状态来自后端：直接把库里的开关置 1，刷新后页面必须显示「已开启」
+    set_switch_db(True)
+    cdp.reload()
+    cdp.wait_selector(".ai-individual", 25)
+    on_page = cdp.evaluate(
+        "(() => { const card = document.querySelector('.ai-individual');"
+        " const box = card ? card.querySelector('input[type=checkbox]') : null;"
+        " const st = card ? card.querySelector('.ai-status') : null;"
+        " return {checked: box ? box.checked : null, status: st ? st.innerText : ''}; })()")
+    check("13.18.1b 页面初始状态来自后端 GET：库里置 1 后刷新即显示「已开启」并勾上",
+          on_page["checked"] is True and "已开启" in (on_page["status"] or ""), on_page)
+    set_switch_db(False)
+    cdp.reload()
+    cdp.wait_selector(".ai-individual", 25)
+    check("13.18.1c 库里置回 0 后刷新回到「已关闭」（不是前端自己记住的）",
+          "已关闭" in (cdp.evaluate(
+              "(() => { const el = document.querySelector('.ai-status');"
+              " return el ? el.innerText : ''; })()") or ""))
+
+    # ---------------- ② 四条边界 + 账号级说明 ----------------
+    text = cdp.evaluate("(() => document.querySelector('.ai-individual').innerText)()") or ""
+    check("13.18.2 四条边界写清：发什么（题目/学生步骤/题图）、不发什么（姓名/学号/班级名/作答编号）、"
+          "审计留痕、关闭后 ai_isolation",
+          "题目原文" in text and "学生步骤" in text and "题图" in text
+          and "不会发" in text and "姓名" in text and "学号" in text and "班级名" in text
+          and "作答编号" in text
+          and "审计" in text and "ai_isolation" in text, text[:400])
+    check("13.18.3 写明这是账号级开关、桌面端同账号也生效（网页只记录偏好）",
+          "账号级" in text and "桌面端" in text and "同一账号" in text, text[:400])
+
+    # ---------------- ③ 保存：关 ----------------
+    cdp.click(".ai-individual .ai-save", "保存开关", settle=1.0)
+    closed_receipt = cdp.evaluate(
+        "(() => { const el = document.querySelector('.ai-receipt');"
+        " return el ? el.innerText : ''; })()") or ""
+    check("13.18.4 不勾选直接保存 → 回执「已保存：已关闭」，后端仍为关（不前端伪造）",
+          "已保存：已关闭" in closed_receipt
+          and switch_state().get("ai_individual_allowed") is False, closed_receipt)
+
+    # ---------------- ④ 关闭时六个入口仍 ai_isolation（进程内取证，不联网） ----------------
+    db = server.db
+    uploads = getattr(server, "uploads", None)
+    user = {"id": demo_user_id, "username": "demo", "display_name": "演示老师"}
+    # 每个入口都要「同一个班级 + 同一名学生 + 自己那条记录」，否则归属校验先 404，
+    # 闸门（ai_isolation）根本轮不到——这本来就是 T14 的顺序：先确认归属、再判档位。
+    answer = db.query_one("SELECT a.id, a.class_id, a.student_id, a.student_steps FROM answers a"
+                          " JOIN classes c ON c.id=a.class_id WHERE c.user_id=?"
+                          " ORDER BY a.id LIMIT 1", (demo_user_id,))
+    mistake = db.query_one(
+        "SELECT m.id, m.class_id, m.student_id FROM mistakes m JOIN classes c ON c.id=m.class_id"
+        " WHERE c.user_id=? ORDER BY m.id LIMIT 1", (demo_user_id,))
+    entries = []
+    if mistake:
+        entries.extend([
+            ("错题重新分析", lambda p: _api_mod.api_reanalyze(p)),
+            ("错题照片分析建议", lambda p: _api_mod.api_preview_analysis(p)),
+        ])
+    if answer:
+        entries.append(("作答分析", lambda p: _api_mod.api_answer_analyse(p)))
+    if answer:
+        entries.extend([
+            ("个人辅导建议生成", lambda p: _api_mod.api_student_advice_generate(p)),
+        ])
+    if mistake:
+        entries.extend([
+            ("追问候选生成", lambda p: _api_mod.api_followup_suggest(p)),
+            ("追问后的错因候选生成", lambda p: _api_mod.api_followup_update(p)),
+        ])
+    check("13.18.4b 造数自检：演示库里能凑齐六个入口所需的错题/作答（≥4 个入口可调）",
+          len(entries) >= 4, [name for name, _ in entries])
+
+    def call_entries(provider):
+        results = []
+        for name, fn in entries:
+            params = {}
+            body = {}
+            if name in ("错题重新分析", "错题照片分析建议"):
+                # 只看错题本身：handler 先 owned_mistake，再判档位
+                params = {"id": mistake["id"]}
+            elif name == "作答分析":
+                # 只看作答：handler 先 owned_class，再判档位
+                params = {"id": answer["class_id"], "answer_id": answer["id"]}
+            elif name == "个人辅导建议生成":
+                # _insight_student 要求「这名学生属于该班级」——用作答身上那一对，保证自洽
+                params = {"id": answer["class_id"], "student_id": answer["student_id"]}
+            else:
+                # 追问两个入口用错题身上那一对（problem/mistake_id 也要同一个班级）
+                params = {"id": mistake["class_id"], "student_id": mistake["student_id"]}
+                if name == "追问候选生成":
+                    body = {"problem": "去括号", "mistake_id": mistake["id"]}
+                if name == "追问后的错因候选生成":
+                    params["fid"] = 0  # 闸门在按 fid 取行之前，这里不会用到
+            gate_ctx = _GateCtx(db, dict(user), provider, params=params, body=body,
+                                uploads=uploads, previews=None)
+            try:
+                fn(gate_ctx)
+                results.append((name, "无异常", ""))
+            except _api_mod.ApiError as exc:
+                results.append((name, "ApiError", getattr(exc, "code", "")))
+            except _StubReached:
+                results.append((name, "stub", "reached"))
+            except Exception as exc:  # noqa: BLE001
+                results.append((name, type(exc).__name__, str(exc)[:40]))
+        return results
+
+    off_results = call_entries(_RealStubProvider())
+    check("13.18.5 关闭状态下六个个体 AI 入口全部 403 ai_isolation（真实通道也不外发）",
+          all(kind == "ApiError" and code == "ai_isolation" for _, kind, code in off_results),
+          off_results)
+
+    # ---------------- ⑤ 打开：回执 + 闸门放行 ----------------
+    cdp.evaluate("(() => { const box = document.querySelector('.ai-individual input[type=checkbox]');"
+                 " box.checked = true; box.dispatchEvent(new Event('change')); return box.checked; })()")
+    cdp.click(".ai-individual .ai-save", "保存开关", settle=1.0)
+    on_receipt = cdp.evaluate(
+        "(() => { const el = document.querySelector('.ai-receipt');"
+        " return el ? el.innerText : ''; })()") or ""
+    on_status = cdp.evaluate(
+        "(() => { const el = document.querySelector('.ai-status');"
+        " return el ? el.innerText : ''; })()") or ""
+    check("13.18.6 勾选后保存 → 回执「已保存：已开启」，页面状态与服务端一致",
+          "已保存：已开启" in on_receipt and "已开启" in on_status
+          and switch_state().get("ai_individual_allowed") is True, on_receipt)
+    on_results = call_entries(_RealStubProvider())
+    check("13.18.6b 同一账号打开后闸门放行：真实通道被真的调用（stub 抛 _StubReached），"
+          "不再返回 ai_isolation",
+          any(kind == "stub" for _, kind, _ in on_results)
+          and not any(code == "ai_isolation" and kind == "ApiError" for _, kind, code in on_results),
+          on_results)
+
+    # ---------------- ⑥ 保存失败：显示后端原文，不改状态 ----------------
+    cdp.call("Fetch.enable", {"patterns": [
+        {"urlPattern": "*/api/account/ai-individual*", "requestStage": "Request"}]})
+    cdp.fetch_mode = (400, json.dumps({"error": "后端原文（T17 测试桩）：allowed 只能是 true 或 false。",
+                                       "code": "invalid"}, ensure_ascii=False))
+    cdp.click(".ai-individual .ai-save", "保存开关", settle=1.0)
+    err_text = cdp.evaluate(
+        "(() => { const el = document.querySelector('.ai-error');"
+        " return el ? el.innerText : ''; })()") or ""
+    after_status = cdp.evaluate(
+        "(() => { const el = document.querySelector('.ai-status');"
+        " return el ? el.innerText : ''; })()") or ""
+    cdp.fetch_mode = None
+    cdp.call("Fetch.disable")
+    check("13.18.7 保存失败时页面显示后端原文（含 code），不静默、不改状态",
+          "后端原文（T17 测试桩）" in err_text and "invalid" in err_text
+          and "已开启" in after_status, {"error": err_text, "status": after_status})
+    check("13.18.7b 失败后后端开关没有被前端改动（仍是开）",
+          switch_state().get("ai_individual_allowed") is True)
+
+    # ---------------- ⑦ 视觉约束 + 截图 ----------------
+    metrics = cdp.evaluate(
+        "(() => { const card = document.querySelector('.ai-individual');"
+        " const box = card.getBoundingClientRect();"
+        " return {overflowX: document.documentElement.scrollWidth - window.innerWidth,"
+        "         cardOverflow: card.scrollWidth - card.clientWidth,"
+        "         primary: document.querySelectorAll('.btn.primary').length,"
+        "         left: box.left, right: box.right, vw: window.innerWidth}; })()")
+    log("T17 开关卡片度量：%s" % json.dumps(metrics, ensure_ascii=False))
+    check("13.18.8 1366×768 下该块无横向溢出、页面主按钮仍唯一",
+          metrics["overflowX"] <= 0 and metrics["cardOverflow"] <= 0
+          and metrics["primary"] == 1
+          and metrics["left"] >= 0 and metrics["right"] <= metrics["vw"], metrics)
+    path, size = cdp.screenshot("ui-r1-14-ai-switch-1366x768.png")
+    check("13.18.9 开关截图已保存且尺寸正确（1366×768）", size == VIEWPORT, "%s %s" % (path, size))
+
+    # 收尾：把开关恢复为关，避免影响后续 stage 与人工复核
+    http.post("/api/account/ai-individual", {"allowed": False})
+    check("13.18.10 收尾把账号开关恢复为关（不把测试状态留给后续）",
+          switch_state().get("ai_individual_allowed") is False)
+
+
 def stage_old_tabs(cdp, ctx):
     section("13.12 旧五个 tab 回归：overview / students / mistakes / stats / advice")
 
@@ -2299,7 +2562,7 @@ def main():
         ctx = {
             "class_id": class_id, "class_name": class_name, "assignment": ASSIGNMENT_NAME,
             "answers": answers, "first_answer": answers["DEMO-A-01"], "class2_id": class2_id,
-            "http": http, "long_answer": None,
+            "http": http, "long_answer": None, "server": server,
         }
 
         stages = [
@@ -2338,6 +2601,7 @@ def main():
                             ("T11 聚焦复验", lambda: stage_reverify(cdp, ctx)),
                             ("A2 其余状态", lambda: stage_other_status(cdp, ctx)),
                             ("T12 五条入口", lambda: stage_t12_flows(cdp, ctx)),
+                            ("T17 个体 AI 开关", lambda: stage_t17_ai_switch(cdp, ctx)),
                             ("旧五 tab 回归", lambda: stage_old_tabs(cdp, ctx)),
                             ("T11 依据必填", lambda: stage_basis_required(cdp, ctx))]:
             try:
