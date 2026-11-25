@@ -1,4 +1,4 @@
-时间：2026-11-25T22:29:40+08:00
+时间：2026-11-25T22:35:20+08:00
 命令：python.exe tests\verify_layout_exe.py
 目录：E:\Agent\小挑
 环境：Python 3.12.10 / Windows-11-10.0.26300-SP0
@@ -26,19 +26,19 @@ PASS  1366x768 个人学情不超出  -> 1708x960（目标 1708x960）
 PASS  1366x768 「保存修改」 在窗口内  -> 控件(298,885)-(400,930) 窗口(0,0)-(1708,960)
 PASS  1366x768 「追问这个问题」 在窗口内  -> 控件(413,885)-(548,930) 窗口(0,0)-(1708,960)
 PASS  1366x768 个人学情内容可滚动或完整可见  -> 滚动条=True，问题表在窗口内=True
-PASS  1366x768 个人学情截图  -> 67977 字节
+PASS  1366x768 个人学情截图  -> 66779 字节
 PASS  1366x768 教师短追问不超出  -> 1708x960（目标 1708x960）
 PASS  1366x768 followupEvidence 不压住 followupCandidates  -> followupEvidence 底 332 / followupCandidates 顶 402
 PASS  1366x768 followupCandidates 不压住 followupHistory  -> followupCandidates 底 539 / followupHistory 顶 676
 PASS  1366x768 followupHistory 不压住 followupAnswer  -> followupHistory 底 826 / followupAnswer 顶 872
 PASS  1366x768 followupAnswer 不压住 followupCompare  -> followupAnswer 底 959 / followupCompare 顶 1063
 PASS  1366x768 教师短追问内容可滚动或完整可见  -> 滚动条=True，对比表在窗口内=False
-PASS  1366x768 追问截图（顶部）  -> 67209 字节
+PASS  1366x768 追问截图（顶部）  -> 66085 字节
 PASS  1366x768 滚到底后「接受候选」在窗口内  -> 控件(223,851)-(326,896) 窗口(0,0)-(1708,960)
-PASS  1366x768 追问截图（底部）  -> 58420 字节
+PASS  1366x768 追问截图（底部）  -> 57203 字节
 PASS  1366x768 AI 设置不超出  -> 1708x960（目标 1708x960）
 PASS  1366x768 「保存并启用」在窗口内  -> 控件(22,891)-(143,936) 窗口(0,0)-(1708,960)
-PASS  1366x768 AI 设置截图  -> 60058 字节
+PASS  1366x768 AI 设置截图  -> 59182 字节
 PASS  1366x768 正常关闭程序
 
 == 二、1920x1080（逻辑 1920×1080，等效缩放 125%，物理 2400×1350，QT_SCALE_FACTOR=1.0000） ==
@@ -53,19 +53,19 @@ PASS  1920x1080 个人学情不超出  -> 2400x1350（目标 2400x1350）
 PASS  1920x1080 「保存修改」 在窗口内  -> 控件(298,1275)-(400,1320) 窗口(0,0)-(2400,1350)
 PASS  1920x1080 「追问这个问题」 在窗口内  -> 控件(413,1275)-(548,1320) 窗口(0,0)-(2400,1350)
 PASS  1920x1080 个人学情内容可滚动或完整可见  -> 滚动条=False，问题表在窗口内=True
-PASS  1920x1080 个人学情截图  -> 75388 字节
+PASS  1920x1080 个人学情截图  -> 73969 字节
 PASS  1920x1080 教师短追问不超出  -> 2400x1350（目标 2400x1350）
 PASS  1920x1080 followupEvidence 不压住 followupCandidates  -> followupEvidence 底 341 / followupCandidates 顶 411
 PASS  1920x1080 followupCandidates 不压住 followupHistory  -> followupCandidates 底 548 / followupHistory 顶 695
 PASS  1920x1080 followupHistory 不压住 followupAnswer  -> followupHistory 底 845 / followupAnswer 顶 896
 PASS  1920x1080 followupAnswer 不压住 followupCompare  -> followupAnswer 底 983 / followupCompare 顶 1091
 PASS  1920x1080 教师短追问内容可滚动或完整可见  -> 滚动条=False，对比表在窗口内=True
-PASS  1920x1080 追问截图（顶部）  -> 91380 字节
+PASS  1920x1080 追问截图（顶部）  -> 90045 字节
 PASS  1920x1080 滚到底后「接受候选」在窗口内  -> 控件(223,1241)-(326,1286) 窗口(0,0)-(2400,1350)
-PASS  1920x1080 追问截图（底部）  -> 91380 字节
+PASS  1920x1080 追问截图（底部）  -> 90045 字节
 PASS  1920x1080 AI 设置不超出  -> 2400x1350（目标 2400x1350）
 PASS  1920x1080 「保存并启用」在窗口内  -> 控件(22,1281)-(143,1326) 窗口(0,0)-(2400,1350)
-PASS  1920x1080 AI 设置截图  -> 67197 字节
+PASS  1920x1080 AI 设置截图  -> 66217 字节
 PASS  1920x1080 正常关闭程序
 
 == 二、1366x768-125pct（逻辑 1093×614，等效缩放 125%，物理 1366×768，QT_SCALE_FACTOR=1.0000） ==
@@ -80,19 +80,19 @@ PASS  1366x768-125pct 个人学情不超出  -> 1366x768（目标 1366x768）
 PASS  1366x768-125pct 「保存修改」 在窗口内  -> 控件(298,693)-(400,738) 窗口(0,0)-(1366,768)
 PASS  1366x768-125pct 「追问这个问题」 在窗口内  -> 控件(413,693)-(548,738) 窗口(0,0)-(1366,768)
 PASS  1366x768-125pct 个人学情内容可滚动或完整可见  -> 滚动条=True，问题表在窗口内=True
-PASS  1366x768-125pct 个人学情截图  -> 59454 字节
+PASS  1366x768-125pct 个人学情截图  -> 58397 字节
 PASS  1366x768-125pct 教师短追问不超出  -> 1366x768（目标 1366x768）
 PASS  1366x768-125pct followupEvidence 不压住 followupCandidates  -> followupEvidence 底 332 / followupCandidates 顶 402
 PASS  1366x768-125pct followupCandidates 不压住 followupHistory  -> followupCandidates 底 539 / followupHistory 顶 676
 PASS  1366x768-125pct followupHistory 不压住 followupAnswer  -> followupHistory 底 826 / followupAnswer 顶 872
 PASS  1366x768-125pct followupAnswer 不压住 followupCompare  -> followupAnswer 底 959 / followupCompare 顶 1063
 PASS  1366x768-125pct 教师短追问内容可滚动或完整可见  -> 滚动条=True，对比表在窗口内=False
-PASS  1366x768-125pct 追问截图（顶部）  -> 58718 字节
+PASS  1366x768-125pct 追问截图（顶部）  -> 57612 字节
 PASS  1366x768-125pct 滚到底后「接受候选」在窗口内  -> 控件(223,660)-(326,705) 窗口(0,0)-(1366,768)
-PASS  1366x768-125pct 追问截图（底部）  -> 44964 字节
+PASS  1366x768-125pct 追问截图（底部）  -> 43831 字节
 PASS  1366x768-125pct AI 设置不超出  -> 1366x768（目标 1366x768）
 PASS  1366x768-125pct 「保存并启用」在窗口内  -> 控件(22,700)-(143,745) 窗口(0,0)-(1366,768)
-PASS  1366x768-125pct AI 设置截图  -> 50708 字节
+PASS  1366x768-125pct AI 设置截图  -> 50031 字节
 PASS  1366x768-125pct 正常关闭程序
 
 == 三、收尾 ==

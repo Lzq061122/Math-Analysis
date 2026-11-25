@@ -1,4 +1,4 @@
-时间：2026-11-25T22:27:05+08:00
+时间：2026-11-25T22:44:44+08:00
 命令：python.exe tests\verify_ai_146_exe.py
 目录：E:\Agent\小挑
 环境：Python 3.12.10 / Windows-11-10.0.26300-SP0
@@ -6,7 +6,7 @@
 == 一、1.8.1 交付包与 EXE
 PASS 1.8.1 桌面 ZIP 存在 ｜ E:\Agent\小挑\build\程序包\数智伴学-1.8.1.zip
 ZIP：46003273 字节，SHA-256 6FAB7CF8507ECE8B5F5A4F9C24A68BCF72D79D6941575A73746E016DB99BF365
-PASS 从 1.8.1 ZIP 解压出 EXE ｜ E:\Agent\小挑\tests\.tmp-test\exe-146-616825\解压件\数智伴学\数智伴学.exe
+PASS 从 1.8.1 ZIP 解压出 EXE ｜ E:\Agent\小挑\tests\.tmp-test\exe-146-617884\解压件\数智伴学\数智伴学.exe
 EXE：2591095 字节，SHA-256 7C6C4F2F02F732538446AA00C2EE20CAAC66CF9712A10FC825F742D1A4C4C822
 
 == 二、首次启动默认模拟，注册并建班/学生
@@ -24,26 +24,26 @@ PASS 分析方式选中 Go
 PASS Go 页出现图片模型下拉
 PASS 保存后设置窗口不自动关闭
 PASS 保存后状态为已配置但未验证 ｜ 当前：OpenCode Go（订阅），已配置，尚未验证。
-PASS 界面显示 Go 服务名 ｜ 服务：OpenCode Go（订阅） / 基底地址：http://127.0.0.1:61289 / 完整请求地址：http://127.0.0.1:61289/messages / 模型：qwen3.8-max / 密钥：本次登录已填写 / 测试地址：htt
-PASS 界面显示完整请求地址 ｜ 服务：OpenCode Go（订阅） / 基底地址：http://127.0.0.1:61289 / 完整请求地址：http://127.0.0.1:61289/messages / 模型：qwen3.8-max / 密钥：本次登录已填写 / 测试地址：http://127.0.0.1:61289（仅自动化测试）
-PASS Go 页标明本机测试地址 ｜ 服务：OpenCode Go（订阅） / 基底地址：http://127.0.0.1:61289 / 完整请求地址：http://127.0.0.1:61289/messages / 模型：qwen3.8-max / 密钥：本次登录已填写 / 测试地址：http://127.0.0.1:61289（仅自动化测试）
-PASS 界面不出现旧 Console 地址 ｜ 服务：OpenCode Go（订阅） / 基底地址：http://127.0.0.1:61289 / 完整请求地址：http://127.0.0.1:61289/messages / 模型：qwen3.8-max / 密钥：本次登录已填写 / 测试地址：http://127.0.0.1:61289（仅自动化测试）
+PASS 界面显示 Go 服务名 ｜ 服务：OpenCode Go（订阅） / 基底地址：http://127.0.0.1:64916 / 完整请求地址：http://127.0.0.1:64916/messages / 模型：qwen3.8-max / 密钥：本次登录已填写 / 测试地址：htt
+PASS 界面显示完整请求地址 ｜ 服务：OpenCode Go（订阅） / 基底地址：http://127.0.0.1:64916 / 完整请求地址：http://127.0.0.1:64916/messages / 模型：qwen3.8-max / 密钥：本次登录已填写 / 测试地址：http://127.0.0.1:64916（仅自动化测试）
+PASS Go 页标明本机测试地址 ｜ 服务：OpenCode Go（订阅） / 基底地址：http://127.0.0.1:64916 / 完整请求地址：http://127.0.0.1:64916/messages / 模型：qwen3.8-max / 密钥：本次登录已填写 / 测试地址：http://127.0.0.1:64916（仅自动化测试）
+PASS 界面不出现旧 Console 地址 ｜ 服务：OpenCode Go（订阅） / 基底地址：http://127.0.0.1:64916 / 完整请求地址：http://127.0.0.1:64916/messages / 模型：qwen3.8-max / 密钥：本次登录已填写 / 测试地址：http://127.0.0.1:64916（仅自动化测试）
 PASS 保存不触发云端请求 ｜ 0
 
 == 四、自制题图试分析（本地桩，图片实际发送）
-PASS 试分析显示 Go 服务名 ｜ 服务：OpenCode Go（订阅） / 基底地址：http://127.0.0.1:61289 / 完整请求地址：http://127.0.0.1:61289/messages / 模型：qwen3.8-max / 模式：真实云端调用 / 测试地址：http
-PASS 试分析显示 /messages 地址 ｜ 服务：OpenCode Go（订阅） / 基底地址：http://127.0.0.1:61289 / 完整请求地址：http://127.0.0.1:61289/messages / 模型：qwen3.8-max / 模式：真实云端调用 / 测试地址：http://127.0.0.1:61289（仅自动化测试）
-PASS 试分析题图已带入 ｜ E:\Agent\小挑\tests\.tmp-test\exe-146-616825\题图\自制题图-解方程.png
-PASS 试分析成功 ｜ Go 试分析成功（图片已发送）；耗时 61 毫秒；prompt 1200 / completion 180 / total 1380；计费来源：go；费用：$0；额度计入：$0.00348
-PASS 标明 Go 计费来源 ｜ Go 试分析成功（图片已发送）；耗时 61 毫秒；prompt 1200 / completion 180 / total 1380；计费来源：go；费用：$0；额度计入：$0.00348
-PASS 标明费用为 0 ｜ Go 试分析成功（图片已发送）；耗时 61 毫秒；prompt 1200 / completion 180 / total 1380；计费来源：go；费用：$0；额度计入：$0.00348
-PASS 标明额度计入 ｜ Go 试分析成功（图片已发送）；耗时 61 毫秒；prompt 1200 / completion 180 / total 1380；计费来源：go；费用：$0；额度计入：$0.00348
-PASS 试分析结果含结构化建议 ｜ 服务：OpenCode Go（订阅） / 请求地址：http://127.0.0.1:61289/messages / 模型：qwen3.8-max /  / 【题目内容】 / 解方程：3(x-2)=2x+5 /  / 【解题过
+PASS 试分析显示 Go 服务名 ｜ 服务：OpenCode Go（订阅） / 基底地址：http://127.0.0.1:64916 / 完整请求地址：http://127.0.0.1:64916/messages / 模型：qwen3.8-max / 模式：真实云端调用 / 测试地址：http
+PASS 试分析显示 /messages 地址 ｜ 服务：OpenCode Go（订阅） / 基底地址：http://127.0.0.1:64916 / 完整请求地址：http://127.0.0.1:64916/messages / 模型：qwen3.8-max / 模式：真实云端调用 / 测试地址：http://127.0.0.1:64916（仅自动化测试）
+PASS 试分析题图已带入 ｜ E:\Agent\小挑\tests\.tmp-test\exe-146-617884\题图\自制题图-解方程.png
+PASS 试分析成功 ｜ Go 试分析成功（图片已发送）；耗时 63 毫秒；prompt 1200 / completion 180 / total 1380；计费来源：go；费用：$0；额度计入：$0.00348
+PASS 标明 Go 计费来源 ｜ Go 试分析成功（图片已发送）；耗时 63 毫秒；prompt 1200 / completion 180 / total 1380；计费来源：go；费用：$0；额度计入：$0.00348
+PASS 标明费用为 0 ｜ Go 试分析成功（图片已发送）；耗时 63 毫秒；prompt 1200 / completion 180 / total 1380；计费来源：go；费用：$0；额度计入：$0.00348
+PASS 标明额度计入 ｜ Go 试分析成功（图片已发送）；耗时 63 毫秒；prompt 1200 / completion 180 / total 1380；计费来源：go；费用：$0；额度计入：$0.00348
+PASS 试分析结果含结构化建议 ｜ 服务：OpenCode Go（订阅） / 请求地址：http://127.0.0.1:64916/messages / 模型：qwen3.8-max /  / 【题目内容】 / 解方程：3(x-2)=2x+5 /  / 【解题过
 PASS 试分析确实发出一次请求 ｜ 1
 PASS 请求走 /messages ｜ /messages
-PASS 请求带 Go 会话标识 ｜ math-mistakes-desktop-1.8.1-db2f220b3a724a1e99bb1dc0248d7287
+PASS 请求带 Go 会话标识 ｜ math-mistakes-desktop-1.8.1-e877361b7dfc492b8c3f4503bc8ae04c
 PASS 请求带真实软件 UA ｜ math-mistakes-desktop/1.8.1
-PASS 请求实际包含图片 ｜ {'model': 'qwen3.8-max', 'has_image': True, 'max_tokens': 32000, 'text': '这是一张不含学生身份信息的试分析题图。\n请输出以下 JSON（字段名固定，列表最多 6 条）：\n{\n  "question_text": "识别出的题目，保留关键数学式",\n  "solution_text": "识别出的学生解题过程，按行保留；看不清就写已看清的部分",\n  "knowledge_points": ["从下列知识点中选 1-3 个"],\n  "error_type": "从下列错误类型中选 1 个；判断不出就留空字符串",\n  "observed_errors": ["照片上能直接看到的具体错误及位置，例如：第 2 行移项后 -3 写成 3"],\n  "possible_causes": "可能原因，用推测语气；多条用分号隔开；判断不出写「暂不确定」",\n  "advice_text": "针对这道题或这位学生的教学/学习建议",\n  "insufficient": false,\n  "insufficient_reason": "信息不足时写明缺什么；否则空字符串",\n  "likely_correct": false\n}\n知识点：一元一次方程、一元二次方程、分式运算、整式与因式分解、不等式、函数与图象、几何证明、圆、面积与周长、统计与概率\n错误类型：计算错误、符号错误、概念混淆、审题遗漏、步骤缺失、表达不规范、单位/格式、其他\n\n老师已填写的题目（可能为空）：\n（空）\n老师已填写的解题过程（可能为空）：\n（空）', 'followup': '', 'time': '2026-11-25T22:28:16+08:00', 'path': '/messages', 'status': 200, 'session': 'math-mistakes-desktop-1.8.1-db2f220b3a724a1e99bb1dc0248d7287', 'user_agent': 'math-mistakes-desktop/1.8.1', 'authorization': True, 'bytes': 52446, 'billing_source': 'go', 'cost': 0, 'allowance': 0.00348, 'kind': 'vision'}
+PASS 请求实际包含图片 ｜ {'model': 'qwen3.8-max', 'has_image': True, 'max_tokens': 32000, 'text': '这是一张不含学生身份信息的试分析题图。\n请输出以下 JSON（字段名固定，列表最多 6 条）：\n{\n  "question_text": "识别出的题目，保留关键数学式",\n  "solution_text": "识别出的学生解题过程，按行保留；看不清就写已看清的部分",\n  "knowledge_points": ["从下列知识点中选 1-3 个"],\n  "error_type": "从下列错误类型中选 1 个；判断不出就留空字符串",\n  "observed_errors": ["照片上能直接看到的具体错误及位置，例如：第 2 行移项后 -3 写成 3"],\n  "possible_causes": "可能原因，用推测语气；多条用分号隔开；判断不出写「暂不确定」",\n  "advice_text": "针对这道题或这位学生的教学/学习建议",\n  "insufficient": false,\n  "insufficient_reason": "信息不足时写明缺什么；否则空字符串",\n  "likely_correct": false\n}\n知识点：一元一次方程、一元二次方程、分式运算、整式与因式分解、不等式、函数与图象、几何证明、圆、面积与周长、统计与概率\n错误类型：计算错误、符号错误、概念混淆、审题遗漏、步骤缺失、表达不规范、单位/格式、其他\n\n老师已填写的题目（可能为空）：\n（空）\n老师已填写的解题过程（可能为空）：\n（空）', 'followup': '', 'time': '2026-11-25T22:45:55+08:00', 'path': '/messages', 'status': 200, 'session': 'math-mistakes-desktop-1.8.1-e877361b7dfc492b8c3f4503bc8ae04c', 'user_agent': 'math-mistakes-desktop/1.8.1', 'authorization': True, 'bytes': 52446, 'billing_source': 'go', 'cost': 0, 'allowance': 0.00348, 'kind': 'vision'}
 PASS 请求文字不含学生姓名 ｜ 未出现学生姓名
 
 == 四之二、自定义 AI 服务：填写服务名/地址/模型/密钥并试分析
@@ -53,25 +53,25 @@ PASS 自定义页出现接口地址输入
 PASS 自定义页出现模型输入
 [步骤] 填写自定义服务配置
 [步骤] 自定义服务配置已填写
-PASS 自定义页显示完整请求地址 ｜ 完整请求地址：http://127.0.0.1:61289/custom/v1/chat/completions
-PASS 自定义页地址去掉了重复斜杠 ｜ 完整请求地址：http://127.0.0.1:61289/custom/v1/chat/completions
+PASS 自定义页显示完整请求地址 ｜ 完整请求地址：http://127.0.0.1:64916/custom/v1/chat/completions
+PASS 自定义页地址去掉了重复斜杠 ｜ 完整请求地址：http://127.0.0.1:64916/custom/v1/chat/completions
 PASS 自定义保存后为已配置未验证 ｜ 当前：测试云，已配置，尚未验证。
-PASS 设置页显示自定义服务名 ｜ 服务：测试云 / 基底地址：http://127.0.0.1:61289/custom/v1 / 完整请求地址：http://127.0.0.1:61289/custom/v1/chat/completions / 模型：vision-x / 密钥：本次登录已填写 / 测试地址：http://127.0.0.1:61289（仅自动化测试）
-PASS 设置页显示自定义完整地址 ｜ 服务：测试云 / 基底地址：http://127.0.0.1:61289/custom/v1 / 完整请求地址：http://127.0.0.1:61289/custom/v1/chat/completions / 模型：vision-x / 密钥：本次登录已填写 / 测试地址：http://127.0.0.1:61289（仅自动化测试） / 说明：自定义服务由服务商决定是否兼容图片输入，保存配置不代表已经连接成功。
-PASS 自定义页说明不代表已接通 ｜ 服务：测试云 / 基底地址：http://127.0.0.1:61289/custom/v1 / 完整请求地址：http://127.0.0.1:61289/custom/v1/chat/completions / 模型：vision-x / 密钥：本次登录已填写 / 测试地址：http://127.0.0.1:61289（仅自动化测试） / 说明：自定义服务由服务商决定是否兼容图片输入，保存配置不代表已经连接成功。
+PASS 设置页显示自定义服务名 ｜ 服务：测试云 / 基底地址：http://127.0.0.1:64916/custom/v1 / 完整请求地址：http://127.0.0.1:64916/custom/v1/chat/completions / 模型：vision-x / 密钥：本次登录已填写 / 测试地址：http://127.0.0.1:64916（仅自动化测试）
+PASS 设置页显示自定义完整地址 ｜ 服务：测试云 / 基底地址：http://127.0.0.1:64916/custom/v1 / 完整请求地址：http://127.0.0.1:64916/custom/v1/chat/completions / 模型：vision-x / 密钥：本次登录已填写 / 测试地址：http://127.0.0.1:64916（仅自动化测试） / 说明：自定义服务由服务商决定是否兼容图片输入，保存配置不代表已经连接成功。
+PASS 自定义页说明不代表已接通 ｜ 服务：测试云 / 基底地址：http://127.0.0.1:64916/custom/v1 / 完整请求地址：http://127.0.0.1:64916/custom/v1/chat/completions / 模型：vision-x / 密钥：本次登录已填写 / 测试地址：http://127.0.0.1:64916（仅自动化测试） / 说明：自定义服务由服务商决定是否兼容图片输入，保存配置不代表已经连接成功。
 PASS 自定义保存不触发请求 ｜ 1
-PASS 自定义试分析显示服务名 ｜ 服务：测试云 / 基底地址：http://127.0.0.1:61289/custom/v1 / 完整请求地址：http://127.0.0.1:61289/custom/v1/chat/completions / 模型：vision-x / 模式：真实云
-PASS 自定义试分析显示完整地址 ｜ 服务：测试云 / 基底地址：http://127.0.0.1:61289/custom/v1 / 完整请求地址：http://127.0.0.1:61289/custom/v1/chat/completions / 模型：vision-x / 模式：真实云端调用 / 测试地址：http://127.0.0.1:61289（仅自动化测试）
+PASS 自定义试分析显示服务名 ｜ 服务：测试云 / 基底地址：http://127.0.0.1:64916/custom/v1 / 完整请求地址：http://127.0.0.1:64916/custom/v1/chat/completions / 模型：vision-x / 模式：真实云
+PASS 自定义试分析显示完整地址 ｜ 服务：测试云 / 基底地址：http://127.0.0.1:64916/custom/v1 / 完整请求地址：http://127.0.0.1:64916/custom/v1/chat/completions / 模型：vision-x / 模式：真实云端调用 / 测试地址：http://127.0.0.1:64916（仅自动化测试）
 PASS 自定义试分析未勾选被拦下 ｜ 请先勾选同意，才会发送给云端。
 PASS 自定义试分析未勾选不发请求 ｜ 0
-PASS 自定义试分析成功 ｜ 自定义服务试分析成功（图片已发送）；耗时 0 毫秒；prompt 1200 / completion 180 / total 1380；计费来源：尚未确认；费用：$0
-PASS 自定义结果不把 Go 计费来源当成自定义服务的 ｜ 自定义服务试分析成功（图片已发送）；耗时 0 毫秒；prompt 1200 / completion 180 / total 1380；计费来源：尚未确认；费用：$0
-PASS 自定义结果不显示额度计入 ｜ 自定义服务试分析成功（图片已发送）；耗时 0 毫秒；prompt 1200 / completion 180 / total 1380；计费来源：尚未确认；费用：$0
-PASS 自定义试分析结果含结构化建议 ｜ 服务：测试云 / 请求地址：http://127.0.0.1:61289/custom/v1/chat/completions / 模型：vision-x /  / 【题目内容】 / 解方程：3(x-2)=2x+5 /  / 【
+PASS 自定义试分析成功 ｜ 自定义服务试分析成功（图片已发送）；耗时 31 毫秒；prompt 1200 / completion 180 / total 1380；计费来源：尚未确认；费用：$0
+PASS 自定义结果不把 Go 计费来源当成自定义服务的 ｜ 自定义服务试分析成功（图片已发送）；耗时 31 毫秒；prompt 1200 / completion 180 / total 1380；计费来源：尚未确认；费用：$0
+PASS 自定义结果不显示额度计入 ｜ 自定义服务试分析成功（图片已发送）；耗时 31 毫秒；prompt 1200 / completion 180 / total 1380；计费来源：尚未确认；费用：$0
+PASS 自定义试分析结果含结构化建议 ｜ 服务：测试云 / 请求地址：http://127.0.0.1:64916/custom/v1/chat/completions / 模型：vision-x /  / 【题目内容】 / 解方程：3(x-2)=2x+5 /  / 【
 PASS 自定义试分析走 chat 路径 ｜ /custom/v1/chat/completions
 PASS 自定义请求不带 Go 会话标识
 PASS 自定义请求带 1.8.1 UA ｜ math-mistakes-desktop/1.8.1
-PASS 自定义请求实际包含图片 ｜ {'model': 'vision-x', 'has_image': True, 'max_tokens': 32000, 'text': '你是一名谨慎的初中数学老师助理，只根据照片内容分析学生的错题。\n必须遵守：\n1. 只写照片里能看清的内容，看不清、残缺或模糊就如实说信息不足，不要补全题目或编造步骤。\n2. 把「观察到的错误」和「推测的原因」严格分开：观察要指向具体步骤或式子；原因用「可能/疑似」，不得下结论说学生粗心、不认真或没掌握。\n3. 如果学生的解答看起来正确，或你无法判断有错，把 likely_correct 设为 true，不要强行判错。\n4. 只输出一个 JSON 对象，不要输出解释文字、Markdown 代码块或多余字段。\n5. 不要输出学生姓名、班级、学校等身份信息。\n这是一张不含学生身份信息的试分析题图。\n请输出以下 JSON（字段名固定，列表最多 6 条）：\n{\n  "question_text": "识别出的题目，保留关键数学式",\n  "solution_text": "识别出的学生解题过程，按行保留；看不清就写已看清的部分",\n  "knowledge_points": ["从下列知识点中选 1-3 个"],\n  "error_type": "从下列错误类型中选 1 个；判断不出就留空字符串",\n  "observed_errors": ["照片上能直接看到的具体错误及位置，例如：第 2 行移项后 -3 写成 3"],\n  "possible_causes": "可能原因，用推测语气；多条用分号隔开；判断不出写「暂不确定」",\n  "advice_text": "针对这道题或这位学生的教学/学习建议",\n  "insufficient": false,\n  "insufficient_reason": "信息不足时写明缺什么；否则空字符串",\n  "likely_correct": false\n}\n知识点：一元一次方程、一元二次方程、分式运算、整式与因式分解、不等式、函数与图象、几何证明、圆、面积与周长、统计与概率\n错误类型：计算错误、符号错误、概念混淆、审题遗漏、步骤缺失、表达不规范、单位/格式、其他\n\n老师已填写的题目（可能为空）：\n（空）\n老师已填写的解题过程（可能为空）：\n（空）', 'followup': '', 'time': '2026-11-25T22:28:58+08:00', 'path': '/custom/v1/chat/completions', 'status': 200, 'session': '', 'user_agent': 'math-mistakes-desktop/1.8.1', 'authorization': True, 'bytes': 52447, 'billing_source': 'go', 'cost': 0, 'allowance': 0.00348, 'kind': 'vision'}
+PASS 自定义请求实际包含图片 ｜ {'model': 'vision-x', 'has_image': True, 'max_tokens': 32000, 'text': '你是一名谨慎的初中数学老师助理，只根据照片内容分析学生的错题。\n必须遵守：\n1. 只写照片里能看清的内容，看不清、残缺或模糊就如实说信息不足，不要补全题目或编造步骤。\n2. 把「观察到的错误」和「推测的原因」严格分开：观察要指向具体步骤或式子；原因用「可能/疑似」，不得下结论说学生粗心、不认真或没掌握。\n3. 如果学生的解答看起来正确，或你无法判断有错，把 likely_correct 设为 true，不要强行判错。\n4. 只输出一个 JSON 对象，不要输出解释文字、Markdown 代码块或多余字段。\n5. 不要输出学生姓名、班级、学校等身份信息。\n这是一张不含学生身份信息的试分析题图。\n请输出以下 JSON（字段名固定，列表最多 6 条）：\n{\n  "question_text": "识别出的题目，保留关键数学式",\n  "solution_text": "识别出的学生解题过程，按行保留；看不清就写已看清的部分",\n  "knowledge_points": ["从下列知识点中选 1-3 个"],\n  "error_type": "从下列错误类型中选 1 个；判断不出就留空字符串",\n  "observed_errors": ["照片上能直接看到的具体错误及位置，例如：第 2 行移项后 -3 写成 3"],\n  "possible_causes": "可能原因，用推测语气；多条用分号隔开；判断不出写「暂不确定」",\n  "advice_text": "针对这道题或这位学生的教学/学习建议",\n  "insufficient": false,\n  "insufficient_reason": "信息不足时写明缺什么；否则空字符串",\n  "likely_correct": false\n}\n知识点：一元一次方程、一元二次方程、分式运算、整式与因式分解、不等式、函数与图象、几何证明、圆、面积与周长、统计与概率\n错误类型：计算错误、符号错误、概念混淆、审题遗漏、步骤缺失、表达不规范、单位/格式、其他\n\n老师已填写的题目（可能为空）：\n（空）\n老师已填写的解题过程（可能为空）：\n（空）', 'followup': '', 'time': '2026-11-25T22:46:35+08:00', 'path': '/custom/v1/chat/completions', 'status': 200, 'session': '', 'user_agent': 'math-mistakes-desktop/1.8.1', 'authorization': True, 'bytes': 52447, 'billing_source': 'go', 'cost': 0, 'allowance': 0.00348, 'kind': 'vision'}
 PASS 自定义请求不含学生姓名 ｜ 未出现学生姓名
 
 == 四之三、用量缺失与 0 的显示（同一 EXE、同一下拉配置）
@@ -80,8 +80,8 @@ PASS EXE 部分用量缺失时费用写尚未确认 ｜ 自定义服务试分析
 PASS EXE 部分用量缺失时不显示 None ｜ 自定义服务试分析成功（图片已发送）；耗时 0 毫秒；prompt 1200 / completion 尚未确认 / total 尚未确认；计费来源：尚未确认；费用：尚未确认
 PASS EXE 用量为 0 时正常显示 0 ｜ 自定义服务试分析成功（图片已发送）；耗时 0 毫秒；prompt 0 / completion 0 / total 0；计费来源：尚未确认；费用：$0
 PASS EXE 费用为 0 时显示 $0 ｜ 自定义服务试分析成功（图片已发送）；耗时 0 毫秒；prompt 0 / completion 0 / total 0；计费来源：尚未确认；费用：$0
-PASS EXE 服务未返回用量时写尚未确认 ｜ 自定义服务试分析成功（图片已发送）；耗时 0 毫秒；用量：尚未确认（服务没有返回用量、费用和计费来源）
-PASS EXE 服务未返回用量时不显示 None ｜ 自定义服务试分析成功（图片已发送）；耗时 0 毫秒；用量：尚未确认（服务没有返回用量、费用和计费来源）
+PASS EXE 服务未返回用量时写尚未确认 ｜ 自定义服务试分析成功（图片已发送）；耗时 16 毫秒；用量：尚未确认（服务没有返回用量、费用和计费来源）
+PASS EXE 服务未返回用量时不显示 None ｜ 自定义服务试分析成功（图片已发送）；耗时 16 毫秒；用量：尚未确认（服务没有返回用量、费用和计费来源）
 
 == 五、录入错题、正式分析、老师修改并确认
 PASS 正式分析前弹出确认框
@@ -102,8 +102,8 @@ PASS 自定义请求都不带 Go 会话标识 ｜ ['', '', '', '', '', '']
 PASS 重开后记录仍为已确认
 PASS 重开后分析内容仍在 ｜ 日期：2026-11-25 / 来源：作业 / 状态：已确认 / 分析来源：真实 AI 建议（自定义服务） /  / 知识点 / 一元一次方程 /  / 错误类型 / 符号错误 /  / 题目内容 / 解方程：3(x-2)=2x+5 /  / 解题过程 / 3x-6=2x+5 / 3x+2x=5+6 / 5x=11 / x=11/5 /  / 学生错误表现 / - 老师核对：去括号时 2 没有乘 −3
 PASS 重开后老师修改仍在
-PASS 重开后仍显示自定义服务名 ｜ 真实分析：测试云 / 请求地址 http://127.0.0.1:61289/custom/v1/chat/completions · 模型 vision-x · 密钥未配置。已配置不等于调用成功；密钥或地址未配置完整时点击分析会停止并提示，不
-PASS 重开后密钥已清除 ｜ 真实分析：测试云 / 请求地址 http://127.0.0.1:61289/custom/v1/chat/completions · 模型 vision-x · 密钥未配置。已配置不等于调用成功；密钥或地址未配置完整时点击分析会停止并提示，不会改用模拟。每次发送前都会再确认。
+PASS 重开后仍显示自定义服务名 ｜ 真实分析：测试云 / 请求地址 http://127.0.0.1:64916/custom/v1/chat/completions · 模型 vision-x · 密钥未配置。已配置不等于调用成功；密钥或地址未配置完整时点击分析会停止并提示，不
+PASS 重开后密钥已清除 ｜ 真实分析：测试云 / 请求地址 http://127.0.0.1:64916/custom/v1/chat/completions · 模型 vision-x · 密钥未配置。已配置不等于调用成功；密钥或地址未配置完整时点击分析会停止并提示，不会改用模拟。每次发送前都会再确认。
 
 == 七、数据库与密钥
 PASS 数据库保存了自定义模式 ｜ ('custom',)
@@ -120,4 +120,3 @@ PASS 八.6 开启后同一条业务路径不再被闸门拦（失败原因不再
 
 合计 89 项，通过 89 项，失败 0 项
 退出码：0
-��：0
