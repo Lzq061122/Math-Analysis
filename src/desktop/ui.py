@@ -1721,11 +1721,16 @@ class AnswerListWindow(QMainWindow):
                 return
         self.status.setText("正在分析这条作答…")
         self.analyse_button.setEnabled(False)
-        self.runner.run(lambda: self.service.analyse_answer(self.class_id, item["id"], consent=True),
-                        self._analysed, self._analyse_failed)
+        self.runner.run(
+            service_call(lambda: self.service.analyse_answer(self.class_id, item["id"], consent=True)),
+            self._analysed, self._analyse_failed)
 
-    def _analysed(self, result):
+    def _analysed(self, outcome):
         self._sync_buttons()
+        if not outcome.get("ok"):
+            self._analyse_failed(outcome)
+            return
+        result = outcome.get("value") or {}
         if not result.get("ok"):
             self._flash = ""
             self.status.setText("分析没有完成：%s" % (result.get("error") or "请稍后重试。"))
@@ -1736,10 +1741,17 @@ class AnswerListWindow(QMainWindow):
         self._open_dialog(review)
         self.reload()
 
-    def _analyse_failed(self, message):
+    def _analyse_failed(self, outcome):
         self._sync_buttons()
         self._flash = ""
-        self.status.setText("分析没有完成：%s" % message)
+        if isinstance(outcome, dict):
+            status = outcome.get("status") or ""
+            code = outcome.get("code") or ""
+            message = outcome.get("message") or "请稍后重试。"
+            self.status.setText("分析没有完成（%s%s）：%s"
+                                % (status or "—", (" " + code) if code else "", message))
+        else:
+            self.status.setText("分析没有完成：%s" % outcome)
 
     def open_review(self):
         item = self._selected()
@@ -4267,6 +4279,36 @@ class AISettingsDialog(QDialog):
         self.sources.setObjectName("aiSettingsSources")
         self.sources.setWordWrap(True)
         self.sources.setStyleSheet("color: #666;")
+
+        # R1-14：个体数据外发开关（默认关闭）。关着的时候，作答原文/追问原话/错因判断
+        # 一律不外发；开启后每次真实外发由服务端写一条审计。桌面端是唯一真能外发的客户端。
+        self.individual_box = QWidget()
+        individual_layout = QVBoxLayout(self.individual_box)
+        individual_layout.setContentsMargins(0, 6, 0, 6)
+        individual_layout.setSpacing(4)
+        individual_title = QLabel("个体数据外发（默认关闭）")
+        individual_title.setStyleSheet("font-weight: 600;")
+        self.individual_check = QCheckBox("允许把学生作答原文、追问原话和错因判断发送给 AI 服务")
+        self.individual_check.setObjectName("aiIndividualCheck")
+        self.individual_state = QLabel("")
+        self.individual_state.setObjectName("aiIndividualState")
+        self.individual_state.setWordWrap(True)
+        self.individual_state.setStyleSheet("color: #8a5a00;")
+        self.individual_note = QLabel("")
+        self.individual_note.setObjectName("aiIndividualNote")
+        self.individual_note.setWordWrap(True)
+        self.individual_note.setStyleSheet("color: #666;")
+        self.individual_save = QPushButton("保存开关")
+        self.individual_save.setObjectName("aiIndividualSave")
+        self.individual_save.clicked.connect(self._save_individual)
+        individual_row = QHBoxLayout()
+        individual_row.addWidget(self.individual_save)
+        individual_row.addStretch(1)
+        individual_layout.addWidget(individual_title)
+        individual_layout.addWidget(self.individual_check)
+        individual_layout.addWidget(self.individual_state)
+        individual_layout.addWidget(self.individual_note)
+        individual_layout.addLayout(individual_row)
         self.note = QLabel("")
         self.note.setObjectName("aiSettingsNote")
         self.note.setWordWrap(True)
@@ -4303,6 +4345,7 @@ class AISettingsDialog(QDialog):
         body_layout.setContentsMargins(0, 0, 0, 0)
         body_layout.addWidget(self.pages)
         body_layout.addWidget(self.key_box)
+        body_layout.addWidget(self.individual_box)
         body_layout.addWidget(self.sources)
         body_layout.addWidget(self.note)
         body_layout.addStretch(1)
@@ -4344,6 +4387,56 @@ class AISettingsDialog(QDialog):
         self._mode_changed()
         self._custom_preview()
         self._render()
+        self._load_individual()
+
+    def _load_individual(self):
+        """读账号级「个体数据外发」开关；老版本 service 没有这个方法时如实说明，不假装已关。"""
+        reader = getattr(self.service, "ai_individual_state", None)
+        if reader is None:
+            self.individual_check.setChecked(False)
+            self.individual_check.setEnabled(False)
+            self.individual_save.setEnabled(False)
+            self.individual_state.setText("当前版本未提供「个体数据外发」开关。")
+            self.individual_note.setText("")
+            return
+        try:
+            data = reader() or {}
+        except ApiError as exc:
+            self.individual_state.setText(exc.message)
+            return
+        allowed = bool(data.get("ai_individual_allowed"))
+        egress = bool(data.get("ai_egress_available"))
+        self.individual_check.blockSignals(True)
+        self.individual_check.setChecked(allowed)
+        self.individual_check.blockSignals(False)
+        self.individual_check.setEnabled(True)
+        self.individual_save.setEnabled(True)
+        self.individual_state.setText(
+            ("当前：已允许个体数据外发；%s" if allowed else "当前：默认关闭，个体数据不会外发；%s")
+            % ("本机可以外发（每次都会写审计）" if egress
+               else "本机不能外发（网页端只记录偏好）"))
+        self.individual_note.setText(data.get("note") or "")
+
+    def _save_individual(self):
+        writer = getattr(self.service, "set_ai_individual", None)
+        if writer is None:
+            self.individual_state.setText("当前版本未提供「个体数据外发」开关。")
+            return False
+        try:
+            data = writer(bool(self.individual_check.isChecked())) or {}
+        except ApiError as exc:
+            self.individual_state.setText(exc.message)
+            return False
+        allowed = bool(data.get("ai_individual_allowed"))
+        self.individual_check.blockSignals(True)
+        self.individual_check.setChecked(allowed)
+        self.individual_check.blockSignals(False)
+        self.individual_state.setText(
+            "已保存：%s；%s" % ("允许个体数据外发" if allowed else "关闭个体数据外发",
+                              "本机可以外发（每次都会写审计）" if data.get("ai_egress_available")
+                              else "本机不能外发（网页端只记录偏好）"))
+        self.individual_note.setText(data.get("note") or "")
+        return True
 
     def _mode_changed(self, *_):
         mode = self.mode_combo.currentData()
@@ -5526,6 +5619,1985 @@ class MistakesWindow(QMainWindow):
         self.closed.emit()
 
 
+# ---------------------------------------------------------------------------
+# 作答核对（R1：与网页端「课前总览 / 单份核对 / 核对记录」同一套口径）
+# ---------------------------------------------------------------------------
+CHECK_ALL_BATCHES = "*all*"
+CHECK_ASK_UNAVAILABLE = "暂无适用追问"
+CHECK_PRESET_NOTE = "预置演示 · 不代表已实现通用定位"
+CHECK_QUEUE_NOTE = "保存后这份作答退出待核对队列，但仍可在「查看核对记录」里按「原因待判断」找回。"
+CHECK_LONG_LINES = 10
+CHECK_SCOPE_NOTE = ("「当前作业」只算最近一次导入的真实批次，「全部批次」把本班每个作业的应交/已核对/待核对"
+                    "并列相加，两者分母不同；具体某一批请直接选批次名，或在下面作业表点那一行。")
+CHECK_CHIP_ON = ("background: #2E6BD6; color: #FFFFFF; border: 1px solid #2E6BD6;"
+                 " border-radius: 9px; padding: 2px 9px;")
+CHECK_CHIP_OFF = ("background: #EDF2FB; color: #1F2328; border: 1px solid #D7DEE7;"
+                  " border-radius: 9px; padding: 2px 9px;")
+CHECK_CHIP_NA = ("background: #EFF0F2; color: #5B6673; border: 1px solid #D7DEE7;"
+                 " border-radius: 9px; padding: 2px 9px;")
+CAUSE_STATE_TEXT = {"undecided": "原因待判断", "decided": "教师已判断", "not_applicable": "无需判断"}
+PROGRESS_TEXT = {"pending": "待核对", "checked": "已核对"}
+CHECK_FILTERS = (("undecided", "原因待判断"), ("decided", "教师已判断"),
+                 ("not_applicable", "无需判断"), ("all", "全部"))
+
+
+def service_call(func):
+    """把一次 service 调用包成「绝不抛出」的结果字典，status/code/message 原样带回界面。
+
+    为什么必须有这一层：桌面端没有 HTTP 层兜异常，业务错误是带状态码的 `ApiError`
+    （400 basis_required / 403 ai_isolation / 409 version_conflict …）。只让任务线程转成一句
+    文字会把状态码和业务码丢掉；更糟的是让异常漏出任务线程会直接把窗口打断。
+    所以：ApiError 取出 status/code/message，其它异常也必须变成一句人话。
+    """
+    def run():
+        try:
+            return {"ok": True, "value": func()}
+        except ApiError as exc:
+            return {"ok": False, "status": exc.status, "code": exc.code or "",
+                    "message": exc.message}
+        except Exception as exc:  # noqa: BLE001 - 兜底：任何异常都要在界面上说出来
+            return {"ok": False, "status": 0, "code": "",
+                    "message": "%s: %s" % (type(exc).__name__, exc)}
+    return run
+
+
+def check_card(title=""):
+    """白底卡片：沿用 theme 的 QFrame#card，与个人学情、教师短追问同一套样式。"""
+    frame = QFrame()
+    frame.setObjectName("card")
+    layout = QVBoxLayout(frame)
+    layout.setContentsMargins(14, 12, 14, 12)
+    layout.setSpacing(8)
+    if title:
+        label = QLabel(title)
+        label.setObjectName("sectionTitle")
+        layout.addWidget(label)
+    return frame, layout
+
+
+def check_text(text="", name="", wrap=True):
+    label = QLabel(text)
+    if name:
+        label.setObjectName(name)
+    label.setWordWrap(wrap)
+    label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+    return label
+
+
+def check_kv(title, value="—"):
+    """一个「小标题 + 大数字」：返回值标签，方便刷新时只改数字。"""
+    box = QVBoxLayout()
+    box.setSpacing(2)
+    key = QLabel(title)
+    key.setObjectName("pageMeta")
+    key.setMinimumWidth(96)
+    val = QLabel(str(value))
+    val.setObjectName("bigValue")
+    val.setTextInteractionFlags(Qt.TextSelectableByMouse)
+    box.addWidget(key)
+    box.addWidget(val)
+    return box, key, val
+
+
+def check_step_html(text, bad, locate):
+    """错步行：下划线 + 文字标记同时出现（不能只靠颜色区分）。"""
+    raw = "" if text is None else str(text)
+    if not bad:
+        return "<span>%s</span>" % html.escape(raw)
+    hint = str((locate or {}).get("hint_text") or "")
+    span = (locate or {}).get("underline") or {}
+    start, end = span.get("start"), span.get("end")
+    if hint and isinstance(start, int) and isinstance(end, int) and raw[start:end] == hint:
+        body = "%s<u>%s</u>%s" % (html.escape(raw[:start]), html.escape(hint), html.escape(raw[end:]))
+    elif hint and hint in raw:
+        at = raw.index(hint)
+        body = "%s<u>%s</u>%s" % (html.escape(raw[:at]), html.escape(hint),
+                                   html.escape(raw[at + len(hint):]))
+    else:
+        body = "<u>%s</u>" % html.escape(raw)
+    return '<span style="color: #C0392B;">%s</span>' % body
+
+
+def check_locate_notice(locate, notice):
+    """定位状态说人话；服务端给了 notice 就以它为准（单一事实来源）。"""
+    locate = locate or {}
+    status = locate.get("status") or ""
+    if status == "first_bad":
+        return "", ""
+    server = str(notice or "").strip()
+    if server:
+        return server, ("info" if status == "correct" else "warn")
+    if status == "correct":
+        return "全程等价：从题干到学生最后一行都没有发现不等价，不标错步。", "info"
+    if status == "missing_steps":
+        steps = locate.get("steps") or {}
+        completion = locate.get("completion") or {}
+        kind = steps.get("kind") or "empty"
+        if kind == "answer_only":
+            sentence = "缺少步骤：学生只写了结论行，无法定位具体错在哪一行，系统不猜。"
+        elif kind in ("unparsable", "unchecked"):
+            sentence = "缺少步骤：写出的过程没能解析成可核对的式子，系统不猜错在哪一行。"
+        elif completion.get("state") == "unfinished":
+            sentence = "解题未完成：有过程但最后一行还不是结果，系统不猜错在哪一行。"
+        elif kind == "empty":
+            sentence = "缺少步骤：这份的步骤栏里没有可核对的过程，系统不猜错在哪一行。"
+        else:
+            sentence = "缺少步骤：这份没有可核对的过程，系统不猜错哪一行。"
+        manual = locate.get("manual_note") or ""
+        return (sentence + (" " + manual if manual else "")), "warn"
+    if status == "missing":
+        note = locate.get("reason_note") or ""
+        return ("缺测：这份作答没有提交可核验的步骤，系统不判对错、也不猜错因。"
+                + (" " + note if note else "")), "warn"
+    if status == "out_of_scope":
+        manual = locate.get("manual_note") or ""
+        return ("超出本轮核验范围：已转人工，原步骤照常完整显示，不标错步。"
+                + (" " + manual if manual else "")), "warn"
+    return "定位结果没有返回，按人工核对处理：原步骤照常显示，不标错步。", "warn"
+
+
+class CheckWindow(QMainWindow):
+    """一个班级的作答核对：课前总览 → 单份核对 → 核对记录。
+
+    与网页端同一套业务口径：原因轴三态、out_of_scope 改判必须有依据、撤回 = 版本置空
+    （回到待核对）、补录/校正带 expected_version、批次三种范围、没有适用追问时明说
+    「暂无适用追问」。界面只经 DesktopService 取数：不写 SQL、不 import 业务模块。
+    """
+
+    closed = Signal()
+
+    def __init__(self, service, class_row, parent=None):
+        super().__init__(parent)
+        self.service = service
+        self.class_row = class_row
+        self.class_id = class_row["id"]
+        self.runner = TaskRunner()
+        self._overview = {}
+        self._detail = {}
+        self._records = {}
+        self._answer_id = None
+        self._batch = ""
+        self._records_batch = ""
+        self._records_state = "undecided"
+        self._demo_notice = ""
+        self._answer_flash = ""
+        self._skipped = False
+        self._cause_radios = []
+        self._answer_lines = []
+        self._answer_bad_index = None
+        self._answer_gate_bad = False
+        self._answer_show_all = True
+        self._receipt = {}
+
+        self.setObjectName("checkWindow")
+        self.setWindowTitle("数智伴学 · 作答核对")
+        fit_to_screen(self, 1200, 820)
+        self.setMinimumSize(900, 560)
+
+        central = QWidget()
+        self.setCentralWidget(central)
+        layout = QVBoxLayout(central)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(10)
+        layout.addLayout(self._build_top())
+        self.stack = QStackedWidget()
+        self.stack.setObjectName("checkStack")
+        self.stack.addWidget(self._build_overview_page())
+        self.stack.addWidget(self._build_answer_page())
+        self.stack.addWidget(self._build_records_page())
+        self.stack.addWidget(self._build_receipt_page())
+        layout.addWidget(self.stack, 1)
+        self.load_overview()
+
+    # ---------------------------------------------------------------- 界面
+    def _build_top(self):
+        heading = QLabel("%s · 作答核对" % (self.class_row.get("name") or "班级"))
+        heading.setObjectName("checkClassName")
+        heading.setStyleSheet("font-size: 20px; font-weight: 600;")
+        self.top_note = check_text("", "checkTopNote")
+        self.top_note.setStyleSheet("color: #5B6673;")
+        self.refresh_button = QPushButton("刷新")
+        self.refresh_button.setObjectName("checkRefresh")
+        self.refresh_button.clicked.connect(self.reload)
+        back = QPushButton("返回班级列表")
+        back.setObjectName("checkBack")
+        back.clicked.connect(self.close)
+        theme.ghost(back)
+        row = QHBoxLayout()
+        row.addWidget(heading)
+        row.addWidget(self.top_note, 1)
+        row.addWidget(self.refresh_button)
+        row.addWidget(back)
+        return row
+
+    def _build_overview_page(self):
+        page = QWidget()
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout.setSpacing(8)
+
+        self.overview_batch_combo = QComboBox()
+        self.overview_batch_combo.setObjectName("checkBatchCombo")
+        self.overview_batch_combo.setMinimumWidth(240)
+        self.overview_batch_combo.currentIndexChanged.connect(self._batch_changed)
+        self.overview_scope = check_text("", "checkBatchScope")
+        self.overview_scope.setStyleSheet("color: #5B6673;")
+        batch_row = QHBoxLayout()
+        batch_row.addWidget(QLabel("看哪个批次："))
+        batch_row.addWidget(self.overview_batch_combo)
+        batch_row.addWidget(self.overview_scope, 1)
+
+        hero, hero_layout = check_card()
+        self.overview_flag = check_text("", "checkStateFlag", wrap=False)
+        self.overview_flag.setStyleSheet(CHECK_CHIP_OFF + " font-weight: 600;")
+        self.overview_assignment = check_text("", "checkAssignment", wrap=False)
+        self.overview_assignment.setStyleSheet("color: #5B6673;")
+        flag_row = QHBoxLayout()
+        flag_row.addWidget(self.overview_flag)
+        flag_row.addStretch(1)
+        flag_row.addWidget(self.overview_assignment)
+        hero_layout.addLayout(flag_row)
+        self.overview_headline = QLabel("")
+        self.overview_headline.setObjectName("checkHeadline")
+        self.overview_headline.setWordWrap(True)
+        self.overview_headline.setStyleSheet("font-size: 17px; font-weight: 600;")
+        hero_layout.addWidget(self.overview_headline)
+        self.overview_detail = check_text("", "checkDetail")
+        self.overview_detail.setStyleSheet("color: #5B6673;")
+        hero_layout.addWidget(self.overview_detail)
+        self.overview_counts_row = QHBoxLayout()
+        self._count_pairs = []
+        for _ in range(4):
+            box, key, value = check_kv("", "0")
+            self.overview_counts_row.addLayout(box)
+            self.overview_counts_row.addStretch(1)
+            self._count_pairs.append((key, value))
+        hero_layout.addLayout(self.overview_counts_row)
+        self.overview_primary = QPushButton("查看待核对作答")
+        self.overview_primary.setObjectName("checkOverviewPrimary")
+        self.overview_primary.clicked.connect(self._overview_primary_clicked)
+        theme.primary(self.overview_primary)
+        self.overview_records_button = QPushButton("查看核对记录")
+        self.overview_records_button.setObjectName("checkOverviewRecords")
+        self.overview_records_button.clicked.connect(self.show_records)
+        actions = QHBoxLayout()
+        actions.addWidget(self.overview_primary)
+        actions.addWidget(self.overview_records_button)
+        actions.addStretch(1)
+        hero_layout.addLayout(actions)
+
+        demo_card, demo_layout = check_card("合成演示数据")
+        demo_note = check_text("演示不需要选文件、配模型或等网络：载入后到下面作业表点「合成演示」那一行即可开始"
+                               "（演示批次单独成一个作业，不会顶替当前的真实作业）。", "checkDemoNote")
+        demo_note.setStyleSheet("color: #5B6673;")
+        demo_layout.addWidget(demo_note)
+        self.demo_notice = check_text("", "checkDemoNotice")
+        self.demo_notice.setStyleSheet("background: #EDF2FB; border: 1px solid #D7DEE7;"
+                                       " border-radius: 8px; padding: 8px;")
+        self.demo_notice.hide()
+        demo_layout.addWidget(self.demo_notice)
+        self.demo_seed_button = QPushButton("载入合成演示数据")
+        self.demo_seed_button.setObjectName("checkDemoSeed")
+        self.demo_seed_button.clicked.connect(lambda: self.run_demo("seed"))
+        self.demo_reset_button = QPushButton("重置合成数据")
+        self.demo_reset_button.setObjectName("checkDemoReset")
+        self.demo_reset_button.clicked.connect(lambda: self.run_demo("reset"))
+        self.demo_feedback = check_text("", "checkDemoFeedback")
+        self.demo_feedback.setStyleSheet("color: #C0392B; font-weight: 600;")
+        self.demo_feedback.hide()
+        demo_actions = QHBoxLayout()
+        demo_actions.addWidget(self.demo_seed_button)
+        demo_actions.addWidget(self.demo_reset_button)
+        demo_actions_hint = check_text("只影响合成数据，真实导入的作答不受影响", "checkDemoHint", wrap=False)
+        demo_actions_hint.setStyleSheet("color: #5B6673; font-size: 11px;")
+        demo_actions.addWidget(demo_actions_hint)
+        demo_actions.addStretch(1)
+        demo_layout.addLayout(demo_actions)
+        demo_layout.addWidget(self.demo_feedback)
+
+        assignment_card, assignment_layout = check_card("作业与待核对作答数量")
+        self.assignment_table = QTableWidget(0, 5)
+        self.assignment_table.setObjectName("checkAssignmentTable")
+        self.assignment_table.setHorizontalHeaderLabels(["作业", "应交", "已核对", "待核对", "当前"])
+        assignment_header = self.assignment_table.horizontalHeader()
+        assignment_header.setSectionResizeMode(0, QHeaderView.Stretch)
+        for column in (1, 2, 3, 4):
+            assignment_header.setSectionResizeMode(column, QHeaderView.ResizeToContents)
+        self.assignment_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.assignment_table.setSelectionMode(QTableWidget.NoSelection)
+        self.assignment_table.setTextElideMode(Qt.ElideRight)
+        self.assignment_table.verticalHeader().setVisible(False)
+        self.assignment_table.setMinimumHeight(110)
+        self.assignment_table.cellClicked.connect(self._assignment_clicked)
+        assignment_layout.addWidget(self.assignment_table)
+        self._assignment_rows = []
+
+        secondary, secondary_layout = check_card("其他入口")
+        self.overview_import_button = QPushButton("导入作答")
+        self.overview_import_button.setObjectName("checkImportAnswers")
+        self.overview_import_button.clicked.connect(self.open_import)
+        self.overview_records_secondary = QPushButton("查看核对记录")
+        self.overview_records_secondary.setObjectName("checkOverviewRecordsSide")
+        self.overview_records_secondary.clicked.connect(self.show_records)
+        self.overview_refresh_secondary = QPushButton("刷新本页")
+        self.overview_refresh_secondary.setObjectName("checkOverviewRefresh")
+        self.overview_refresh_secondary.clicked.connect(self.load_overview)
+        secondary_note = check_text("以上是次级入口；本页主操作只有一个，按当前状态给出"
+                                    "（导入作答、查看待核对作答或查看核对记录）。", "checkSecondaryNote")
+        secondary_note.setStyleSheet("color: #5B6673; font-size: 11px;")
+        side_row = QHBoxLayout()
+        side_row.addWidget(self.overview_import_button)
+        side_row.addWidget(self.overview_records_secondary)
+        side_row.addWidget(self.overview_refresh_secondary)
+        side_row.addStretch(1)
+        secondary_layout.addLayout(side_row)
+        secondary_layout.addWidget(secondary_note)
+
+        scope_note = check_text(CHECK_SCOPE_NOTE, "checkScopeNote")
+        scope_note.setStyleSheet("color: #5B6673; font-size: 11px;")
+
+        body = QWidget()
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(10)
+        body_layout.addLayout(batch_row)
+        body_layout.addWidget(scope_note)
+        body_layout.addWidget(hero)
+        body_layout.addWidget(demo_card)
+        body_layout.addWidget(assignment_card)
+        body_layout.addWidget(secondary)
+        body_layout.addStretch(1)
+        self.overview_scroll = QScrollArea()
+        self.overview_scroll.setObjectName("checkOverviewScroll")
+        self.overview_scroll.setWidgetResizable(True)
+        self.overview_scroll.setMinimumSize(320, 180)
+        self.overview_scroll.setWidget(body)
+        page_layout.addWidget(self.overview_scroll, 1)
+        return page
+
+    def _build_answer_page(self):
+        page = QWidget()
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout.setSpacing(8)
+
+        self.answer_back = QPushButton("← 返回作答核对")
+        self.answer_back.setObjectName("checkAnswerBack")
+        self.answer_back.clicked.connect(self.show_overview)
+        theme.ghost(self.answer_back)
+        self.answer_title = QLabel("")
+        self.answer_title.setObjectName("checkAnswerTitle")
+        self.answer_title.setStyleSheet("font-size: 17px; font-weight: 600;")
+        self.answer_ident = check_text("", "checkAnswerIdent")
+        self.answer_ident.setStyleSheet("color: #5B6673;")
+        self.answer_queue = check_text("", "checkAnswerQueue", wrap=False)
+        self.answer_queue.setStyleSheet("color: #5B6673;")
+        head = QHBoxLayout()
+        head.setSpacing(10)
+        head.addWidget(self.answer_back)
+        ident_box = QVBoxLayout()
+        ident_box.setSpacing(2)
+        ident_box.addWidget(self.answer_title)
+        ident_box.addWidget(self.answer_ident)
+        head.addLayout(ident_box, 1)
+        head.addWidget(self.answer_queue)
+        page_layout.addLayout(head)
+
+        self.answer_notice = check_text("", "checkAnswerNotice")
+        self.answer_notice.setStyleSheet("background: #EDF2FB; border: 1px solid #D7DEE7;"
+                                         " border-radius: 8px; padding: 8px;")
+        self.answer_notice.hide()
+        page_layout.addWidget(self.answer_notice)
+
+        columns = QHBoxLayout()
+        columns.setSpacing(12)
+        left = QVBoxLayout()
+        left.setSpacing(10)
+        right = QVBoxLayout()
+        right.setSpacing(10)
+        columns.addLayout(left, 3)
+        columns.addLayout(right, 2)
+
+        # ---- 左列：题目、逐行原文、定位提示、对照、标准解、人工核对入口、补录、追问
+        question_card, question_layout = check_card("题目")
+        self.question_text = check_text("", "checkQuestionText")
+        self.question_meta = check_text("", "checkQuestionMeta")
+        self.question_meta.setStyleSheet("color: #5B6673;")
+        self.question_missing = check_text("", "checkQuestionMissing")
+        self.question_missing.setStyleSheet("color: #A9630C; font-weight: 600;")
+        self.question_missing.hide()
+        question_layout.addWidget(self.question_text)
+        question_layout.addWidget(self.question_meta)
+        question_layout.addWidget(self.question_missing)
+        left.addWidget(question_card)
+
+        steps_card, steps_layout = check_card("学生原文（逐行）")
+        self.steps_box = QWidget()
+        self.steps_lines = QVBoxLayout(self.steps_box)
+        self.steps_lines.setContentsMargins(0, 0, 0, 0)
+        self.steps_lines.setSpacing(4)
+        self.steps_empty = check_text("这份作答没有正文步骤。", "checkStepsEmpty")
+        self.steps_empty.setStyleSheet("color: #5B6673;")
+        self.steps_more_button = QPushButton("")
+        self.steps_more_button.setObjectName("checkStepsMore")
+        self.steps_more_button.clicked.connect(self._toggle_steps)
+        self.steps_more_button.hide()
+        self.locate_notice = check_text("", "checkLocateNotice")
+        self.locate_notice.hide()
+        self.contrast_box = QWidget()
+        contrast_layout = QHBoxLayout(self.contrast_box)
+        contrast_layout.setContentsMargins(0, 0, 0, 0)
+        left_kv, _, self.contrast_expected = check_kv("按规则应为", "—")
+        right_kv, _, self.contrast_actual = check_kv("学生这一行", "—")
+        contrast_layout.addLayout(left_kv, 1)
+        contrast_layout.addLayout(right_kv, 1)
+        self.contrast_note = check_text("", "checkContrastNote")
+        self.contrast_note.setStyleSheet("color: #5B6673;")
+        self.contrast_box.hide()
+        self.preset_note = check_text(CHECK_PRESET_NOTE, "checkPresetNote")
+        self.preset_note.setStyleSheet("color: #A9630C; font-weight: 600;")
+        self.preset_note.hide()
+        self.std_toggle = QPushButton("标准解（默认折叠，点开查看）")
+        self.std_toggle.setObjectName("checkStdToggle")
+        self.std_toggle.setCheckable(True)
+        self.std_toggle.toggled.connect(self._toggle_std)
+        self.std_list = check_text("", "checkStdSolution")
+        self.std_list.setTextFormat(Qt.RichText)
+        self.std_list.hide()
+        steps_layout.addWidget(self.steps_box)
+        steps_layout.addWidget(self.steps_empty)
+        steps_layout.addWidget(self.steps_more_button)
+        steps_layout.addWidget(self.locate_notice)
+        steps_layout.addWidget(self.contrast_box)
+        steps_layout.addWidget(self.contrast_note)
+        steps_layout.addWidget(self.preset_note)
+        steps_layout.addWidget(self.std_toggle)
+        steps_layout.addWidget(self.std_list)
+        left.addWidget(steps_card)
+
+        self.manual_card, manual_card_layout = check_card("规则判不了这份作答")
+        manual_card_note = check_text("可以选择「人工核对并记录错误」：在右列写下你观察到的错误步骤、原因与判断依据，"
+                                      "保存后这份不再挂在「原因待判断」上（依据为空会被服务端拒绝并提示）。")
+        manual_card_note.setStyleSheet("color: #5B6673;")
+        self.manual_focus_button = QPushButton("人工核对并记录错误")
+        self.manual_focus_button.setObjectName("checkManualEntry")
+        self.manual_focus_button.clicked.connect(self._focus_manual)
+        manual_card_layout.addWidget(manual_card_note)
+        manual_card_layout.addWidget(self.manual_focus_button)
+        self.manual_card.hide()
+        left.addWidget(self.manual_card)
+
+        content_card, content_layout = check_card("补录 / 校正原始作答")
+        content_note = check_text("缺步骤、步骤写错、学生后来又补了过程——都在这里改，不用重新导入整批。"
+                                  "保存后生成新版本：旧结论作废、本份回到待核对，并按新内容重新分析。")
+        content_note.setStyleSheet("color: #5B6673;")
+        self.content_steps = QPlainTextEdit()
+        self.content_steps.setObjectName("checkContentSteps")
+        self.content_steps.setPlaceholderText("逐行照抄学生原文，一行一步；补上缺的中间步骤后保存即可")
+        self.content_steps.setFixedHeight(96)
+        self.content_missing = QCheckBox("标为缺测（这份没有学生步骤）")
+        self.content_missing.setObjectName("checkContentMissing")
+        self.content_missing.toggled.connect(self._content_missing_changed)
+        self.content_reason = QLineEdit()
+        self.content_reason.setObjectName("checkContentReason")
+        self.content_reason.setPlaceholderText("缺测原因（标为缺测时填，例如「未提供学生步骤」）")
+        self.content_button = QPushButton("保存补录并重新分析")
+        self.content_button.setObjectName("checkContentSave")
+        self.content_button.clicked.connect(self._submit_content)
+        self.content_error = check_text("", "checkContentError")
+        self.content_error.setStyleSheet("color: #C0392B; font-weight: 600;")
+        self.content_error.hide()
+        self.content_toggle = QPushButton("点开：改学生步骤或标为缺测")
+        self.content_toggle.setObjectName("checkContentToggle")
+        self.content_toggle.setCheckable(True)
+        self.content_toggle.toggled.connect(self._toggle_content)
+        self.content_body = QWidget()
+        content_body_layout = QVBoxLayout(self.content_body)
+        content_body_layout.setContentsMargins(0, 0, 0, 0)
+        content_body_layout.addWidget(QLabel("学生步骤（逐行原文）"))
+        content_body_layout.addWidget(self.content_steps)
+        content_body_layout.addWidget(self.content_missing)
+        content_body_layout.addWidget(QLabel("缺测原因"))
+        content_body_layout.addWidget(self.content_reason)
+        content_body_layout.addWidget(self.content_button)
+        content_body_layout.addWidget(self.content_error)
+        self.content_body.hide()
+        content_layout.addWidget(content_note)
+        content_layout.addWidget(self.content_toggle)
+        content_layout.addWidget(self.content_body)
+        left.addWidget(content_card)
+
+        ask_card, ask_layout = check_card("当面追问")
+        self.ask_line = check_text("", "checkAskLine")
+        self.ask_line.setStyleSheet("font-weight: 600;")
+        self.ask_note = check_text("", "checkAskNote")
+        self.ask_note.setStyleSheet("color: #5B6673; font-size: 11px;")
+        self.ask_input = QLineEdit()
+        self.ask_input.setObjectName("checkAskInput")
+        self.ask_input.setPlaceholderText("要问的那一句（可改；改了就算教师自拟）")
+        self.followup_review = check_text("", "checkFollowupReview")
+        self.followup_review.setStyleSheet("background: #FFF6E5; border: 1px solid #E8D2A8;"
+                                           " border-radius: 8px; padding: 8px;")
+        self.followup_review.hide()
+        self.followup_recorded = check_text("", "checkFollowupRecorded")
+        self.followup_recorded.setStyleSheet("background: #F7F9FC; border: 1px solid #D7DEE7;"
+                                             " border-radius: 8px; padding: 8px;")
+        self.followup_recorded.hide()
+        self.followup_history = check_text("", "checkFollowupHistory")
+        self.followup_history.setStyleSheet("color: #5B6673; font-size: 11px;")
+        self.followup_history.hide()
+        self.answer_input = QPlainTextEdit()
+        self.answer_input.setObjectName("checkStudentAnswer")
+        self.answer_input.setPlaceholderText("逐字记下学生原话，例如：2 只要乘 y 就好了。")
+        self.answer_input.setFixedHeight(64)
+        self.answer_record_button = QPushButton("记录学生回答")
+        self.answer_record_button.setObjectName("checkRecordAnswer")
+        self.answer_record_button.clicked.connect(self._record_answer)
+        self.answer_skip_button = QPushButton("暂时跳过")
+        self.answer_skip_button.setObjectName("checkSkipAnswer")
+        self.answer_skip_button.clicked.connect(self._skip_answer)
+        theme.ghost(self.answer_skip_button)
+        self.skip_line = check_text("", "checkSkipLine")
+        self.skip_line.setStyleSheet("color: #5B6673; font-size: 11px;")
+        self.skip_line.hide()
+        ask_hint = check_text("跳过不等于学生拒答；没有新增依据时，原因仍然待判断。", "checkAskHint")
+        ask_hint.setStyleSheet("color: #5B6673; font-size: 11px;")
+        ask_layout.addWidget(self.ask_line)
+        ask_layout.addWidget(self.ask_note)
+        ask_layout.addWidget(QLabel("要问的那一句"))
+        ask_layout.addWidget(self.ask_input)
+        ask_layout.addWidget(self.followup_review)
+        ask_layout.addWidget(self.followup_recorded)
+        ask_layout.addWidget(self.followup_history)
+        ask_layout.addWidget(QLabel("学生原话（逐字记录，跟随本页保存）"))
+        ask_layout.addWidget(self.answer_input)
+        ask_row = QHBoxLayout()
+        ask_row.addWidget(self.answer_record_button)
+        ask_row.addWidget(self.answer_skip_button)
+        ask_row.addStretch(1)
+        ask_layout.addLayout(ask_row)
+        ask_layout.addWidget(self.skip_line)
+        ask_layout.addWidget(ask_hint)
+        left.addWidget(ask_card)
+        left.addStretch(1)
+
+        # ---- 右列：观察到的错步、可能原因（含人工填写）、教师判断
+        observed_card, observed_layout = check_card("观察到的错步")
+        self.observed_input = QLineEdit()
+        self.observed_input.setObjectName("checkObservedInput")
+        self.observed_input.setPlaceholderText("学生原文里的这一处（老师可改）")
+        self.observed_hint = check_text("", "checkObservedHint")
+        self.observed_hint.setStyleSheet("color: #5B6673; font-size: 11px;")
+        observed_layout.addWidget(QLabel("学生原文里的这一处（老师可改）"))
+        observed_layout.addWidget(self.observed_input)
+        observed_layout.addWidget(self.observed_hint)
+        right.addWidget(observed_card)
+
+        cause_card, cause_layout = check_card("可能原因")
+        self.cause_box = QWidget()
+        self.cause_rows = QVBoxLayout(self.cause_box)
+        self.cause_rows.setContentsMargins(0, 0, 0, 0)
+        self.cause_rows.setSpacing(6)
+        self.causes_empty = check_text("", "checkCausesEmpty")
+        self.causes_empty.setStyleSheet("color: #5B6673;")
+        self.adopt_button = QPushButton("采纳选中原因并保存")
+        self.adopt_button.setObjectName("checkAdopt")
+        self.adopt_button.clicked.connect(lambda: self._save(adopt=True))
+        adopt_hint = check_text("选中上面一条候选后，可直接采纳并保存（原因记为「教师已判断」）；"
+                                "不采纳就点底部「保存错步，原因待判断」。", "checkAdoptHint")
+        adopt_hint.setStyleSheet("color: #5B6673; font-size: 11px;")
+        self.adopt_row = QWidget()
+        adopt_layout = QVBoxLayout(self.adopt_row)
+        adopt_layout.setContentsMargins(0, 0, 0, 0)
+        adopt_layout.addWidget(self.adopt_button)
+        adopt_layout.addWidget(adopt_hint)
+        self.manual_code = QLineEdit()
+        self.manual_code.setObjectName("checkManualCode")
+        self.manual_code.setPlaceholderText("原因编码（可留空）")
+        self.manual_label = QLineEdit()
+        self.manual_label.setObjectName("checkManualLabel")
+        self.manual_label.setPlaceholderText("原因说明（必填，例如「移项没变号」）")
+        self.manual_label.textChanged.connect(self._sync_answer_buttons)
+        self.manual_button = QPushButton("保存人工判断")
+        self.manual_button.setObjectName("checkManualSave")
+        self.manual_button.clicked.connect(lambda: self._save(action="manual"))
+        self.manual_box = QWidget()
+        manual_layout = QVBoxLayout(self.manual_box)
+        manual_layout.setContentsMargins(0, 0, 0, 0)
+        manual_layout.addWidget(check_text("没有合适候选？人工填写原因（来源记为「教师填写」）",
+                                           "checkManualTitle"))
+        manual_layout.addWidget(self.manual_code)
+        manual_layout.addWidget(self.manual_label)
+        manual_layout.addWidget(self.manual_button)
+        self.causes_note = check_text("", "checkCausesNote")
+        self.causes_note.setStyleSheet("color: #5B6673; font-size: 11px;")
+        cause_layout.addWidget(self.cause_box)
+        cause_layout.addWidget(self.causes_empty)
+        cause_layout.addWidget(self.adopt_row)
+        cause_layout.addWidget(self.manual_box)
+        cause_layout.addWidget(self.causes_note)
+        right.addWidget(cause_card)
+
+        judge_card, judge_layout = check_card("教师判断")
+        self.judge_stale = check_text("作答已更新，旧判断不再作为当前结论。", "checkJudgeStale")
+        self.judge_stale.setStyleSheet("color: #A9630C; font-weight: 600;")
+        self.judge_stale.hide()
+        self.judge_retracted = check_text("", "checkJudgeRetracted")
+        self.judge_retracted.setStyleSheet("color: #5B6673;")
+        self.judge_retracted.hide()
+        self.judge_current = check_text("", "checkJudgeCurrent")
+        self.judge_current.hide()
+        self.judge_source = check_text("", "checkJudgeSource")
+        self.judge_source.setStyleSheet("color: #5B6673; font-size: 11px;")
+        self.judge_source.hide()
+        self.reset_cause_button = QPushButton("改为原因待判断")
+        self.reset_cause_button.setObjectName("checkCauseUndecided")
+        self.reset_cause_button.clicked.connect(lambda: self._save(action="undecided"))
+        self.reset_cause_button.hide()
+        self.basis_caption = QLabel("判断依据（可选，与备注分开记录）")
+        self.basis_caption.setObjectName("checkBasisCaption")
+        self.basis_input = QPlainTextEdit()
+        self.basis_input.setObjectName("checkBasis")
+        self.basis_input.setFixedHeight(70)
+        self.basis_hint = check_text("", "checkBasisHint")
+        self.basis_hint.setStyleSheet("color: #A9630C; font-size: 11px;")
+        self.basis_hint.hide()
+        self.note_input = QPlainTextEdit()
+        self.note_input.setObjectName("checkNote")
+        self.note_input.setFixedHeight(56)
+        self.note_input.setPlaceholderText("可选：记一句备注，例如「让他重做一道 5(y-3)」")
+        self.retract_button = QPushButton("撤回本次结论（回到待核对）")
+        self.retract_button.setObjectName("checkRetract")
+        self.retract_button.clicked.connect(lambda: self._save(action="retract"))
+        self.retract_hint = check_text("撤回不会删除记录：旧结论进历史，本份回到「待核对」，可以重新核对。",
+                                       "checkRetractHint")
+        self.retract_hint.setStyleSheet("color: #5B6673; font-size: 11px;")
+        queue_note = check_text(CHECK_QUEUE_NOTE, "checkQueueNote")
+        queue_note.setStyleSheet("color: #5B6673; font-size: 11px;")
+        judge_layout.addWidget(self.judge_stale)
+        judge_layout.addWidget(self.judge_retracted)
+        judge_layout.addWidget(self.judge_current)
+        judge_layout.addWidget(self.judge_source)
+        judge_layout.addWidget(self.reset_cause_button)
+        judge_layout.addWidget(self.basis_caption)
+        judge_layout.addWidget(self.basis_input)
+        judge_layout.addWidget(self.basis_hint)
+        judge_layout.addWidget(QLabel("教师备注（可选，随这次保存一起记录）"))
+        judge_layout.addWidget(self.note_input)
+        judge_layout.addWidget(self.retract_button)
+        judge_layout.addWidget(self.retract_hint)
+        judge_layout.addWidget(queue_note)
+        right.addWidget(judge_card)
+        right.addStretch(1)
+
+        scroll_body = QWidget()
+        scroll_body.setLayout(columns)
+        self.answer_scroll = QScrollArea()
+        self.answer_scroll.setObjectName("checkAnswerScroll")
+        self.answer_scroll.setWidgetResizable(True)
+        self.answer_scroll.setMinimumSize(320, 180)
+        self.answer_scroll.setWidget(scroll_body)
+        page_layout.addWidget(self.answer_scroll, 1)
+
+        bar = QFrame()
+        bar.setObjectName("checkBar")
+        bar.setStyleSheet("QFrame#checkBar { background: #FFFFFF; border: 1px solid #D7DEE7;"
+                          " border-radius: 10px; }")
+        bar_layout = QVBoxLayout(bar)
+        bar_layout.setContentsMargins(12, 10, 12, 10)
+        bar_layout.setSpacing(6)
+        axis_row = QHBoxLayout()
+        self.axis_progress = QLabel("待核对")
+        self.axis_cause = QLabel("原因待判断")
+        for chip in (self.axis_progress, self.axis_cause):
+            chip.setStyleSheet(CHECK_CHIP_OFF)
+        self.axis_hint = check_text("", "checkAxisHint")
+        self.axis_hint.setStyleSheet("color: #5B6673; font-size: 11px;")
+        axis_row.addWidget(self.axis_progress)
+        axis_row.addWidget(QLabel(" · "))
+        axis_row.addWidget(self.axis_cause)
+        axis_row.addWidget(self.axis_hint, 1)
+        bar_layout.addLayout(axis_row)
+        self.answer_error = check_text("", "checkSaveError")
+        self.answer_error.setStyleSheet("color: #C0392B; font-weight: 600;")
+        self.answer_error.hide()
+        bar_layout.addWidget(self.answer_error)
+        self.save_button = QPushButton("保存错步，原因待判断")
+        self.save_button.setObjectName("checkSave")
+        self.save_button.clicked.connect(lambda: self._save())
+        theme.primary(self.save_button)
+        self.reload_answer_button = QPushButton("刷新这份作答（会清空本页输入）")
+        self.reload_answer_button.setObjectName("checkReloadAnswer")
+        self.reload_answer_button.clicked.connect(self._refresh_answer)
+        self.reload_answer_button.hide()
+        bar_actions = QHBoxLayout()
+        bar_actions.addWidget(self.save_button)
+        bar_actions.addWidget(self.reload_answer_button)
+        bar_actions.addStretch(1)
+        bar_layout.addLayout(bar_actions)
+        page_layout.addWidget(bar)
+        return page
+
+    def _build_records_page(self):
+        page = QWidget()
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout.setSpacing(8)
+        top = QHBoxLayout()
+        back = QPushButton("← 返回作答核对")
+        back.setObjectName("checkRecordsBack")
+        back.clicked.connect(self.show_overview)
+        theme.ghost(back)
+        self.records_title = QLabel("核对记录")
+        self.records_title.setObjectName("checkRecordsTitle")
+        self.records_title.setStyleSheet("font-size: 17px; font-weight: 600;")
+        self.records_primary = QPushButton("查看待核对作答")
+        self.records_primary.setObjectName("checkRecordsPrimary")
+        self.records_primary.clicked.connect(self._open_next)
+        theme.primary(self.records_primary)
+        top.addWidget(back)
+        top.addWidget(self.records_title, 1)
+        top.addWidget(self.records_primary)
+
+        self.records_batch_combo = QComboBox()
+        self.records_batch_combo.setObjectName("checkRecordsBatch")
+        self.records_batch_combo.setMinimumWidth(240)
+        self.records_batch_combo.currentIndexChanged.connect(self._records_batch_changed)
+        self.records_scope = check_text("", "checkRecordsScope")
+        self.records_scope.setStyleSheet("color: #5B6673;")
+        batch_row = QHBoxLayout()
+        batch_row.addWidget(QLabel("看哪个批次："))
+        batch_row.addWidget(self.records_batch_combo)
+        batch_row.addWidget(self.records_scope, 1)
+
+        filter_row = QHBoxLayout()
+        filter_row.addWidget(QLabel("筛选："))
+        self._filter_buttons = {}
+        for key, label in CHECK_FILTERS:
+            button = QPushButton(label)
+            button.setObjectName("checkFilter-%s" % key)
+            button.setCheckable(True)
+            button.clicked.connect(
+                lambda _checked=False, name=key: self._records_filter_changed(name))
+            filter_row.addWidget(button)
+            self._filter_buttons[key] = button
+        filter_row.addStretch(1)
+        self.records_note = check_text("只列当前版本的有效记录，按保存时间倒序。改判后的旧原因不再作为当前结论，"
+                                       "但仍保留在历史里。", "checkRecordsNote")
+        self.records_note.setStyleSheet("color: #5B6673; font-size: 11px;")
+
+        self.records_table = QTableWidget(0, 7)
+        self.records_table.setObjectName("checkRecordsTable")
+        self.records_table.setHorizontalHeaderLabels(
+            ["学生", "题号", "作业批次", "观察到的错步", "处理进度", "原因判断", "保存时间"])
+        records_header = self.records_table.horizontalHeader()
+        for column in (0, 1, 2):
+            records_header.setSectionResizeMode(column, QHeaderView.ResizeToContents)
+        records_header.setSectionResizeMode(3, QHeaderView.Stretch)
+        for column in (4, 5, 6):
+            records_header.setSectionResizeMode(column, QHeaderView.ResizeToContents)
+        self.records_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.records_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.records_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.records_table.setTextElideMode(Qt.ElideRight)
+        self.records_table.verticalHeader().setVisible(False)
+        self.records_table.itemDoubleClicked.connect(lambda _item: self._open_selected_record())
+        self.records_open_button = QPushButton("打开选中的记录")
+        self.records_open_button.setObjectName("checkRecordsOpen")
+        self.records_open_button.clicked.connect(self._open_selected_record)
+        self.records_status = check_text("", "checkRecordsStatus")
+        self.records_status.setStyleSheet("color: #5B6673;")
+        open_row = QHBoxLayout()
+        open_row.addWidget(self.records_open_button)
+        open_row.addWidget(self.records_status, 1)
+        page_layout.addLayout(top)
+        page_layout.addLayout(batch_row)
+        page_layout.addWidget(self.records_note)
+        page_layout.addLayout(filter_row)
+        page_layout.addWidget(self.records_table, 1)
+        page_layout.addLayout(open_row)
+        return page
+
+    def _build_receipt_page(self):
+        page = QWidget()
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout.setSpacing(8)
+        body = QWidget()
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(10)
+
+        hero, hero_layout = check_card()
+        self.receipt_title = QLabel("已保存")
+        self.receipt_title.setObjectName("checkReceiptTitle")
+        self.receipt_title.setStyleSheet("font-size: 20px; font-weight: 600;")
+        self.receipt_dest = check_text("", "checkReceiptDest")
+        self.receipt_ident = check_text("", "checkReceiptIdent")
+        self.receipt_ident.setStyleSheet("color: #5B6673;")
+        self.receipt_status = check_text("", "checkReceiptStatus")
+        self.receipt_saved_at = check_text("", "checkReceiptSavedAt")
+        self.receipt_saved_at.setStyleSheet("color: #5B6673;")
+        receipt_axis = QHBoxLayout()
+        self.receipt_progress_chip = QLabel("待核对")
+        self.receipt_cause_chip = QLabel("原因待判断")
+        for chip in (self.receipt_progress_chip, self.receipt_cause_chip):
+            chip.setStyleSheet(CHECK_CHIP_OFF)
+        receipt_axis.addWidget(self.receipt_progress_chip)
+        receipt_axis.addWidget(QLabel(" · "))
+        receipt_axis.addWidget(self.receipt_cause_chip)
+        receipt_axis.addStretch(1)
+        hero_layout.addWidget(self.receipt_title)
+        hero_layout.addWidget(self.receipt_dest)
+        hero_layout.addWidget(self.receipt_ident)
+        hero_layout.addWidget(self.receipt_status)
+        hero_layout.addLayout(receipt_axis)
+        hero_layout.addWidget(self.receipt_saved_at)
+
+        detail_card, detail_layout = check_card("这次判断根据什么")
+        self.receipt_observed = check_text("", "checkReceiptObserved")
+        self.receipt_verify = check_text("", "checkReceiptVerify")
+        self.receipt_quote = check_text("", "checkReceiptQuote")
+        self.receipt_review = check_text("", "checkReceiptReview")
+        self.receipt_review.setStyleSheet("background: #FFF6E5; border: 1px solid #E8D2A8;"
+                                          " border-radius: 8px; padding: 8px;")
+        self.receipt_review.hide()
+        self.receipt_cause_text = check_text("", "checkReceiptCause")
+        self.receipt_source_text = check_text("", "checkReceiptSource")
+        self.receipt_source_text.setStyleSheet("color: #5B6673; font-size: 11px;")
+        self.receipt_basis_text = check_text("", "checkReceiptBasis")
+        self.receipt_note_text = check_text("", "checkReceiptNote")
+        detail_layout.addWidget(self.receipt_observed)
+        detail_layout.addWidget(self.receipt_verify)
+        detail_layout.addWidget(self.receipt_quote)
+        detail_layout.addWidget(self.receipt_review)
+        detail_layout.addWidget(self.receipt_cause_text)
+        detail_layout.addWidget(self.receipt_source_text)
+        detail_layout.addWidget(self.receipt_basis_text)
+        detail_layout.addWidget(self.receipt_note_text)
+
+        self.receipt_banner = check_text("", "checkReceiptBanner")
+        self.receipt_banner.setStyleSheet("background: #EDF2FB; border: 1px solid #D7DEE7;"
+                                          " border-radius: 8px; padding: 8px;")
+        body_layout.addWidget(hero)
+        body_layout.addWidget(detail_card)
+        body_layout.addWidget(self.receipt_banner)
+        body_layout.addStretch(1)
+        self.receipt_scroll = QScrollArea()
+        self.receipt_scroll.setObjectName("checkReceiptScroll")
+        self.receipt_scroll.setWidgetResizable(True)
+        self.receipt_scroll.setMinimumSize(320, 180)
+        self.receipt_scroll.setWidget(body)
+        page_layout.addWidget(self.receipt_scroll, 1)
+
+        bar = QFrame()
+        bar.setObjectName("checkReceiptBar")
+        bar.setStyleSheet("QFrame#checkReceiptBar { background: #FFFFFF; border: 1px solid #D7DEE7;"
+                          " border-radius: 10px; }")
+        bar_layout = QHBoxLayout(bar)
+        bar_layout.setContentsMargins(12, 10, 12, 10)
+        self.receipt_primary = QPushButton("查看下一份")
+        self.receipt_primary.setObjectName("checkReceiptNext")
+        self.receipt_primary.clicked.connect(self._receipt_primary_clicked)
+        theme.primary(self.receipt_primary)
+        self.receipt_records_button = QPushButton("查看核对记录")
+        self.receipt_records_button.setObjectName("checkReceiptRecords")
+        self.receipt_records_button.clicked.connect(self.show_records)
+        bar_layout.addWidget(self.receipt_primary)
+        bar_layout.addWidget(self.receipt_records_button)
+        bar_layout.addStretch(1)
+        page_layout.addWidget(bar)
+        return page
+
+    # ---------------------------------------------------------------- 数据
+    @staticmethod
+    def _call(func):
+        """见模块级 service_call：把 ApiError 的 status/code/message 一并带回界面。"""
+        return service_call(func)
+
+    def reload(self):
+        if self.runner.busy:
+            QTimer.singleShot(150, self.reload)
+            return
+        index = self.stack.currentIndex()
+        if index == 1 and self._answer_id:
+            self.open_answer(self._answer_id)
+        elif index == 2:
+            self.load_records()
+        else:
+            self.load_overview()
+
+    def load_overview(self):
+        self.stack.setCurrentIndex(0)
+        if self.runner.busy:
+            QTimer.singleShot(150, self.load_overview)
+            return
+        self.overview_primary.setEnabled(False)
+        # 「全部批次」不向后端要一个不存在的批次：照常取当前作业 + 各批次清单，
+        # 由页面把各批次并列相加（每份作答仍只属于一个批次），与网页端同一做法。
+        batch = "" if self._batch in ("", CHECK_ALL_BATCHES) else self._batch
+        self.runner.run(CheckWindow._call(lambda: self.service.check_overview(self.class_id, batch)),
+                        self._overview_done, self._overview_failed)
+
+    def _overview_done(self, outcome):
+        self.overview_primary.setEnabled(True)
+        if not outcome.get("ok"):
+            self._overview_failed(outcome)
+            return
+        self._overview = dict(outcome.get("value") or {})
+        self._render_overview()
+
+    def _overview_failed(self, outcome):
+        if isinstance(outcome, dict):
+            message = outcome.get("message") or "请稍后重试。"
+        else:
+            message = str(outcome)
+        self.overview_primary.setEnabled(True)
+        self.overview_headline.setText("没有读到作答核对总览")
+        self.overview_detail.setText("%s" % message)
+        self.overview_flag.hide()
+        self.overview_assignment.setText("")
+        self._fill_counts([("应交", "—"), ("已核对", "—"), ("待核对作答", "—"), ("缺测", "—")])
+        self.assignment_table.setRowCount(0)
+        self._assignment_rows = []
+
+    def open_answer(self, answer_id):
+        if not answer_id:
+            return
+        if self.runner.busy:
+            QTimer.singleShot(150, lambda: self.open_answer(answer_id))
+            return
+        self._answer_id = int(answer_id)
+        self.stack.setCurrentIndex(1)
+        self.answer_error.hide()
+        self.answer_error.setText("")
+        self.runner.run(
+            CheckWindow._call(lambda: self.service.check_answer(self.class_id, self._answer_id)),
+            self._answer_done, self._answer_failed)
+
+    def _answer_done(self, outcome):
+        if not outcome.get("ok"):
+            self._answer_failed(outcome)
+            return
+        self._show_answer(dict(outcome.get("value") or {}))
+
+    def _answer_failed(self, outcome):
+        message = (outcome.get("message") if isinstance(outcome, dict) else str(outcome)) or "请稍后重试。"
+        self.answer_error.setText("没有读到这份作答：%s" % message)
+        self.answer_error.show()
+
+    def load_records(self):
+        self.stack.setCurrentIndex(2)
+        if self.runner.busy:
+            QTimer.singleShot(150, self.load_records)
+            return
+        self.records_status.setText("正在加载核对记录…")
+        self.runner.run(
+            CheckWindow._call(lambda: self.service.check_records(
+                self.class_id, self._records_batch, self._records_state, "")),
+            self._records_done, self._records_failed)
+
+    def _records_done(self, outcome):
+        if not outcome.get("ok"):
+            self._records_failed(outcome)
+            return
+        self._records = dict(outcome.get("value") or {})
+        self._render_records()
+
+    def _records_failed(self, outcome):
+        message = (outcome.get("message") if isinstance(outcome, dict) else str(outcome)) or "请稍后重试。"
+        self.records_status.setText("没有读到核对记录：%s" % message)
+        self.records_table.setRowCount(0)
+
+    # ---------------------------------------------------------------- 渲染
+    def _refresh_layout(self):
+        """文字是渲染时写入的：显式激活一遍布局（含嵌套卡片），
+
+        否则标签会按「写入文字之前」的空尺寸被压成一条（实测总览的计数与状态标签被压成 6px 宽）。
+        """
+        for _pass in range(2):
+            for layout in self.findChildren(QLayout):
+                layout.activate()
+
+    def _fill_counts(self, pairs, visible=True):
+        """刷新「小标题 + 大数字」四格：范围不同（当前作业 / 全部批次）标题也不同。"""
+        for index, (key, value) in enumerate(self._count_pairs):
+            if visible and index < len(pairs):
+                title, text = pairs[index]
+                key.setText(title)
+                value.setText(str(text))
+                key.setVisible(True)
+                value.setVisible(True)
+            else:
+                key.setVisible(False)
+                value.setVisible(False)
+
+    def _render_overview(self):
+        data = self._overview
+        assignments = list(data.get("assignments") or [])
+        state = data.get("state") or "no_answers"
+        assignment = dict(data.get("assignment") or {})
+        next_item = dict(data.get("next") or {})
+        view_all = self._batch == CHECK_ALL_BATCHES
+        assignment_name = assignment.get("name") or assignment.get("batch") or ""
+        if not assignment_name and self._batch and not view_all:
+            assignment_name = self._batch
+        show_assignment = state != "no_answers" and assignment_name and assignment_name != "未命名批次"
+        total = int(assignment.get("total") or 0)
+        pending = int(assignment.get("pending") or 0)
+        checked = int(assignment.get("checked") or 0)
+        missing = int(assignment.get("missing") or 0)
+        all_total = sum(int(item.get("total") or 0) for item in assignments)
+        all_checked = sum(int(item.get("checked") or 0) for item in assignments)
+        all_pending = sum(int(item.get("pending") or 0) for item in assignments)
+        next_id = next_item.get("answer_id")
+
+        self._fill_overview_batches(assignments)
+        if view_all:
+            self.overview_scope.setText("当前范围：全部批次（%d 个作业，各批次并列相加；"
+                                        "每份作答仍属于某个批次）" % len(assignments))
+        elif self._batch:
+            self.overview_scope.setText("当前范围：只看「%s」这一批" % assignment_name)
+        else:
+            self.overview_scope.setText("当前范围：当前作业（最近一次导入的真实批次）；"
+                                        "要并看所有批次请选「全部批次」")
+
+        if state == "has_pending":
+            self.overview_flag.setText("待核对作答 %d 份" % pending)
+            self.overview_flag.setStyleSheet(CHECK_CHIP_ON + " font-weight: 600;")
+            self.overview_flag.show()
+        elif state == "all_checked":
+            self.overview_flag.setText("全部已核对")
+            self.overview_flag.setStyleSheet(CHECK_CHIP_NA + " font-weight: 600;")
+            self.overview_flag.show()
+        else:
+            self.overview_flag.hide()
+        self.overview_assignment.setText(
+            ("当前作业：%s" % assignment_name) if show_assignment else "")
+
+        if view_all:
+            headline = "全部批次：%d 个作业、应交 %d 份" % (len(assignments), all_total)
+        elif state == "no_answers":
+            headline = "尚未导入作答"
+        elif state == "all_checked":
+            headline = "本次作业已核对完"
+        else:
+            headline = next_item.get("headline") or "这批作答里，哪些可以判、哪些还需要问一句？"
+        self.overview_headline.setText(headline)
+
+        if view_all:
+            detail = ("这是把各批次并列相加的结果：已核对 %d 份、待核对 %d 份。%s"
+                      "要看某一批的点下面作业表那一行；「当前作业」范围请在下拉里切回去。"
+                      % (all_checked, all_pending,
+                         "当前没有待核对作答。" if all_pending == 0 else ""))
+        elif state == "no_answers":
+            detail = "可以导入本班作答，或用下面的合成演示数据先走一遍。"
+        elif state == "all_checked":
+            detail = ("本次作业共 %d 份，已核对 %d 份；本批次暂无待核对作答；"
+                      "原因待判断的记录可以在「查看核对记录」里找回。" % (total, checked))
+        else:
+            detail = ("下一份待核对作答：%s%s。待核对数与「查看待核对作答」用同一个队列。"
+                      % (next_item.get("student_label") or "—",
+                         (" · 第 %s 题" % next_item.get("question_no"))
+                         if next_item.get("question_no") else ""))
+        self.overview_detail.setText(detail)
+
+        if view_all:
+            self._fill_counts([("作业数", len(assignments)), ("应交（各批合计）", all_total),
+                               ("已核对（合计）", all_checked), ("待核对作答（合计）", all_pending)])
+        elif state == "no_answers":
+            self._fill_counts([], visible=False)
+        else:
+            self._fill_counts([("应交", total), ("已核对", checked),
+                               ("待核对作答", pending), ("缺测", missing)])
+
+        if view_all:
+            self.overview_primary.setText("查看核对记录")
+        elif state == "no_answers":
+            self.overview_primary.setText("导入作答")
+        elif next_id:
+            self.overview_primary.setText("查看待核对作答")
+        else:
+            self.overview_primary.setText("查看核对记录")
+        self.overview_records_button.setVisible(not (view_all or state == "all_checked"))
+        self._render_assignments(assignments, assignment, view_all)
+        if self._demo_notice:
+            self.demo_notice.setText(self._demo_notice)
+            self.demo_notice.show()
+            self._demo_notice = ""
+        else:
+            self.demo_notice.hide()
+        self._refresh_layout()
+
+    def _fill_overview_batches(self, assignments):
+        current = self._batch
+        self.overview_batch_combo.blockSignals(True)
+        self.overview_batch_combo.clear()
+        self.overview_batch_combo.addItem("当前作业（最近一次导入的真实批次）", "")
+        self.overview_batch_combo.addItem("全部批次（各批次并列相加）", CHECK_ALL_BATCHES)
+        for item in assignments:
+            label = item.get("name") or item.get("batch") or "（未命名作业）"
+            if item.get("synthetic"):
+                label += "（演示）"
+            self.overview_batch_combo.addItem(label, item.get("batch") or "")
+        index = self.overview_batch_combo.findData(current)
+        self.overview_batch_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.overview_batch_combo.blockSignals(False)
+
+    def _render_assignments(self, assignments, assignment, view_all):
+        self._assignment_rows = assignments
+        self.assignment_table.setRowCount(len(assignments))
+        current_batch = "" if view_all else (assignment.get("batch") or self._batch or "")
+        for row, item in enumerate(assignments):
+            name = item.get("name") or item.get("batch") or "（未命名作业）"
+            if item.get("synthetic"):
+                name += "（演示）"
+            values = [name, str(int(item.get("total") or 0)), str(int(item.get("checked") or 0)),
+                      str(int(item.get("pending") or 0)),
+                      "当前" if (item.get("batch") or "") == current_batch else ""]
+            for column, value in enumerate(values):
+                cell = QTableWidgetItem(value)
+                cell.setToolTip(value)
+                self.assignment_table.setItem(row, column, cell)
+
+    def _show_answer(self, data):
+        self._detail = data
+        answer = dict(data.get("answer") or {})
+        locate = dict(data.get("locate") or {})
+        judgement = dict(data.get("judgement") or {})
+        followup = dict(data.get("followup") or {})
+        queue = dict(data.get("queue") or {})
+        candidates = list(data.get("candidates") or [])
+        applicability = data.get("applicability") or ""
+        batch = answer.get("batch") or queue.get("batch") or ""
+        self._answer_gate_bad = (locate.get("status") or "") == "first_bad"
+        try:
+            bad_index = int(locate.get("first_bad_index"))
+        except (TypeError, ValueError):
+            bad_index = None
+        self._answer_bad_index = bad_index
+
+        self.answer_title.setText("%s · 第 %s 题" % (answer.get("student_label") or "学生",
+                                                    answer.get("question_no") or "—"))
+        ident = ["记录编号 %s" % (answer.get("record_key") or ("#%s" % (answer.get("id") or self._answer_id)))]
+        ident.append(answer.get("data_source_label") or "")
+        ident.append("作业批次：%s" % (batch or "—"))
+        if answer.get("occurred_on"):
+            ident.append("作答日期 %s" % answer["occurred_on"])
+        self.answer_ident.setText(" · ".join([part for part in ident if part]))
+        if queue.get("position") or queue.get("total"):
+            self.answer_queue.setText("队列第 %d / %d 份%s" % (
+                int(queue.get("position") or 0), int(queue.get("total") or 0),
+                "（最后一份）" if queue.get("is_last") else ""))
+        else:
+            self.answer_queue.setText("")
+
+        if self._answer_flash:
+            self.answer_notice.setText(self._answer_flash)
+            self.answer_notice.show()
+            self._answer_flash = ""
+        else:
+            self.answer_notice.hide()
+
+        self.question_text.setText(answer.get("question_text") or "（这份作答没有题目文本）")
+        self.question_meta.setText(" · ".join([part for part in (
+            answer.get("unit") or "", batch or "",
+            ("作答日期 %s" % answer["occurred_on"]) if answer.get("occurred_on") else "") if part]))
+        if int(answer.get("missing") or 0):
+            self.question_missing.setText("缺测：%s" % (answer.get("missing_reason")
+                                                       or "这份作答没有可核验的步骤。"))
+            self.question_missing.show()
+        else:
+            self.question_missing.hide()
+
+        lines = list(locate.get("lines") or [])
+        if not lines:
+            raw = [text.strip() for text in str(answer.get("student_steps") or "").splitlines()
+                   if text.strip()]
+            lines = [{"text": text, "role": "given" if index == 0 else "student", "bad": False}
+                     for index, text in enumerate(raw)]
+        self._answer_lines = lines
+        self._answer_show_all = len(lines) <= CHECK_LONG_LINES
+        self._render_steps()
+
+        text, kind = check_locate_notice(locate, data.get("notice"))
+        self.locate_notice.setText(text)
+        self.locate_notice.setVisible(bool(text))
+        self.locate_notice.setStyleSheet(
+            "background: #EDF2FB; border: 1px solid #D7DEE7; border-radius: 8px; padding: 8px;"
+            if kind == "info" else
+            "background: #FFF6E5; border: 1px solid #E8D2A8; border-radius: 8px; padding: 8px;")
+
+        contrast = dict(locate.get("contrast") or {})
+        self.contrast_box.setVisible(self._answer_gate_bad)
+        self.contrast_expected.setText(contrast.get("expected") or "—")
+        self.contrast_actual.setText(contrast.get("actual") or "—")
+        note = ""
+        if self._answer_gate_bad:
+            if contrast.get("note"):
+                note = "对照：%s" % contrast["note"]
+            if locate.get("reason_note"):
+                note = (note + " " + locate["reason_note"]).strip()
+        self.contrast_note.setText(note)
+        self.contrast_note.setVisible(bool(note))
+        self.preset_note.setVisible(locate.get("source") == "preset")
+
+        raw = str(answer.get("standard_solution") or "").strip()
+        steps = [part.strip() for part in re.split(r"[；;\n]+", raw) if part.strip()]
+        if steps:
+            self.std_list.setText("<ol style='margin-left: 18px;'>%s</ol>"
+                                  % "".join("<li>%s</li>" % html.escape(part) for part in steps))
+        else:
+            self.std_list.setText("<p>这份作答没有附带标准解。</p>")
+        self.std_toggle.setChecked(False)
+        self.std_list.hide()
+
+        self.manual_card.setVisible((locate.get("status") or "") == "out_of_scope")
+        self.content_steps.setPlainText(answer.get("student_steps") or "")
+        self.content_missing.setChecked(bool(int(answer.get("missing") or 0)))
+        self.content_reason.setText(answer.get("missing_reason") or "")
+        self.content_reason.setEnabled(self.content_missing.isChecked())
+        self.content_error.hide()
+
+        self._render_causes(candidates, judgement, data)
+        self._render_judgement(judgement, applicability)
+        self._render_followup(followup)
+        self._render_axis(judgement)
+        self.observed_input.setText(judgement.get("observed_step") or locate.get("first_bad_text") or "")
+        self.observed_hint.setText(
+            "只记录观察到的不等价，不推断学生为什么这样写。" if self._answer_gate_bad else
+            "本次定位没有给出错步行：可以留空，也可以手动写下你观察到的错误步骤；"
+            "手写错步算「人工核验」，需要同时在「教师判断」卡里填判断依据。")
+        self._skipped = False
+        self.skip_line.hide()
+        self.reload_answer_button.hide()
+        self.answer_error.hide()
+        self._sync_answer_buttons()
+        self._refresh_layout()
+
+    def _render_steps(self):
+        while self.steps_lines.count():
+            item = self.steps_lines.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        lines = self._answer_lines
+        locate = dict((self._detail or {}).get("locate") or {})
+        limit = len(lines) if self._answer_show_all else CHECK_LONG_LINES
+        for index, line in enumerate(lines[:limit]):
+            bad = self._answer_gate_bad and (
+                line.get("bad") is True or (self._answer_bad_index is not None
+                                            and index == self._answer_bad_index))
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(8)
+            role = QLabel("原题" if line.get("role") == "given" else "第 %d 行" % index)
+            role.setObjectName("checkLineRole-%d" % index)
+            role.setStyleSheet("color: #5B6673; font-size: 11px;")
+            role.setMinimumWidth(44)
+            text = QLabel(check_step_html(line.get("text"), bad, locate))
+            text.setObjectName("checkLineText-%d" % index)
+            text.setWordWrap(True)
+            text.setTextFormat(Qt.RichText)
+            text.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            row_layout.addWidget(role)
+            row_layout.addWidget(text, 1)
+            if bad:
+                mark = QLabel("首处不等价")
+                mark.setObjectName("checkLineMark-%d" % index)
+                mark.setStyleSheet("background: #FDECEA; border: 1px solid #E4B7B2; border-radius: 8px;"
+                                   " padding: 1px 6px; color: #C0392B; font-weight: 600;")
+                row_layout.addWidget(mark)
+            self.steps_lines.addWidget(row)
+        self.steps_box.setVisible(bool(lines))
+        self.steps_empty.setVisible(not lines)
+        rest = len(lines) - CHECK_LONG_LINES
+        if rest > 0:
+            self.steps_more_button.setText(
+                ("收起其余 %d 行（长作答不横向滚动）" % rest) if self._answer_show_all
+                else ("展开其余 %d 行（长作答不横向滚动）" % rest))
+            self.steps_more_button.show()
+        else:
+            self.steps_more_button.hide()
+
+    def _render_causes(self, candidates, judgement, data):
+        while self.cause_rows.count():
+            item = self.cause_rows.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        self._cause_radios = []
+        selected = judgement.get("cause_code") or ""
+        for index, candidate in enumerate(candidates):
+            card = QFrame()
+            card.setObjectName("checkCandidate-%d" % index)
+            card.setStyleSheet("QFrame#checkCandidate-%d { border: 1px solid #E7ECF2;"
+                               " border-radius: 8px; }" % index)
+            row = QVBoxLayout(card)
+            row.setContentsMargins(8, 6, 8, 6)
+            row.setSpacing(2)
+            head = QHBoxLayout()
+            radio = QRadioButton(candidate.get("label") or candidate.get("code") or "（未命名候选）")
+            radio.setObjectName("checkCandidateRadio-%d" % index)
+            radio.setChecked(bool(candidate.get("code")) and candidate.get("code") == selected)
+            radio.toggled.connect(self._sync_answer_buttons)
+            head.addWidget(radio)
+            if candidate.get("code"):
+                code_label = QLabel(str(candidate["code"]))
+                code_label.setStyleSheet("color: #5B6673; font-size: 11px;")
+                head.addWidget(code_label)
+            head.addStretch(1)
+            row.addLayout(head)
+            for key, title in (("support", "支持"), ("rebut", "削弱"), ("pending", "待补")):
+                items = [str(part) for part in (candidate.get(key) or []) if str(part).strip()]
+                if items:
+                    label = QLabel("%s：%s" % (title, "；".join(items)))
+                    label.setWordWrap(True)
+                    label.setStyleSheet("color: #5B6673; font-size: 11px;")
+                    row.addWidget(label)
+            self.cause_rows.addWidget(card)
+            self._cause_radios.append(radio)
+        has_candidates = bool(candidates)
+        self.cause_box.setVisible(has_candidates)
+        empty_note = data.get("causes_note") or "尚无已审错因库可用，保留待判断。"
+        self.causes_empty.setText("" if has_candidates else ("暂无候选错因：%s" % empty_note))
+        self.adopt_row.setVisible(has_candidates)
+        note = data.get("causes_note") or ""
+        # 没有候选时同一句话已经显示在空位里，别再重复一遍。
+        self.causes_note.setText("" if (not has_candidates and note == empty_note) else note)
+        self.causes_note.setVisible(bool(self.causes_note.text()))
+
+    def _render_judgement(self, judgement, applicability):
+        state = judgement.get("cause_state") or "undecided"
+        decided = state == "decided"
+        self.judge_stale.setVisible(bool(judgement.get("stale")))
+        retracted = dict(judgement.get("retracted") or {})
+        if retracted.get("at"):
+            line = "上一次结论已于 %s 撤回" % str(retracted["at"]).replace("T", " ")[:16]
+            if retracted.get("reason"):
+                line += "：%s" % retracted["reason"]
+            self.judge_retracted.setText(line + "。结论已作废，本份回到待核对队列。")
+            self.judge_retracted.show()
+        else:
+            self.judge_retracted.hide()
+        if decided:
+            self.judge_current.setText("当前原因：%s" % (judgement.get("cause_label_text")
+                                                      or judgement.get("cause_code") or ""))
+            self.judge_current.show()
+            self.reset_cause_button.show()
+        else:
+            self.judge_current.hide()
+            self.reset_cause_button.hide()
+        source = ""
+        if (judgement.get("cause_code") or judgement.get("cause_label_text")) and \
+                judgement.get("cause_source_label"):
+            source = "错因来源：%s" % judgement["cause_source_label"]
+        self.judge_source.setText(source)
+        self.judge_source.setVisible(bool(source))
+        basis_required = applicability == "optional" and state != "not_applicable"
+        self.basis_caption.setText(
+            "判断依据（本题规则判不了：人工改判原因时必填）" if basis_required
+            else "判断依据（可选，与备注分开记录）")
+        self.basis_hint.setText(
+            "本题超出规则核验范围：要判原因就必须写判断依据，否则保存会被拒绝（basis_required）；"
+            "确认无需判断就直接点主按钮，系统会记成「无需判断」，不要求依据。"
+            if basis_required else "")
+        self.basis_hint.setVisible(basis_required)
+        self.basis_input.setPlainText(judgement.get("basis_note") or "")
+        self.note_input.setPlainText(judgement.get("teacher_note") or "")
+        checked = (judgement.get("progress") or "pending") == "checked"
+        self.retract_button.setVisible(checked)
+        self.retract_hint.setVisible(checked)
+
+    def _render_followup(self, followup):
+        suggestion = dict(followup.get("suggestion") or {})
+        available = followup.get("available")
+        if available is None:
+            available = bool(followup.get("question"))
+        question = (followup.get("question") or suggestion.get("question") or "") if available else ""
+        if available:
+            self.ask_line.setText("可以这样问学生：%s" % question)
+            self.ask_line.setStyleSheet("font-weight: 600;")
+        else:
+            self.ask_line.setText(CHECK_ASK_UNAVAILABLE)
+            self.ask_line.setStyleSheet("color: #C0392B; font-weight: 600;")
+        note = suggestion.get("note") or followup.get("note") or ""
+        self.ask_note.setText(note)
+        self.ask_note.setVisible(bool(note))
+        if question and not self.ask_input.text().strip():
+            self.ask_input.setText(question)
+        recorded = bool(followup.get("recorded"))
+        self.followup_recorded.setVisible(recorded)
+        if recorded:
+            source = followup.get("source_label") or ""
+            self.followup_recorded.setText("上次记录的学生原话%s：「%s」" % (
+                ("（问句来源：%s）" % source) if source else "",
+                followup.get("answer_text") or "（原话为空）"))
+            if followup.get("answer_text") and not self.answer_input.toPlainText().strip():
+                self.answer_input.setPlainText(followup.get("answer_text") or "")
+        if followup.get("needs_review"):
+            self.followup_review.setText(
+                "上一次记录的学生回答已不再是当前证据：%s"
+                % (followup.get("review_note") or "这条追问依据的错步或原因已经变了，请重新确认。"))
+            self.followup_review.show()
+        else:
+            self.followup_review.hide()
+        history = [item for item in (followup.get("history") or [])
+                   if item.get("answer_text") and not item.get("current_version")][:3]
+        if history:
+            lines = []
+            for item in history:
+                lines.append("旧版本记录（%s）：%s学生原话：「%s」" % (
+                    item.get("invalidated_reason") or "已失效",
+                    ("问：%s；" % item["question"]) if item.get("question") else "",
+                    item.get("answer_text")))
+            self.followup_history.setText("\n".join(lines))
+            self.followup_history.show()
+        else:
+            self.followup_history.hide()
+
+    def _render_axis(self, judgement):
+        progress = judgement.get("progress") or "pending"
+        state = judgement.get("cause_state") or "undecided"
+        self.axis_progress.setText(judgement.get("progress_label")
+                                   or PROGRESS_TEXT.get(progress, "待核对"))
+        self.axis_cause.setText(judgement.get("cause_label")
+                                or CAUSE_STATE_TEXT.get(state, "原因待判断"))
+        self.axis_progress.setStyleSheet(CHECK_CHIP_ON if progress == "checked" else CHECK_CHIP_OFF)
+        if state == "decided":
+            self.axis_cause.setStyleSheet(CHECK_CHIP_ON)
+        elif state == "not_applicable":
+            self.axis_cause.setStyleSheet(CHECK_CHIP_NA)
+        else:
+            self.axis_cause.setStyleSheet(CHECK_CHIP_OFF)
+        self.axis_hint.setText(
+            "当前是「教师已判断」：主按钮沿用这条原因；改判请在候选区点「采纳选中原因并保存」。"
+            if state == "decided" else
+            "原因留空即「原因待判断」，课堂上可以再补记；保存后退出待核对队列。")
+
+    def _render_records(self):
+        records = self._records
+        items = list(records.get("items") or [])
+        self.records_title.setText("核对记录（%d 条）" % int(records.get("total") or len(items)))
+        for key, button in self._filter_buttons.items():
+            button.setChecked(key == self._records_state)
+        self._fill_records_batches()
+        self.records_scope.setText(
+            ("当前范围：只看「%s」这一批" % self._records_batch) if self._records_batch
+            else "当前范围：全部批次（本班所有批次，每行都标着所属批次）")
+        self.records_table.setRowCount(len(items))
+        for row, item in enumerate(items):
+            progress = item.get("progress") or "pending"
+            state = item.get("cause_state") or "undecided"
+            cause_text = (item.get("cause_label_text") or item.get("cause_state_label")
+                          or CAUSE_STATE_TEXT.get(state, "原因待判断"))
+            values = [
+                item.get("student_label") or "—",
+                item.get("question_no") or "—",
+                item.get("batch") or "—",
+                item.get("observed_step") or "—",
+                PROGRESS_TEXT.get(progress, "待核对"),
+                cause_text,
+                str(item.get("saved_at") or "").replace("T", " ")[:16] or "—",
+            ]
+            for column, value in enumerate(values):
+                cell = QTableWidgetItem(str(value))
+                cell.setToolTip(str(value))
+                self.records_table.setItem(row, column, cell)
+        self.records_status.setText(
+            "" if items else "这个筛选下还没有记录。本批次暂无满足条件的核对记录；"
+                             "保存过的作答会出现在这里，按「原因待判断」能找回还没定原因的那几份。")
+        self._next_answer_id = ((self._overview or {}).get("next") or {}).get("answer_id")
+        self.records_primary.setEnabled(bool(self._next_answer_id))
+        self.records_primary.setToolTip("" if self._next_answer_id else "当前没有待核对的作答")
+        if items and self.records_table.currentRow() < 0:
+            self.records_table.selectRow(0)
+        self._refresh_layout()
+
+    def _fill_records_batches(self):
+        assignments = list((self._overview or {}).get("assignments") or [])
+        current = self._records_batch
+        self.records_batch_combo.blockSignals(True)
+        self.records_batch_combo.clear()
+        self.records_batch_combo.addItem("全部批次（本班所有批次）", "")
+        for item in assignments:
+            label = item.get("name") or item.get("batch") or "（未命名作业）"
+            if item.get("synthetic"):
+                label += "（演示）"
+            self.records_batch_combo.addItem(label, item.get("batch") or "")
+        index = self.records_batch_combo.findData(current)
+        self.records_batch_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.records_batch_combo.blockSignals(False)
+
+    # ---------------------------------------------------------------- 动作
+    def show_overview(self):
+        self.load_overview()
+
+    def show_records(self):
+        self.stack.setCurrentIndex(2)
+        if not (self._overview or {}).get("assignments"):
+            self.load_overview()
+        self.load_records()
+
+    def _batch_changed(self, _index=0):
+        self._batch = self.overview_batch_combo.currentData() or ""
+        self.load_overview()
+
+    def _assignment_clicked(self, row, _column=0):
+        if 0 <= row < len(self._assignment_rows):
+            batch = self._assignment_rows[row].get("batch") or ""
+            index = self.overview_batch_combo.findData(batch)
+            if index >= 0:
+                self.overview_batch_combo.setCurrentIndex(index)
+
+    def _overview_primary_clicked(self):
+        text = self.overview_primary.text()
+        if text == "导入作答":
+            self.open_import()
+        elif text == "查看核对记录":
+            self.show_records()
+        else:
+            next_item = dict((self._overview or {}).get("next") or {})
+            if next_item.get("answer_id"):
+                self.open_answer(next_item["answer_id"])
+            else:
+                self.show_records()
+
+    def _open_next(self):
+        next_item = dict((self._overview or {}).get("next") or {})
+        next_id = next_item.get("answer_id")
+        if not next_id:
+            self.records_status.setText("当前没有待核对的作答。")
+            return
+        self.open_answer(next_id)
+
+    def _records_filter_changed(self, name):
+        self._records_state = name
+        self.load_records()
+
+    def _records_batch_changed(self, _index=0):
+        self._records_batch = self.records_batch_combo.currentData() or ""
+        self.load_records()
+
+    def _open_selected_record(self):
+        row = self.records_table.currentRow()
+        items = list((self._records or {}).get("items") or [])
+        if row < 0 or row >= len(items):
+            self.records_status.setText("先在表里点一条记录。")
+            return
+        self.open_answer(items[row].get("answer_id"))
+
+    def open_import(self):
+        self._import_window = AnswerImportWindow(self.service, self.class_row, parent=self)
+        self._import_window.closed.connect(self.load_overview)
+        self._import_window.show()
+        self._import_window.raise_()
+
+    def _toggle_steps(self):
+        self._answer_show_all = not self._answer_show_all
+        self._render_steps()
+
+    def _toggle_std(self, checked):
+        self.std_list.setVisible(bool(checked))
+        self.std_toggle.setText("标准解（点一下收起）" if checked else "标准解（默认折叠，点开查看）")
+
+    def _toggle_content(self, checked):
+        self.content_body.setVisible(bool(checked))
+        self.content_toggle.setText("收起补录 / 校正" if checked else "点开：改学生步骤或标为缺测")
+
+    def _focus_manual(self):
+        self.basis_input.setFocus()
+        self.answer_error.hide()
+        self.top_note.setText("已展开人工核对：请填观察到的错误步骤、原因与判断依据。")
+        self.top_note.show()
+
+    def _content_missing_changed(self, checked):
+        self.content_reason.setEnabled(bool(checked))
+
+    def _record_answer(self):
+        self._skipped = False
+        self.skip_line.hide()
+        self.answer_input.setFocus()
+
+    def _skip_answer(self):
+        self._skipped = True
+        self.answer_input.clear()
+        self.skip_line.setText("已跳过提问，未记录回答")
+        self.skip_line.show()
+
+    def _refresh_answer(self):
+        self.answer_input.clear()
+        self.ask_input.clear()
+        self.basis_input.clear()
+        self.note_input.clear()
+        self.content_steps.clear()
+        self.observed_input.clear()
+        self.open_answer(self._answer_id)
+
+    def _selected_candidate(self):
+        candidates = list((self._detail or {}).get("candidates") or [])
+        for index, radio in enumerate(self._cause_radios):
+            if radio.isChecked() and 0 <= index < len(candidates):
+                return candidates[index]
+        return None
+
+    def _sync_answer_buttons(self):
+        busy = self.runner.busy
+        judgement = dict((self._detail or {}).get("judgement") or {})
+        decided = (judgement.get("cause_state") or "") == "decided"
+        self.save_button.setText("保存中…" if busy else
+                                 ("保存错步（沿用已判断原因）" if decided else "保存错步，原因待判断"))
+        self.save_button.setEnabled(not busy)
+        self.adopt_button.setEnabled(not busy and self._selected_candidate() is not None)
+        self.manual_button.setEnabled(not busy and bool(self.manual_label.text().strip()))
+        self.reset_cause_button.setEnabled(not busy)
+        self.retract_button.setEnabled(not busy)
+        self.content_button.setEnabled(not busy)
+        self.answer_record_button.setEnabled(not busy)
+        self.answer_skip_button.setEnabled(not busy)
+        self.reload_answer_button.setEnabled(not busy)
+
+    def _show_error(self, text):
+        self.answer_error.setText(text)
+        self.answer_error.show()
+
+    def run_demo(self, action):
+        if self.runner.busy:
+            self.demo_feedback.setText("上一个操作还在处理，请稍后再点。")
+            self.demo_feedback.show()
+            return
+        self.demo_seed_button.setEnabled(False)
+        self.demo_reset_button.setEnabled(False)
+        self.demo_feedback.hide()
+        func = (lambda: self.service.check_demo_seed(self.class_id)) if action == "seed" \
+            else (lambda: self.service.check_demo_reset(self.class_id))
+        self.runner.run(CheckWindow._call(func),
+                        lambda outcome: self._demo_done(action, outcome), self._demo_failed)
+
+    def _demo_done(self, action, outcome):
+        self.demo_seed_button.setEnabled(True)
+        self.demo_reset_button.setEnabled(True)
+        if not outcome.get("ok"):
+            self._demo_failed(outcome)
+            return
+        result = dict(outcome.get("value") or {})
+        if action == "seed":
+            seeded = dict(result.get("seeded") or {})
+            text = "已载入合成演示数据：新增 %d 份" % int(seeded.get("answers") or 0)
+            if int(seeded.get("skipped_existing") or 0):
+                text += "，跳过已存在的 %d 份" % int(seeded.get("skipped_existing") or 0)
+            text += "。只影响合成数据。"
+        else:
+            deleted = dict(result.get("deleted") or {})
+            kept = dict(result.get("kept") or {})
+            text = ("已重置合成数据：删除 %d 份作答、%d 条追问；真实导入的作答保留 %d 份。"
+                    % (int(deleted.get("answers") or 0), int(deleted.get("followups") or 0),
+                       int(kept.get("imported_answers") or 0)))
+        self._demo_notice = text
+        self.top_note.setText(text)
+        self.top_note.show()
+        self._batch = ""
+        self.load_overview()
+
+    def _demo_failed(self, outcome):
+        self.demo_seed_button.setEnabled(True)
+        self.demo_reset_button.setEnabled(True)
+        message = (outcome.get("message") if isinstance(outcome, dict) else str(outcome)) or "请稍后重试"
+        self.demo_feedback.setText("合成演示数据没有写入：%s" % message)
+        self.demo_feedback.show()
+
+    def _save(self, adopt=False, action="main"):
+        if self.runner.busy:
+            self._show_error("上一个操作还在处理，请稍后再点。")
+            return
+        detail = self._detail or {}
+        answer = dict(detail.get("answer") or {})
+        locate = dict(detail.get("locate") or {})
+        judgement = dict(detail.get("judgement") or {})
+        followup = dict(detail.get("followup") or {})
+        decided = (judgement.get("cause_state") or "") == "decided"
+        cause_state, cause_code, cause_label, cause_source = "undecided", "", "", ""
+        if action == "retract":
+            pass
+        elif action == "undecided":
+            cause_state = "undecided"
+        elif action == "manual":
+            cause_label = self.manual_label.text().strip()
+            if not cause_label:
+                self._show_error("人工判断要填「原因说明」；本次没有保存。")
+                return
+            cause_state = "decided"
+            cause_code = self.manual_code.text().strip()
+            cause_source = "teacher"
+        elif adopt:
+            chosen = self._selected_candidate()
+            if chosen is None:
+                self._show_error("先在候选里选一条，再点「采纳选中原因并保存」；本次没有保存。")
+                return
+            cause_state = "decided"
+            cause_code = chosen.get("code") or ""
+            cause_label = chosen.get("label") or ""
+            cause_source = "preset"
+        elif decided:
+            cause_state = "decided"
+            cause_code = judgement.get("cause_code") or ""
+            cause_label = judgement.get("cause_label_text") or ""
+        asked = self.ask_input.text().strip()
+        followed = "" if self._skipped else self.answer_input.toPlainText().strip()
+        if action != "retract" and followed and not asked:
+            self._show_error(
+                "要记录学生回答，请先在「当面追问」里填上你实际问的那一句（这份作答%s线下提问也可以）。"
+                "本次没有保存。" % ("" if followup.get("available") else "没有适用追问，"))
+            return
+        bad_index = locate.get("first_bad_index")
+        if (locate.get("status") or "") != "first_bad" or bad_index is None:
+            bad_index = None
+        payload = {
+            "expected_version": answer.get("version") or "",
+            "observed_step": self.observed_input.text().strip(),
+            "first_bad_index": bad_index,
+            "cause_code": cause_code,
+            "cause_label": cause_label,
+            "teacher_note": self.note_input.toPlainText().strip(),
+            "basis_note": self.basis_input.toPlainText().strip(),
+            "cause_state": cause_state,
+            "followup": {"question": asked, "answer_text": followed},
+        }
+        if cause_source:
+            payload["cause_source"] = cause_source
+        if action == "retract":
+            payload.pop("cause_code", None)
+            payload.pop("cause_label", None)
+            payload.pop("cause_state", None)
+            payload.pop("cause_source", None)
+            payload["progress"] = "pending"
+            payload["change_reason"] = "老师在页面上撤回本次结论"
+        self.answer_error.hide()
+        self.answer_error.setText("")
+        self.save_button.setEnabled(False)
+        self.runner.run(
+            CheckWindow._call(lambda: self.service.check_save(self.class_id, self._answer_id, payload)),
+            self._save_done, self._save_failed)
+
+    def _save_done(self, outcome):
+        if not outcome.get("ok"):
+            self._save_failed(outcome)
+            return
+        result = dict(outcome.get("value") or {})
+        self._show_receipt(result)
+
+    def _save_failed(self, outcome):
+        if isinstance(outcome, dict) and outcome.get("status") is not None:
+            status = outcome.get("status")
+            code = outcome.get("code") or ""
+            message = outcome.get("message") or "服务器返回错误"
+            if status == 409:
+                self._show_error(
+                    "这份作答已被更新（%s%s）：%s 本次没有保存。你填写的内容仍在本页；可以先复制下来，"
+                    "再点「刷新这份作答（会清空本页输入）」重新核对。"
+                    % (status, (" " + code) if code else "", message))
+                self.reload_answer_button.show()
+            elif status == 400:
+                self._show_error("保存被拒绝（400%s）：%s"
+                                 % ((" " + code) if code else "", message))
+            else:
+                self._show_error("保存失败（%s%s）：%s"
+                                 % (status, (" " + code) if code else "", message))
+        else:
+            self._show_error("保存失败：%s" % (outcome if not isinstance(outcome, dict)
+                                              else outcome.get("message") or "请稍后重试"))
+        self._sync_answer_buttons()
+
+    def _submit_content(self):
+        if self.runner.busy:
+            self.content_error.setText("上一个操作还在处理，请稍后再点。")
+            self.content_error.show()
+            return
+        answer = dict((self._detail or {}).get("answer") or {})
+        missing = self.content_missing.isChecked()
+        payload = {
+            "expected_version": answer.get("version") or "",
+            "student_steps": self.content_steps.toPlainText(),
+            "missing": "是" if missing else "否",
+        }
+        if missing:
+            payload["missing_reason"] = self.content_reason.text().strip()
+        self.content_error.hide()
+        self.content_button.setEnabled(False)
+        self.runner.run(
+            CheckWindow._call(lambda: self.service.check_update_content(
+                self.class_id, self._answer_id, payload)),
+            self._content_done, self._content_failed)
+
+    def _content_done(self, outcome):
+        self.content_button.setEnabled(True)
+        if not outcome.get("ok"):
+            self._content_failed(outcome)
+            return
+        result = dict(outcome.get("value") or {})
+        previous = str(result.get("previous_version") or "")[:8]
+        version = str(result.get("version") or "")[:8]
+        note = result.get("note") or ""
+        # 演示作答被校正：预置的五项匹配随旧内容失效，这份改为按当前内容规则定位（R1-01 隔离不变）。
+        preset_line = "预置已失效、按当前内容重新定位。" if result.get("demo_preset_invalidated") else ""
+        self._answer_flash = ("已按新内容重新分析：旧版本 %s 作废、新版本 %s；这份作答已回到待核对。%s%s"
+                              % (previous or "—", version or "—", preset_line, note)).strip()
+        self.content_steps.clear()
+        self.content_missing.setChecked(False)
+        self.content_reason.clear()
+        self.open_answer(self._answer_id)
+
+    def _content_failed(self, outcome):
+        self.content_button.setEnabled(True)
+        if isinstance(outcome, dict) and outcome.get("status") is not None:
+            status = outcome.get("status")
+            code = outcome.get("code") or ""
+            message = outcome.get("message") or "请稍后重试"
+            if status == 409:
+                self.content_error.setText(
+                    "这份作答的内容已经更新（%s%s）：%s 本次没有改动这份作答。"
+                    % (status, (" " + code) if code else "", message))
+            else:
+                self.content_error.setText(
+                    "补录没有保存（%s%s）：%s（本次没有改动这份作答）"
+                    % (status, (" " + code) if code else "", message))
+        else:
+            self.content_error.setText("补录没有保存：%s（本次没有改动这份作答）"
+                                       % (outcome if not isinstance(outcome, dict)
+                                          else outcome.get("message") or "请稍后重试"))
+        self.content_error.show()
+
+    def _show_receipt(self, result):
+        self._receipt = dict(result or {})
+        receipt = dict(result.get("receipt") or {})
+        after = dict(result.get("judgement") or {})
+        after_queue = dict(result.get("queue") or {})
+        after_answer = dict(result.get("answer") or {})
+        after_followup = dict(result.get("followup") or {})
+        after_locate = dict(result.get("locate") or {})
+        retracted = result.get("action") == "retracted"
+        class_name = receipt.get("class_name") or self.class_row.get("name") or "本班级"
+        assignment_name = receipt.get("assignment_name") or after_answer.get("batch") or "本次作业"
+        next_after = after_queue.get("next_answer_id")
+        is_last = after_queue.get("is_last") is True or not next_after
+        remaining = after_queue.get("remaining")
+        state = after.get("cause_state") or "undecided"
+        if state == "decided":
+            cause_text = "教师已判断：%s" % (after.get("cause_label_text") or after.get("cause_code")
+                                            or "（未命名原因）")
+        elif state == "not_applicable":
+            cause_text = "无需判断：本题没有可归因的错步（不计入已确认错因）"
+        else:
+            cause_text = "原因待判断（不计入已确认错因）"
+        observed = after.get("observed_step") or after_locate.get("first_bad_text") or ""
+        followed = after_followup.get("answer_text") if after_followup.get("recorded") else ""
+        candidates = list(result.get("candidates") or [])
+        adopted = after.get("cause_source") == "preset"
+        evidence = None
+        for item in candidates:
+            if (item.get("code") or "") == (after.get("cause_code") or ""):
+                evidence = item
+                break
+        if evidence is None and candidates:
+            evidence = candidates[0]
+
+        self.receipt_title.setText("已撤回" if retracted else "已保存")
+        self.receipt_dest.setText(("撤回后回到待核对：" if retracted else "已保存到：")
+                                  + "%s · %s" % (class_name, assignment_name))
+        self.receipt_ident.setText("%s · 第 %s 题 · 记录编号 %s" % (
+            after_answer.get("student_label") or "学生", after_answer.get("question_no") or "—",
+            after_answer.get("record_key") or "—"))
+        self.receipt_status.setText(("两轴状态：%s" % receipt["status_line"])
+                                    if receipt.get("status_line") else "")
+        self.receipt_saved_at.setText(("保存时间：%s" % str(receipt["saved_at"]).replace("T", " ")[:19])
+                                      if receipt.get("saved_at") else "")
+        progress = after.get("progress") or "pending"
+        self.receipt_progress_chip.setText(after.get("progress_label")
+                                           or PROGRESS_TEXT.get(progress, "待核对"))
+        self.receipt_cause_chip.setText(after.get("cause_label")
+                                        or CAUSE_STATE_TEXT.get(state, "原因待判断"))
+        self.receipt_progress_chip.setStyleSheet(CHECK_CHIP_ON if progress == "checked" else CHECK_CHIP_OFF)
+        if state == "decided":
+            self.receipt_cause_chip.setStyleSheet(CHECK_CHIP_ON)
+        elif state == "not_applicable":
+            self.receipt_cause_chip.setStyleSheet(CHECK_CHIP_NA)
+        else:
+            self.receipt_cause_chip.setStyleSheet(CHECK_CHIP_OFF)
+
+        self.receipt_observed.setText("观察到的错步：%s" % (observed or "（未填写）"))
+        if after.get("verify_source") == "manual":
+            self.receipt_verify.setText(
+                "核验来源：教师人工核验%s" % (("（人工记录的错步：「%s」）" % after["teacher_error_text"])
+                                        if after.get("teacher_error_text") else ""))
+        elif after.get("verify_source_label"):
+            self.receipt_verify.setText("核验来源：%s" % after["verify_source_label"])
+        else:
+            self.receipt_verify.setText("")
+        if followed:
+            self.receipt_quote.setText("问：%s\n学生原话：「%s」" % (
+                after_followup.get("question") or self.ask_input.text().strip() or CHECK_ASK_UNAVAILABLE,
+                followed))
+            self.receipt_quote.show()
+        else:
+            self.receipt_quote.setText("本次未记录学生回答（已跳过提问或未填写原话）。")
+            self.receipt_quote.show()
+        if after_followup.get("needs_review"):
+            self.receipt_review.setText(
+                "依据已更新，需复核：%s"
+                % (after_followup.get("review_note")
+                   or "这条追问依据的错步或原因已经变了，请重新确认后再当作当前证据。"))
+            self.receipt_review.show()
+        else:
+            self.receipt_review.hide()
+        self.receipt_cause_text.setText("教师判断：%s" % cause_text)
+        source = ""
+        if (after.get("cause_code") or after.get("cause_label_text")) and after.get("cause_source_label"):
+            source = "错因来源：%s" % after["cause_source_label"]
+        if evidence is not None:
+            source = (source + "；" if source else "") + "%s：%s" % (
+                "已采纳的候选" if adopted else "未采纳的候选依据",
+                evidence.get("label") or evidence.get("code") or "")
+        self.receipt_source_text.setText(source)
+        self.receipt_source_text.setVisible(bool(source))
+        self.receipt_basis_text.setText(("判断依据：%s" % after["basis_note"]) if after.get("basis_note") else "")
+        self.receipt_note_text.setText(("教师备注：%s" % after["teacher_note"]) if after.get("teacher_note") else "")
+
+        if retracted:
+            self.receipt_banner.setText(
+                "%s：本次结论已作废，本份回到「待核对」队列；旧结论与撤回理由留在历史里，可以重新核对。"
+                % (receipt.get("action_label") or "已撤回，回到待核对"))
+            self.receipt_primary.setText("返回课前总览")
+        elif is_last:
+            self.receipt_banner.setText("本次作业的待核对作答已全部处理完。可以从「查看核对记录」"
+                                        "找回原因待判断的记录，课堂上再补记学生原话。")
+            self.receipt_primary.setText("返回课前总览")
+        else:
+            self.receipt_banner.setText(
+                "这份已经保存，队列里还剩 %d 份待核对（仍是本次作业）。" % int(remaining or 0)
+                if remaining is not None else "同一个队列里还有待核对的作答。")
+            self.receipt_primary.setText("查看下一份")
+        self._receipt_next_id = next_after if not is_last else None
+        self.receipt_primary.show()
+        self.receipt_banner.show()
+        self.stack.setCurrentIndex(3)
+        self.receipt_scroll.verticalScrollBar().setValue(0)
+        self._refresh_layout()
+
+    def _receipt_primary_clicked(self):
+        next_id = getattr(self, "_receipt_next_id", None)
+        if next_id:
+            self.open_answer(next_id)
+        else:
+            self.load_overview()
+
+    def closeEvent(self, event):
+        super().closeEvent(event)
+        self.closed.emit()
+
+
 class ClassesWindow(QMainWindow):
     logged_out = Signal()
     open_students = Signal(dict)
@@ -5570,6 +7642,11 @@ class ClassesWindow(QMainWindow):
         self.class_stats_button.setEnabled(False)
         self.class_stats_button.setToolTip("按日期查看这个班级的错题分布")
         self.class_stats_button.clicked.connect(self.open_selected_class_stats)
+        self.check_button = QPushButton("作答核对")
+        self.check_button.setObjectName("openAnswerCheckButton")
+        self.check_button.setEnabled(False)
+        self.check_button.setToolTip("按批次核对本班作答：先看哪个能判、哪个要问一句，再逐份核对")
+        self.check_button.clicked.connect(self.open_check)
         self.ai_settings_button = QPushButton("AI 设置")
         self.ai_settings_button.setObjectName("openAiSettingsButton")
         self.ai_settings_button.setToolTip("配置云端视觉服务地址、模型和本次登录的密钥；默认不启用云端分析")
@@ -5588,6 +7665,7 @@ class ClassesWindow(QMainWindow):
         tools.addWidget(self.new_button)
         tools.addWidget(self.students_button)
         tools.addWidget(self.class_stats_button)
+        tools.addWidget(self.check_button)
         tools.addWidget(self.ai_settings_button)
         tools.addWidget(self.ai_trial_button)
         tools.addWidget(self.refresh_button)
@@ -5687,6 +7765,7 @@ class ClassesWindow(QMainWindow):
         enabled = self._selected_class() is not None
         self.students_button.setEnabled(enabled)
         self.class_stats_button.setEnabled(enabled)
+        self.check_button.setEnabled(enabled)
 
     def open_selected_class(self, *_):
         row = self._selected_class()
@@ -5701,6 +7780,15 @@ class ClassesWindow(QMainWindow):
             self.status.setText("先在列表里点一个班级")
             return
         self.show_class_stats.emit(row)
+
+    def open_check(self):
+        row = self._selected_class()
+        if row is None:
+            self.status.setText("先在列表里点一个班级")
+            return
+        self._check_window = CheckWindow(self.service, row, parent=self)
+        self._check_window.show()
+        self._check_window.raise_()
 
     def open_ai_settings(self):
         dialog = AISettingsDialog(self.service, self)
