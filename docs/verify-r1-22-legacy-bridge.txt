@@ -1,5 +1,5 @@
 数智伴学｜R1-T22 旧数据只读桥（answer_reviews 候选 + 原版 followups 追问记录）
-时间：2026-11-25T20:43:01+08:00
+时间：2026-11-25T21:04:35+08:00
 命令：python.exe tests\verify_r1_22_legacy_bridge.py
 目录：E:\Agent\小挑
 环境：Python 3.14.7 / Windows-11-10.0.26300-SP0

@@ -1,6 +1,6 @@
-时间：2026-11-25T20:25:32+08:00
-命令：python.exe C:\Users\Public\t7-verify\repo\tests\verify_core_150.py
-目录：C:\Users\Public\t7-verify\repo
+时间：2026-11-25T21:03:12+08:00
+命令：python.exe tests\verify_core_150.py
+目录：E:\Agent\小挑
 环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
 
 

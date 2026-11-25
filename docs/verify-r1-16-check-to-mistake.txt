@@ -1,7 +1,7 @@
 数智伴学｜R1-16 作答核对 → 原版错题（幂等落库 + 四页可见 + 撤回可回滚）
-时间：2026-11-25T20:25:19+08:00
-命令：python.exe C:\Users\Public\t7-verify\repo\tests\verify_r1_16_check_to_mistake.py
-目录：C:\Users\Public\t7-verify\repo
+时间：2026-11-25T21:04:34+08:00
+命令：python.exe tests\verify_r1_16_check_to_mistake.py
+目录：E:\Agent\小挑
 环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
 PASS 0.0 夹具就绪：2 份作答、0 条错题
 PASS 0.1 这份作答的定位结论是规则首处错步（first_bad），可以判错因
