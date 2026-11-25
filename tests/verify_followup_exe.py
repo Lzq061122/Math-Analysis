@@ -259,7 +259,18 @@ def click_first(window, auto_id):
 
 
 def consent_of(app, timeout=30):
-    return wait_win(app, "确认把问题与证据发给", timeout=timeout)
+    """T30 改写②：等不到确认框时返回 None（交给调用处写成显式空态断言），不再抛 RuntimeError。
+
+    原断言：`return wait_win(app, "确认把问题与证据发给", timeout=timeout)` —— 等不到就抛异常。
+    原依据：1.8.1「真实模式点生成必定弹确认框」，所以调用处可以假定拿到窗口对象。
+    新断言：内部捕获 RuntimeError 后返回 None；调用处必须先断言非 None，再操作控件。
+    改写依据：R1-14 下账号开关关闭时只会显示 403 文案、不弹确认框，这是可预期空态；
+              让异常替我们报错会把「断言失败」变成「崩溃」，也拿不到失败标题。
+    """
+    try:
+        return wait_win(app, "确认把问题与证据发给", timeout=timeout)
+    except RuntimeError:
+        return None
 
 
 def native_handles(pid):
@@ -459,6 +470,24 @@ def main():
           len(rows("SELECT id FROM answer_reviews WHERE mistake_id=%d" % ids["mistake_id"],
                    data_dir)) == 1)
 
+    log("")
+    log("== 二b、在打包版自己的数据目录里开启「个体数据外发」开关 ==")
+    # T30 改写①（本节前提，与 t26 源码级口径一致）
+    # 原断言：配好自定义通道后，点「生成候选」→ 弹确认框 → 勾选 → 出候选（1.8.1 口径）。
+    # 原依据：1.8.1「真实模式 = 老师点确认就发送」（数智伴学_Agent开发规格.md 1.8.1 章）。
+    # 新断言：先按 R1-14 在**EXE 自己那个库**里把账号开关置为开启并断言生效，后续断言不变。
+    # 改写依据：R1-07 + R1-14 裁定「默认不外发；教师账号显式开启后才真调用」——
+    #           旧口径等于把「默认外发」写成预期，改实现让旧断言变绿就等于把缺陷重新打开。
+    from desktop.service import DesktopService
+
+    switch_service = DesktopService(data_dir)
+    switch_service.login("exe_teacher", "pw123456")
+    switch = switch_service.set_ai_individual(True)
+    check("二b.1 EXE 库里的账号开关已开启（否则六入口一律 403 ai_isolation）",
+          switch.get("ai_individual_allowed") is True, switch)
+    check("二b.2 打包版注入了 provider，具备真实外发能力",
+          switch.get("ai_egress_available") is True, switch)
+
     port = V.start_ai_stub()
     stub_base = "http://127.0.0.1:%d/v1" % port
     log("本地桩：%s" % stub_base)
@@ -536,6 +565,18 @@ def main():
     V.click(follow, "followupSuggest")
     consent = consent_of(app)
     check("真实模式先弹确认框", bool(consent))
+    # T30 改写②（把「等不到窗口」从崩溃改成空态断言）
+    # 原断言：consent_of(app) 直接返回窗口对象；等不到就抛 RuntimeError 把整套件打断
+    #         （t29 实测崩在：RuntimeError: 等不到窗口：确认把问题与证据发给）。
+    # 原依据：1.8.1「真实模式点生成必定弹确认框」。
+    # 新断言：先断言「确认框应当出现」；若等不到，显式记一条失败并说明原因，
+    #         然后停止后续操作（不再对 None 取控件 → 不再 AttributeError/超时崩）。
+    # 改写依据：R1-14 下账号开关关闭时界面只给 403 文案、不弹确认框，这属于可预期的空态，
+    #           必须写成断言而不是让异常替我们报错。
+    if consent is None:
+        check("六.0 等不到确认框时的空态说明（不再抛异常打断整套件）", False,
+              "等不到「确认把问题与证据发给」窗口；若账号开关未开启，界面只会显示 403 文案")
+        return finish()
     text = V.value_of(consent, "followupConsentText", "") or ""
     check("确认框列出会发送的内容", "本次会发送" in text and "题目原文" in text, text[:80])
     check("确认框说明不发送身份信息", "不会发送学生姓名" in text)
@@ -607,6 +648,11 @@ def main():
     V.click(follow, "followupUpdate")
     consent = consent_of(app)
     check("更新候选也先确认", bool(consent))
+    # T30 改写②：与第六节同一处理——等不到确认框时给明确失败，不再对 None 取控件。
+    if consent is None:
+        check("九.0 等不到「更新确认框」时的空态说明（不再抛异常）", False,
+              "等不到「确认把问题与证据发给」窗口；账号开关关闭时界面只给 403 文案")
+        return finish()
     ctext = ""
     if consent:
         ctext = V.value_of(consent, "followupConsentText", "") or ""
@@ -765,6 +811,71 @@ def main():
     check("作答分析截图 1366x768", size10 > 10000, "%d 字节" % size10)
     size11 = shoot(answer_win, "exe-answers-1920x1080.png", 1920, 1080)
     check("作答分析截图 1920x1080", size11 > 10000, "%d 字节" % size11)
+
+    log("")
+    log("== 十六、个体 AI 开关：关闭 → 六入口 403；开启 → 立即可用 ==")
+    # T30 新增（整段为新断言，不替换任何既有断言）：打包版同一份库上验双路径。
+    # 用的是 EXE 自己那个数据目录里的账号（与 EXE 内登录的是同一个 teacher 账号）。
+    from app import api as api_mod
+    from desktop.service import ApiError as ServiceApiError, DesktopService as _DS
+
+    gate_service = _DS(data_dir)
+    gate_service.login("exe_teacher", "pw123456")
+    # 同一个库、同一个账号，但新开的 service 实例没有本次登录的密钥（密钥只在内存），
+    # 所以要把本机桩配好，否则「开启后能产出内容」这条会因「未配置密钥」失败——
+    # 那是配置缺失，不是闸门问题，不能混作一条断言。
+    gate_service.save_ai_settings("custom", stub_base, "stub-vision", "sk-x",
+                                  service_name="本地模拟服务")
+    off = gate_service.set_ai_individual(False)
+    check("十六.1 关闭后账号状态是「未授权」",
+          off.get("ai_individual_allowed") is False, off.get("ai_individual_allowed"))
+    answer_rows = rows("SELECT id FROM answers LIMIT 1", data_dir)
+    answer_id = answer_rows[0][0] if answer_rows else None
+    follow_ids = rows("SELECT id FROM followups ORDER BY id LIMIT 1", data_dir)
+    follow_id = follow_ids[0][0] if follow_ids else None
+    stub_before = 0
+
+    def expect_isolation(name, call):
+        try:
+            result = call()
+        except ServiceApiError as exc:
+            check(name,
+                  exc.status == 403 and exc.code == "ai_isolation" and "已停用" in exc.message,
+                  (exc.status, exc.code, (exc.message or "")[:60]))
+            return
+        except Exception as exc:  # noqa: BLE001
+            check(name, False, "未按 403 拦断，而是 %s: %s" % (type(exc).__name__, exc))
+            return
+        check(name, False, "没有抛 403，而是返回了 %r" % (result,))
+
+    expect_isolation("十六.2 错题照片分析建议 → 403 ai_isolation",
+                     lambda: gate_service.preview_analysis(ids["mistake_id"], consent=True,
+                                                           task_id="t30-a"))
+    expect_isolation("十六.3 错题重新分析（旧入口同一道闸门）→ 403 ai_isolation",
+                     lambda: api_mod.api_reanalyze(
+                         gate_service._ctx(params={"id": ids["mistake_id"]},
+                                           body={"consent": True})))
+    expect_isolation("十六.4 个人辅导建议生成 → 403 ai_isolation",
+                     lambda: gate_service.generate_student_advice(
+                         ids["class_id"], ids["student_id"], consent=True))
+    expect_isolation("十六.5 追问候选生成 → 403 ai_isolation",
+                     lambda: gate_service.suggest_followup(
+                         ids["class_id"], ids["student_id"], "移项", consent=True))
+    expect_isolation("十六.6 追问后的错因候选生成 → 403 ai_isolation",
+                     lambda: gate_service.update_followup_causes(
+                         ids["class_id"], ids["student_id"], follow_id, consent=True))
+    expect_isolation("十六.7 作答分析 → 403 ai_isolation",
+                     lambda: gate_service.analyse_answer(
+                         ids["class_id"], answer_id, consent=True))
+    on = gate_service.set_ai_individual(True)
+    check("十六.8 重新开启后账号状态是「已授权」",
+          on.get("ai_individual_allowed") is True, on.get("ai_individual_allowed"))
+    advice = gate_service.generate_student_advice(ids["class_id"], ids["student_id"], consent=True)
+    check("十六.9 开启后同一条业务路径立刻能产出建议（不是「反正会 403」）",
+          advice.get("ok") is True
+          and bool((advice.get("advice") or {}).get("content")),
+          (advice.get("ok"), advice.get("error")))
+
     close_app(app, proc)
     V.stop_ai_stub()
     return finish()

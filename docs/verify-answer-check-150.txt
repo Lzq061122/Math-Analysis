@@ -1,5 +1,5 @@
 数智伴学｜作答核对与追问（第一轮 A1–A7）源码级验收
-时间：2026-11-25T21:07:49+08:00
+时间：2026-11-25T21:17:12+08:00
 命令：python.exe tests\verify_answer_check_150.py
 目录：E:\Agent\小挑
 环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
@@ -9,7 +9,7 @@
 被测文件 src/web/styles.css sha256=E8F2178D9358 mtime=2026-11-25 20:14:42 size=18105
 被测文件 src/app/equation_steps.py sha256=11D90941D317 mtime=2026-11-25 18:20:18 size=36183
 被测文件 src/app/demo_answers.py sha256=819B6463F1DA mtime=2026-11-25 19:14:10 size=44511
-被测文件 src/app/answer_check.py sha256=3ECAFBBEE4A9 mtime=2026-11-25 20:35:05 size=121485
+被测文件 src/app/answer_check.py sha256=CAE9834DF2F2 mtime=2026-11-25 21:15:54 size=123019
 被测文件 src/app/stats.py sha256=D737CA4A9042 mtime=2026-11-25 18:22:31 size=12454
 被测文件 src/app/api.py sha256=E298B41426CC mtime=2026-11-25 19:50:02 size=89797
 

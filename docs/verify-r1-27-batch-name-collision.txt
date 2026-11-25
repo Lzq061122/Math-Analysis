@@ -1,0 +1,45 @@
+数智伴学｜R1-08 修复：真实作答撞演示批名（总览/队列/统计三处一致）
+时间：2026-11-25T21:17:11+08:00
+命令：python.exe tests\verify_r1_27_batch_name_collision.py
+目录：E:\Agent\小挑
+环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
+演示批名（来自 db.DEMO_BATCH）：【合成演示】不计入真实作业
+
+== 一、撞名真实作答：三处必须一致（都当真实批次列出并计数） ==
+总览 assignment={"batch": "【合成演示】不计入真实作业", "name": "【合成演示】不计入真实作业", "total": 1, "pending": 1, "checked": 0, "missing": 0, "synthetic": false}；assignments 列出=['【合成演示】不计入真实作业']；队列=[1]；统计 expected=1
+PASS 1.1 总览不再把它当成演示批次（synthetic=false）
+PASS 1.2 总览的应交数 = 1（这份真实作答数得到）
+PASS 1.3 总览的 assignments 里列出了这个批次
+PASS 1.4 队列里有这份作答（不再看不见）
+PASS 1.5 统计 expected = 1（与总览同口径）
+PASS 1.6 三处口径一致：总览应交 == 队列条数 == 统计 expected
+PASS 1.7 状态不再是 no_answers（有真实作答要能核对）
+
+== 二、纯演示批次：仍按演示口径，不进真实统计 ==
+纯演示批次名（来自 demo_answers.DEMO_BATCHES）：【合成演示】9月第3次作业
+PASS 2.1 纯演示批次仍标 synthetic=true（演示口径没被改坏）
+PASS 2.2 纯演示批次的应交 = 演示行数（演示数据自己能核对）
+PASS 2.3 统计永远不数演示数据（纯演示批次的 expected = 0）
+
+== 三、同名混合：真实行 + 演示行同批 → 按真实批次列出，只数真实行 ==
+PASS 3.1 混合批次 synthetic=false（有真实行就按真实批次）
+PASS 3.2 混合批次 total = 1（只数真实行，演示行不计入）
+PASS 3.3 队列里只有真实那份（演示行不混进真实队列）
+PASS 3.4 统计 expected 与总览一致（=1）
+PASS 3.5 撞名批次里保存判断能成功（走的是真实批次口径）
+PASS 3.6 保存后三处仍一致（总览应交 1 / 队列 0 待核对 / 统计 expected 1）
+
+== 四、反向自证：判据改回「只看批名」就必须重新出现缺陷 ==
+变异体：assignment={"batch": "【合成演示】不计入真实作业", "name": "【合成演示】不计入真实作业", "total": 0, "pending": 0, "checked": 0, "missing": 0, "synthetic": true}；统计 expected=2；队列=[]
+PASS 4.1 变异体复现缺陷签名 {total:0, synthetic:true}（该批真实作答数=2）
+PASS 4.2 变异体下这份真实作答在队列里不可见
+PASS 4.3 而统计仍然数得到（=1）—— 这正是「看不见但数得到」
+PASS 4.4 断言不恒真：变异体下 1.6 那条『三处一致』必然不成立
+PASS 4.5 恢复真实实现后三处又一致（total=1、expected=1）
+
+== 五、两个零引用兼容壳已删除 ==
+PASS 5.1 _default_question 已不存在
+PASS 5.2 _followup_source 已不存在
+
+合计 23 项，通过 23，失败 0
+退出码：0
