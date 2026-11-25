@@ -1,5 +1,5 @@
 数智伴学｜R1-T18 桌面 service 层：作答核对 + AI 开关（进程内调 api，错误原样上抛）
-时间：2026-11-25T21:07:09+08:00
+时间：2026-11-25T22:34:51+08:00
 命令：python.exe tests\verify_r1_18_desktop_service.py
 目录：E:\Agent\小挑
 环境：Python 3.12.10 / Windows-11-10.0.26300-SP0

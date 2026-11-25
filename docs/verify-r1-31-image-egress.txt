@@ -1,0 +1,35 @@
+数智伴学｜R1-T31 授权后的图片外发（mock 永不读图 · 未授权零读取）
+时间：2026-11-25T22:34:28+08:00
+命令：python.exe tests\verify_r1_31_image_egress.py
+目录：E:\Agent\小挑
+环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
+PASS 0.1 夹具就绪：错题有照片且文件真的存在
+
+== 一、开关关：403 ai_isolation，且一次 uploads 读取都没有发生 ==
+PASS 1.1 未开启开关 → 403 ai_isolation（原口径不变）
+PASS 1.2 未授权时一次 uploads 读取都没有发生（不是靠开关布尔假放行）
+PASS 1.3 未授权时桩一次请求都没收到
+
+== 二、开关开：真发一次（payload 带图片、无身份字段、审计只记字段名） ==
+PASS 2.1 授权后错题照片分析真的发出去了（桩收到 1 次）
+PASS 2.2 不再返回 error_code=payload（缺口已修）
+PASS 2.3 授权路径确实读了照片（uploads 至少被读一次）
+PASS 2.4 payload 里含图片数据（image_url/data 或 base64 片段）
+PASS 2.5 payload 不含身份字段（姓名/学号/班级名/answer_id/account）
+PASS 2.6 审计写了 1 条，且只记字段名与字节数（不含图片内容）
+PASS 2.7 审计里没有任何身份取值（姓名/学号/answer_id）
+
+== 三、图片缺失：明确错误、不发送（沿用 vision 文案） ==
+PASS 3.1 图片缺失 → 400 payload + 「没有可发送的图片数据」
+PASS 3.2 图片缺失时一次都没发送
+
+== 四、图片超过 12MB：明确错误、不发送 ==
+PASS 4.1 超过 12MB → 400 payload + 「字节上限」文案
+PASS 4.2 超限时一次都没发送
+
+== 五、mock 通道语义不变：不读照片字节、仍 409 mock ==
+PASS 5.1 mock 通道仍是「当前是模拟分析」口径（409 mock 或被包成 ok=false）
+PASS 5.2 mock 通道下一次 uploads 读取都没有发生（_mock_job 不读图）
+
+合计 17 项，通过 17，失败 0
+退出码：0

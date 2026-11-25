@@ -157,3 +157,43 @@ cd E:\Agent\小挑
 | 追问/AI 设置截图 | 套件自写 `docs/screenshots/1.8.0-exe/`（如存在） |
 | 临时解压与临时库 | `tests/.tmp-test/answers-exe-*`、`followup-exe-*`、`review-exe-*` 等（跑完不删，便于复查） |
 | 本轮驱动的原始控制台输出 | `C:\Users\Public\t29-verify\stdout-*.log`、`exe-summary.txt`（不入库） |
+
+---
+
+## 8. 2026-11-25 新构建回归（t31 修复之后）
+
+**本次跑的是新构建**（不是 11/19 那个包）。旧构建已移到 `E:\Agent\_旧构建_1.8.1_1119b`。
+
+| 产物 | sha256（前 32 位） | 大小 | 修改时间 |
+|---|---|---|---|
+| `数智伴学\数智伴学.exe` | `7C6C4F2F02F732538446AA00C2EE20CA…` | 2591095 B | 2026-11-25 22:20:19 |
+| `build\程序包\数智伴学-1.8.1.zip` | `6FAB7CF8507ECE8B5F5A4F9C24A68BCF…` | 46003273 B | 2026-11-25 22:20:27 |
+
+跑法：`E:\Agent\venv-desktop\Scripts\python.exe tests\<套件>.py`，**串行**执行（每个套件会自己解压 zip 到 `tests/.tmp-test/*` 并起一个 exe 进程，并发会抢窗口与数据库锁）。原始输出在 `C:\Users\Public\t32-exe\*.log`（不入库）。
+
+| 套件 | 项数 | 通过 | 失败 | 退出码 | 耗时 | 上一轮对比 |
+|---|---|---|---|---|---|---|
+| `verify_answers_exe.py` | 28 | 28 | 0 | 0 | 54.8s | 28/28（持平） |
+| `verify_followup_exe.py` | 105 | 105 | 0 | 0 | 135.0s | 105/105（持平） |
+| `verify_review_exe.py` | 55 | 55 | 0 | 0 | 118.2s | 55/55（持平） |
+| `verify_ai_146_exe.py` | 89 | 89 | 0 | 0 | 177.8s | **68 项 / 66 通过 / 2 失败 → 全绿** |
+| `verify_layout_exe.py` | 80 | 80 | 0 | 0 | 85.5s | 80/80（持平） |
+| **合计** | **357** | **357** | **0** | 0 | 约 9.5 分钟 | — |
+
+### 8.1 上一轮那 2 条失败已转绿（照片链路）
+
+上一轮 `verify_ai_146_exe` 的 2 条失败是「错题照片分析发不出去」（`error_code=payload`、桩收到 0 次）。本轮同类证据已变绿：
+
+- `PASS 试分析确实发出一次请求 ｜ 1`
+- `PASS 请求实际包含图片 ｜ {'model': 'qwen3.8-max', 'has_image': True, ...}`
+- `PASS 自定义请求实际包含图片 ｜ {'model': 'vision-x', 'has_image': True, ...}`
+- `PASS 请求文字不含学生姓名 ｜ 未出现学生姓名`
+- 未授权侧仍按原口径拒绝：`PASS 八.2 错题照片分析建议 → 403 ai_isolation`、`PASS 八.3 错题重新分析（旧入口同一道闸门）→ 403 ai_isolation`
+
+注：该套件本轮 **89 项**（上一轮 68 项），是套件自身扩充了「开关开启后图片实际发送 + 审计 + 未授权仍拒」的断言，属预期增长，不是漏测。
+
+### 8.2 临时产物清理
+
+- t30 遗留的两个临时文件 `tests/.t30_mutant_followup_exe.py`、`docs/.t30-mutant-followup-exe.txt`：**已不存在**（本轮核对 `Test-Path` 均为 False），无需再删。
+- 各套件运行时生成的 `tests/.tmp-test/*`、`tests/.tmp-*` 属运行期解压/临时库，**不入库**；本轮跑完已清掉残留的 `tests/.tmp-*`（含历次变体目录）。
+- 今后**变异体脚本一律放 `C:\Users\Public\`**，不落仓库。

@@ -1,5 +1,5 @@
 数智伴学｜R1-14 个体 AI 账号开关（默认关 / 开启可用 / 脱敏 / 审计）
-时间：2026-11-25T21:04:31+08:00
+时间：2026-11-25T22:34:22+08:00
 命令：python.exe tests\verify_r1_14_account_ai.py
 目录：E:\Agent\小挑
 环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
@@ -24,11 +24,11 @@ PASS 2.5 网页端可以关回去（偏好读写对称）
 PASS 3.0 通过 /api/account/ai-individual 打开开关（桌面端）
 PASS 3.1 桌面端 /api/meta 能读到开关（网页端读不到，见 2.1）
 PASS 3.2 6 个入口全部放行（不再 ai_isolation）
-PASS 3.3 开启后确实发生了外发（桩收到 3 次请求）
-实际发送的请求体字段（3 条）：[{"path": "/v1/chat/completions", "fields": ["messages[system,user]", "model", "temperature", "max_tokens"]}, {"path": "/v1/chat/completions", "fields": ["messages[system,user]", "model", "temperature", "max_tokens"]}, {"path": "/v1/chat/completions", "fields": ["messages[system,user]", "model", "temperature", "max_tokens"]}]
+PASS 3.3 开启后确实发生了外发（桩收到 2 次请求）
+实际发送的请求体字段（2 条）：[{"path": "/v1/chat/completions", "fields": ["messages[system,user]", "model", "content[image_url,text]", "image_url", "temperature", "max_tokens"]}, {"path": "/v1/chat/completions", "fields": ["messages[system,user]", "model", "temperature", "max_tokens"]}]
 PASS 3.4 payload 里没有任何身份字段（姓名/学号/班级名/answer_id/account）
 PASS 3.5 payload 字段全在白名单形状里（只有 model/messages/content/image/temperature 等）
-PASS 3.6 每次真实外发都留了审计（审计 3 行 / 发送 3 次）
+PASS 3.6 每次真实外发都留了审计（审计 2 行 / 发送 2 次）
 PASS 3.7 审计字段齐全：人 / 时间 / 流程 / 字段清单 / 通道
 PASS 3.8 审计只记字段名、不记取值（不含学生姓名/学号/题干原文）
 PASS 3.9 审计里能区分是哪个流程（flow 名来自 6 个入口之一）
@@ -40,6 +40,7 @@ PASS 4.2 关闭后没有再发生任何外发
 PASS 4.3 拒绝文案与 R1-07 逐字一致（默认关 = 行为不变）
 
 == 四之二、闸门顺序：mock/None 必须是 409 mock，**不是** 403 ai_isolation ==
+PASS 4b.0 前置：该生有已确认错题（否则 tutor.generate 先返回 409 empty，测不到闸门顺序）
 PASS 4b.1 mock provider → 409 + code=mock（文案含「当前是模拟分析」，绝不是 403 ai_isolation）
 PASS 4b.2 provider=None（模拟）→ 同样 409 + code=mock
 PASS 4b.3 真实通道 + 未开启 → 仍 403 ai_isolation（放行顺序不反噬真实通道）
@@ -51,5 +52,5 @@ PASS 5.2 旧库首次外发时自建审计表并写入成功
 PASS 5.3 旧库写入开关时自动补列（幂等：第二次不再加）
 PASS 5.4 补列后默认仍是关（老账号不会被悄悄打开）
 
-合计 34 项，通过 34，失败 0
+合计 35 项，通过 35，失败 0
 退出码：0
