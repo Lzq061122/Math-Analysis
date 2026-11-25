@@ -64,25 +64,15 @@ ANSWERS_DDL = (
     "CREATE INDEX IF NOT EXISTS idx_answers_student ON answers(student_id)",
     "CREATE INDEX IF NOT EXISTS idx_answers_batch ON answers(class_id, batch)",
     "CREATE INDEX IF NOT EXISTS idx_answers_source ON answers(class_id, source)",
-    # 库级不变量：演示写入的作答只能落在演示批次里。用 AFTER 触发器「归位」而不是 BEFORE
-    # 里 RAISE，是为了不把任何一次导入变成报错或丢行——数据一条不少，只是回到它该在的批次。
-    """CREATE TRIGGER IF NOT EXISTS trg_answers_demo_batch_ins
-AFTER INSERT ON answers
-WHEN NEW.source = '{source}' AND substr(NEW.record_key, 1, {plen}) = '{prefix}'
-     AND NEW.batch <> '{batch}'
-BEGIN
-    UPDATE answers SET batch = '{batch}' WHERE id = NEW.id;
-END""".format(source=DEMO_SOURCE, prefix=DEMO_RECORD_PREFIX, batch=DEMO_BATCH,
-              plen=len(DEMO_RECORD_PREFIX)),
-    """CREATE TRIGGER IF NOT EXISTS trg_answers_demo_batch_upd
-AFTER UPDATE OF source, record_key, batch ON answers
-WHEN NEW.source = '{source}' AND substr(NEW.record_key, 1, {plen}) = '{prefix}'
-     AND NEW.batch <> '{batch}'
-BEGIN
-    UPDATE answers SET batch = '{batch}' WHERE id = NEW.id;
-END""".format(source=DEMO_SOURCE, prefix=DEMO_RECORD_PREFIX, batch=DEMO_BATCH,
-              plen=len(DEMO_RECORD_PREFIX)),
 )
+
+# T6：两个「演示批次归位」触发器（trg_answers_demo_batch_ins / _upd）已删除。
+# 理由（船长裁定）：它们是隐形行为——写入时悄悄改 batch，谁也说不清某一行为什么换了作业；
+# 而且它们是**唯一**防线时，绕过触发器（或旧库还没建触发器）统计就会被演示数据污染。
+# 现在改为显式口径：answer_check 的每条查询按 (batch, source) 收口，stats.answer_check_stats
+# 也显式 `AND a.source<>'合成演示'`；迁移期的一次性归位（ensure_answers_schema）保留，
+# 旧库里演示写入的行仍然会被挪回演示批次，但那是**一次可见的迁移**，不是每次写入都发生的魔法。
+# 旧库若已建过触发器，打开时由 Database._ensure_columns() 显式 DROP（见那里的注释）。
 
 # 作答审核：老师针对一条作答发起一次 AI 分析后留下的候选错因。
 # 建议本身不是错题；只有老师确认时才生成正式错题，并把 mistake_id 记回来。
@@ -558,23 +548,24 @@ ANSWER_INDEX_NAMES = (
     "idx_reviews_answer_confirmed",
 )
 
-# 库级不变量（演示作答只能待在演示批次）由这两个触发器保证；缺一个就当结构没升级到位。
-ANSWER_TRIGGER_NAMES = (
+# 已废弃的库级触发器名：T6 起不再创建，旧库打开时由 Database._ensure_columns() 显式 DROP。
+RETIRED_TRIGGER_NAMES = (
     "trg_answers_demo_batch_ins",
     "trg_answers_demo_batch_upd",
 )
 
 
 def answers_schema_ready(db_file):
-    """只读判断已有库是否已有作答记录表、作答审核表、学生编号列、索引与演示批次触发器。"""
+    """只读判断已有库是否已有作答记录表、作答审核表、学生编号列与索引。
+
+    注意：**不再**要求那两个「演示批次归位」触发器（T6 已删除这套隐形行为）。
+    旧库里若还留着它们，结构仍算就绪；它们会被 Database 打开时清掉，不影响判定。
+    """
     uri = "file:%s?mode=ro" % db_file.replace("?", "%3f")
     conn = sqlite3.connect(uri, uri=True)
     try:
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        objects = {
-            row[0] for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type IN ('index', 'trigger')")
-        }
+        indexes = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
         columns = {row[1] for row in conn.execute("PRAGMA table_info(students)")}
     finally:
         conn.close()
@@ -582,8 +573,7 @@ def answers_schema_ready(db_file):
         "answers" in tables
         and "answer_reviews" in tables
         and "code" in columns
-        and all(name in objects for name in ANSWER_INDEX_NAMES)
-        and all(name in objects for name in ANSWER_TRIGGER_NAMES)
+        and all(name in indexes for name in ANSWER_INDEX_NAMES)
     )
 
 
