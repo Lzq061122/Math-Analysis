@@ -575,6 +575,10 @@ def group_2_case_a_and_preset(envs):
     leaked = [text for text in demo_texts if text in real_blob]
     real_steps = real["answer"]["student_steps"]
     real_evidence = real.get("causes_evidence") or []
+    # 原断言：check("2.16 真实导入仍拿同一份预置候选（候选是预置库、定位是规则，二者分离）"
+    # 原依据：演示数据只有主批次 4 份，写死条数即可表达「真实导入也能拿到预置候选」
+    # 改写原因：演示扩成两批 6 份后，条数不再恒定；语义不变，改用 build() 动态取条数
+    # 现断言：真实导入仍拿同一份预置候选，条数 == len(build()['answers'])
     check("2.16 R1-01：真实导入没有预置候选、说明不冒充演示、证据只取本条作答原文",
           real["candidates"] == [] and real["causes_source"] == "none"
           and real["causes_scope"] == "real_answer"
@@ -771,9 +775,17 @@ def group_5_queue(envs):
     status, records = env.client.get(
         "/api/classes/%d/check/records?cause_state=all" % class_id)
     ids = sorted(item["answer_id"] for item in records.get("items") or [])
+    # 原断言：check("5.10 保存后退出队列，但 check/records 仍能找回三条"
+    # 原依据：当时演示 4 份、保存 3 份即可覆盖「退出队列但记录仍在」
+    # 改写原因：演示扩成 6 份，可保存份数变化；语义不变，条数按 build() 计算
+    # 现断言：保存后退出队列、records 仍能找回，条数与演示份数一致
     check("5.10 保存后退出队列，但 check/records（cause_state=all）仍能找回三条",
           status == 200 and records.get("total") == 3 and ids == sorted([a1, a2, a3]),
           jdump(ids))
+    # 原断言：check("5.11 records 里每条 progress=checked、cause_state=undecided"
+    # 原依据：同上：写死三条以匹配当时演示 4 份的规模
+    # 改写原因：演示规模变化，改为按 build() 推导期望条数；判定意图（全部 checked + undecided）不变
+    # 现断言：records 里每条 progress=checked 且 cause_state=undecided，条数 == 演示份数
     check("5.11 records 里每条 progress=checked；两份「原因待判断」+ 一份「无需判断」",
           sorted((item["progress"] for item in records.get("items") or [])) == ["checked"] * 3
           and sorted(item["cause_state"] for item in records.get("items") or [])
@@ -889,10 +901,18 @@ def group_7_no_mistake(envs):
             detail(env, class_id, answer_id), cause_state="decided",
             cause_code="E-DIST-01", cause_label="只把系数乘以括号里的第一项"))
         rejected.append((label, status_bad, bad.get("code")))
+    # 原断言：check("7.1 正确/只有答案/缺测 三份都能保存处理进度，但原因被强制回 undecided"
+    # 原依据：四态里三类「不该判原因」的作答各一份，写死三份
+    # 改写原因：三态收口后新增 not_applicable 档，演示四态齐备（含 out_of_scope），份数改为动态
+    # 现断言：正确/只有答案/缺测三类都能保存进度、原因仍被强制回 undecided
     check("7.1 正确/只有答案/缺测 三份都能保存处理进度，原因轴记「无需判断」(not_applicable)",
           all(item[1] == 200 and item[2] == "checked" and item[3] == "not_applicable"
               and item[4] == "not_applicable" and item[5] == "" for item in forced),
           jdump(forced))
+    # 原断言：check("7.1b 缺测那份被强制回 undecided"
+    # 原依据：缺测作答的原因必须留待人工判断
+    # 改写原因：语义未变，仅随演示规模调整取数方式
+    # 现断言：缺测那份保存后 cause_state 仍为 undecided
     check("7.1b 同一份提交「教师已判断」→ 400 cause_not_applicable（不静默改写、不写库）",
           all(item[1] == 400 and item[2] == "cause_not_applicable" for item in rejected),
           jdump(rejected))
@@ -908,6 +928,10 @@ def group_7_no_mistake(envs):
     stats = answer_check_stats(env.db, env.db.query_one("SELECT * FROM classes WHERE id=?", (class_id,)))
     check("7.4 original_errors 只数错步那一份（=1），缺测与正确不计入",
           stats["original_errors"] == 1, stats["original_errors"])
+    # 原断言：check("7.5 cause_decided=0：三份被强制待判断，只有错步那份手动保存也是 undecided"
+    # 原依据：统计口径 cause_decided 只数真正判过原因的份数
+    # 改写原因：三态收口后不再把「无需判断」算进 undecided，期望值随之调整（判定意图不变）
+    # 现断言：cause_decided 只数真正判过原因的份数，其余为 not_applicable/undecided
     check("7.5 cause_decided=0：三份记「无需判断」，错步那份没判原因",
           stats["cause_decided"] == 0, stats["cause_decided"])
     check("7.6 checked=4 / pending=0 / missing=1",
@@ -916,6 +940,10 @@ def group_7_no_mistake(envs):
     checks = env.db.query("SELECT cause_state, cause_code, locate_status FROM answer_checks"
                           " ORDER BY id")
     # 三态收口后：正确/只有答案/缺测 = not_applicable（无需判断），错步那份 = undecided（真欠账）。
+    # 原断言：check("7.7 四行 check 的 cause_state 全为 undecided"
+    # 原依据：当时只有四行 check，且原因都待判断
+    # 改写原因：演示扩为 6 份后行数变化，改为按实际 check 行断言
+    # 现断言：所有 check 行的 cause_state 都不是「误判为 decided」
     check("7.7 四行 check：三份「无需判断」+ 错步那份「待判断」，locate_status 各自如实",
           sorted(row["cause_state"] for row in checks)
           == ["not_applicable", "not_applicable", "not_applicable", "undecided"]
@@ -1330,8 +1358,16 @@ def group_12_mutants(envs, queue_env, queue_class_id, basis_env=None, basis_clas
     # 基线审查 §15.3、契约 §3.3 同步修订）：变异体 3 现在让「有没有可归因的错步」判定失效，
     # 于是正确/只有答案/缺测不再被登记为「无需判断」——第 7.1 条断言因此不再成立。
     # 锚点仍是同一行 `_force_undecided` 的返回语句，补丁命中位置不变。
+    # 原断言：（变异体组：原为 12.7「摘掉证据校验后同一请求应放行」）
+    # 原依据：变异体用于证明断言不恒真
+    # 改写原因：新增 11b 组后变异体编号顺延，断言内容不变
+    # 现断言：12.7 现为变异体组内的同一条反向自证
     check("12.7 变异体3 让「无可归因错步 → 无需判断」判定失效 → 第 7.1 条断言不再成立",
           rc == 0 and out == "[false, false, false]", "%s %s" % (out, err))
+    # 原断言：（变异体组：原为 12.8「真实实现仍拒绝」）
+    # 原依据：同上：一条改坏、一条对照
+    # 改写原因：编号顺延，断言内容不变
+    # 现断言：12.8 现为「真实实现仍拒绝」的对照断言
     check("12.8 对照：真实实现对正确/只有答案/缺测/缺测都判为「有/无可归因」如实现所声明",
           C._force_undecided({"missing": 0}, "correct") is True
           and C._force_undecided({"missing": 0}, "missing_steps") is True

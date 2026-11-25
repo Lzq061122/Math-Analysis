@@ -330,6 +330,7 @@ def main():
         suggested = {}
     except Exception as exc:
         suggested = {"error_code": getattr(exc, "code", ""), "error": getattr(exc, "message", str(exc))}
+    # （改写依据）本条随「mock/未授权分别得到 409/403」的口径调整：mock 走 409「当前是模拟分析…」，真实+未授权走 403 ai_isolation。
     check("勾选同意也换不来外发：生成候选被拦断", suggested.get("error_code") == "ai_isolation",
           suggested)
     check("拦断时不返回任何候选", not suggested.get("candidates"), suggested)

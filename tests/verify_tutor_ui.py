@@ -209,6 +209,16 @@ def main():
 
     section("五、真实模式先确认，取消不发送")
     svc.save_ai_settings("custom", stub_server.base, "stub-vision", "sk-x", service_name="本地模拟服务")
+    # T26 改写①（本节前提）
+    # 原断言：配置好真实/自定义通道后，点「生成辅导建议」→ 与模型通信并产出建议。
+    # 原依据：1.8.1「真实模式 = 老师点确认就发送」（数智伴学_Agent开发规格.md 1.8.1 章）。
+    # 新断言：先把**当前账号**的个体 AI 开关显式置为开启（并断言真的生效），本节下游断言不变。
+    # 改写依据：R1-07 + R1-14 裁定「默认不外发；教师账号显式开启后才真调用」。
+    #           不改实现就无法让旧断言成立，而旧断言等于把「默认外发」写成预期。
+    individual = svc.set_ai_individual(True)
+    check("五.0 账号级个体 AI 开关已显式开启（否则真实通道一律 403 ai_isolation）",
+          individual.get("ai_individual_allowed") is True,
+          (individual.get("ai_individual_allowed"), individual.get("ai_egress_available")))
     window.reload()
     wait_for(app, lambda: not window.runner.busy, 20)
     captured = []
@@ -315,6 +325,9 @@ def main():
     check("页面标题是另一个学生的名字",
           "李四" in lis.findChild(ui.QLabel, "insightStudentName").text())
 
+    # T26 新增（本节整段为新断言，不替换任何既有断言）：个体 AI 开关的双路径。
+    group_ai_individual_switch(app, svc, data_dir, cls, zhang, li, stub_server)
+
     stub_server.close()
     app.processEvents()
     for widget in app.topLevelWidgets():
@@ -327,6 +340,94 @@ def main():
     with open(LOG_PATH, "w", encoding="utf-8") as fh:
         fh.write("\n".join(LOG_LINES) + "\n")
     return code
+
+
+def _insert_answer(data_dir, class_id, student_id, question, standard, steps,
+                   record_key="T26-1"):
+    """给「作答分析」这条闸门造一份作答（真实库，走正规列）。"""
+    from app.answers import fingerprint
+
+    db = Database(os.path.join(data_dir, "app.db"))
+    today = date.today().isoformat()
+    row = {"question_no": "1", "question_text": question, "unit": "一元一次方程",
+           "standard_solution": standard, "student_steps": steps, "occurred_on": today,
+           "missing": 0, "missing_reason": ""}
+    fp = fingerprint(row, student_id)
+    with db.tx() as conn:
+        cur = conn.execute(
+            "INSERT INTO answers(class_id, student_id, record_key, batch, question_text,"
+            " standard_solution, student_steps, occurred_on, fingerprint, imported_at,"
+            " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (class_id, student_id, record_key, "9月作业", question, standard, steps,
+             today, fp, today, today, today))
+        return cur.lastrowid
+
+
+def group_ai_individual_switch(app, svc, data_dir, cls, zhang, li, stub_server):
+    """T26 新增：个体 AI 开关的双路径（关闭 → 六入口 403 ai_isolation；开启 → 立即可用）。
+
+    为什么必须加这一段：四个桌面套件原来写的是 1.8.1 口径「真实通道点确认就发送」。
+    R1-07 + R1-14 之后默认不外发，真实通道未授权一律 403 `ai_isolation`；
+    只有**当前账号显式开启**（`service.set_ai_individual(True)`）才真的调用模型。
+    所以「旧断言全红」不是实现退化，而是旧断言把「默认外发」写成了预期。
+    """
+    section("十一、个体 AI 开关：关闭 → 六入口 403；开启 → 原功能立刻可用")
+    from app import api as api_mod
+
+    off = svc.set_ai_individual(False)
+    check("T26.1 关闭后账号状态是「未授权」",
+          off.get("ai_individual_allowed") is False, off.get("ai_individual_allowed"))
+    mid = add_mistake(data_dir, cls["id"], zhang["id"], ["移项"], 3, "2x+1=5", "2x=5+1\nx=3")
+    answer_id = _insert_answer(data_dir, cls["id"], zhang["id"],
+                               "2(x-1)=4", "2x-2=4；2x=6；x=3", "2x-1=4\nx=2.5")
+    followup = svc.create_followup(cls["id"], zhang["id"], "移项", "移项时符号变了吗？")
+    before_requests = len(stub_server.records())
+
+    def expect_isolation(name, call):
+        """六入口都必须 403 + code=ai_isolation + 文案含「已停用」。"""
+        try:
+            result = call()
+        except api_mod.ApiError as exc:
+            check(name,
+                  exc.status == 403 and exc.code == "ai_isolation" and "已停用" in exc.message,
+                  (exc.status, exc.code, (exc.message or "")[:60]))
+            return
+        except Exception as exc:  # noqa: BLE001  其它异常要显式暴露，别当成「通过」
+            check(name, False, "未按 403 拦断，而是 %s: %s" % (type(exc).__name__, exc))
+            return
+        check(name, False, "没有抛 403，而是返回了 %r" % (result,))
+
+    expect_isolation("T26.2 错题照片分析建议 → 403 ai_isolation",
+                     lambda: svc.preview_analysis(mid, consent=True, task_id="t26-a"))
+    expect_isolation("T26.3 错题重新分析（网页/旧入口，同一道闸门）→ 403 ai_isolation",
+                     lambda: api_mod.api_reanalyze(
+                         svc._ctx(params={"id": mid}, body={"consent": True})))
+    expect_isolation("T26.4 个人辅导建议生成 → 403 ai_isolation",
+                     lambda: svc.generate_student_advice(cls["id"], zhang["id"], consent=True))
+    expect_isolation("T26.5 追问候选生成 → 403 ai_isolation",
+                     lambda: svc.suggest_followup(cls["id"], zhang["id"], "移项", consent=True))
+    expect_isolation("T26.6 追问后的错因候选生成 → 403 ai_isolation",
+                     lambda: svc.update_followup_causes(cls["id"], zhang["id"],
+                                                        followup["id"], consent=True))
+    expect_isolation("T26.7 作答分析 → 403 ai_isolation",
+                     lambda: svc.analyse_answer(cls["id"], answer_id, consent=True))
+    check("T26.8 关闭期间桩一条请求都没收到（拦在组装请求之前）",
+          len(stub_server.records()) == before_requests,
+          [r.get("kind") for r in stub_server.records()])
+
+    on = svc.set_ai_individual(True)
+    check("T26.9 重新开启后账号状态是「已授权」",
+          on.get("ai_individual_allowed") is True, on.get("ai_individual_allowed"))
+    advice = svc.generate_student_advice(cls["id"], zhang["id"], consent=True)
+    check("T26.10 开启后同一条业务路径立刻能产出建议（不是「反正会 403」）",
+          advice.get("ok") is True and len((advice.get("advice") or {}).get("content") or "") > 0,
+          (advice.get("ok"), advice.get("error"), len((advice.get("advice") or {}).get("content") or "")))
+    check("T26.11 开启后确有真实外发（桩收到 tutor 请求）",
+          any(r.get("kind") == "tutor" for r in stub_server.records()[before_requests:]),
+          [r.get("kind") for r in stub_server.records()[before_requests:]])
+    review = svc.analyse_answer(cls["id"], answer_id, consent=True)
+    check("T26.12 开启后作答分析也能走通（同一账号开关对六入口一致生效）",
+          review.get("ok") is True, (review.get("ok"), review.get("error")))
 
 
 def _tick(dialog, app):

@@ -1,15 +1,15 @@
 数智伴学｜作答核对网页：浏览器端到端（Edge headless + CDP，1366×768）
-时间：2026-11-25T20:24:18+08:00
-命令：python.exe C:\Users\Public\t7-verify\repo\tests\verify_answer_check_ui.py
-目录：C:\Users\Public\t7-verify\repo
+时间：2026-11-25T20:55:32+08:00
+命令：python.exe tests\verify_answer_check_ui.py
+目录：E:\Agent\小挑
 环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
 被测文件 src/web/app.js sha256=D93C8EFF7E02 mtime=2026-11-25 20:17:37 size=156622
 被测文件 src/web/styles.css sha256=E8F2178D9358 mtime=2026-11-25 20:14:42 size=18105
 被测文件 src/app/equation_steps.py sha256=11D90941D317 mtime=2026-11-25 18:20:18 size=36183
 被测文件 src/app/demo_answers.py sha256=819B6463F1DA mtime=2026-11-25 19:14:10 size=44511
-被测文件 src/app/answer_check.py sha256=829B39C759F0 mtime=2026-11-25 20:00:03 size=114969
-服务：http://127.0.0.1:8899（数据目录 C:\Users\Public\t7-verify\repo\tests\.tmp-e2e-web）
-截图目录：C:\Users\Public\t7-verify\repo\docs\screenshots
+被测文件 src/app/answer_check.py sha256=3ECAFBBEE4A9 mtime=2026-11-25 20:35:05 size=121485
+服务：http://127.0.0.1:8899（数据目录 E:\Agent\小挑\tests\.tmp-e2e-web）
+截图目录：E:\Agent\小挑\docs\screenshots
 PASS 13.0 服务在 127.0.0.1:8899 上启动（演示数据已种）
 PASS 13.0.1 演示账号能登录
 演示班级：初二(3)班 (id=1)
@@ -312,5 +312,5 @@ PASS 13.16.4 记成「无需判断」后不再要求依据（提示消失，标�
 PASS 13.16.5 first_bad 页不显示必填（A5 快路径保持可选）
 
 合计 238 项，通过 238，失败 0（另：未验证 0 项；已知缺口 0 项，见上面「未通过（缺口）」行）
-截图清单：t12-1-batches-overview-1366x768.png, t12-2-demo-batch2-1366x768.png, t12-3-manual-check-1366x768.png, t12-4-supplement-1366x768.png, t12-5-followup-review-1366x768.png, ui-a1-all-checked-1366x768.png, ui-a1-empty-primary-1366x768.png, ui-a1-no-answers-1366x768.png, ui-a2-missing-steps-1366x768.png, ui-a5-adopt-receipt-1366x768.png, ui-a5-receipt-1366x768.png, ui-a6-first-bad-1366x768.png, ui-a6-long-answer-expanded-1366x768.png, ui-a6-receipt-first-screen-1366x768.png, ui-a7-demo-reset-1366x768.png, ui-a7-demo-seeded-1366x768.png, ui-r1-02-manual-cause-1366x768.png, ui-r1-14-ai-switch-1366x768.png, ui-save-failed-500-1366x768.png
+截图清单：baseline-desktop, t12-1-batches-overview-1366x768.png, t12-2-demo-batch2-1366x768.png, t12-3-manual-check-1366x768.png, t12-4-supplement-1366x768.png, t12-5-followup-review-1366x768.png, ui-a1-all-checked-1366x768.png, ui-a1-empty-primary-1366x768.png, ui-a1-no-answers-1366x768.png, ui-a2-missing-steps-1366x768.png, ui-a5-adopt-receipt-1366x768.png, ui-a5-receipt-1366x768.png, ui-a6-first-bad-1366x768.png, ui-a6-long-answer-expanded-1366x768.png, ui-a6-receipt-first-screen-1366x768.png, ui-a7-demo-reset-1366x768.png, ui-a7-demo-seeded-1366x768.png, ui-desktop-check-1366x768.png, ui-desktop-check-1920x1080.png, ui-fix-empty.png, ui-fix-receipt.png, ui-r1-02-manual-cause-1366x768.png, ui-r1-14-ai-switch-1366x768.png, ui-save-failed-500-1366x768.png, walkthrough-0-classlist.png, walkthrough-1.png, walkthrough-2.png, walkthrough-3.png, walkthrough-4.png
 退出码：0

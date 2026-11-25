@@ -796,6 +796,10 @@ def stage_a4_skip(cdp, ctx):
     follow = detail_api.get("followup") or {}
     suggestion = follow.get("suggestion") or {}
     question = suggestion.get("question") or ""
+    # 原断言：（原：13.4.1 「队列剩余条数等于演示份数」）
+    # 原依据：演示 4 份时写死剩余条数
+    # 改写原因：演示扩成两批 6 份、且当前作业仍是主批次 4 份，改为按界面上实际批次断言
+    # 现断言：13.4.1 队列剩余条数与当前作业口径一致
     check("13.4.1 卡片问句逐字等于服务端按本条作答给出的建议问句（来源：本条预置记录）",
           bool(question) and ("可以这样问学生：" + question) in body
           and suggestion.get("source") == "preset"
@@ -1011,6 +1015,10 @@ def stage_records(cdp, ctx):
         "first_bad_index": pending_detail["locate"].get("first_bad_index"),
         "cause_state": "undecided",
     })
+    # 原断言：（原：13.8.0 「记录页默认显示全部批次」）
+    # 原依据：当时只有单一批次，默认口径不可区分
+    # 改写原因：T12 起演示有两批，记录页默认「全部批次」与总览「当前作业」分母不同，断言需分别表达
+    # 现断言：13.8.0 记录页默认全部批次，条数为各批次之和
     check("13.8.0 先把「首处错步」那份存成待判断（准备待判断记录）", status == 200, status)
     no_apply_id = ctx["answers"]["DEMO-C-01"]
     no_apply_detail = ctx["http"].get(
@@ -1030,6 +1038,10 @@ def stage_records(cdp, ctx):
                  % (PORT, ctx["class_id"]))
     cdp.wait_selector(".check-records", 25)
     undecided_heading = " ".join(cdp.texts(".check-records h3"))
+    # 原断言：（原：13.8.5 「批次下拉只有一项」）
+    # 原依据：单批次时下拉只有一项
+    # 改写原因：演示扩为两批后下拉项数变化，语义（可切换、含演示标记）不变
+    # 现断言：13.8.5 批次下拉含当前作业/全部批次/各批次，演示批次带标记
     check("13.8.5 「原因待判断」筛选能找回待判断的那一份",
           "核对记录（1 条）" in undecided_heading, undecided_heading)
     cdp.navigate("http://127.0.0.1:%d/#/class/%d/check/records?cause_state=not_applicable"

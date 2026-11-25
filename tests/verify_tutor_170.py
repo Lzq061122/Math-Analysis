@@ -294,6 +294,7 @@ def main():
         result = svc.generate_student_advice(cid, zhang["id"], consent=True)
     except Exception as exc:
         result = {"error_code": getattr(exc, "code", ""), "error": getattr(exc, "message", str(exc))}
+    # （改写依据）本条随「模拟模式不再生成文字」的口径调整：mock 下应得到 409「当前是模拟分析…」，而不是 1.8.1 的生成结果。
     check("生成建议被拦断（原：生成成功）", result.get("error_code") == "ai_isolation", result)
     records_seen = st.records()
     check("桩收到一条辅导建议请求", len(records_seen) == 0, len(records_seen))
