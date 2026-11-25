@@ -1,4 +1,4 @@
-﻿# 打包产物与运行期数据，不纳入版本库
+# 打包产物与运行期数据，不纳入版本库
 数智伴学/
 data/
 **/__pycache__/
@@ -10,7 +10,6 @@ tests/.venv/
 src/last-data-dir.txt
 *.pyc
 *.log
-docs/screenshots/
 classdemo/
 *.lock
 
