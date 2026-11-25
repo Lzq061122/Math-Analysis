@@ -24,6 +24,15 @@ from app.api import (
     api_answers_list,
     api_answers_preview,
     api_answers_template,
+    api_account_ai_individual,
+    api_account_ai_individual_update,
+    api_check_answer,
+    api_check_answer_content,
+    api_check_demo_reset,
+    api_check_demo_seed,
+    api_check_overview,
+    api_check_records,
+    api_check_save,
     api_confirm_mistake,
     api_class_stats,
     api_create_class,
@@ -761,6 +770,66 @@ class DesktopService:
             "width": int(width or 0),
             "height": int(height or 0),
         }
+
+    # ------------------------------------------------------- 作答核对（R1-T18）
+    # 桌面端不开 HTTP：这里只把网页端已有的 api 处理器接到当前会话上，
+    # 「总览/详情/保存/撤回/补录校正/记录找回/演示数据」的业务规则全部在 app.answer_check
+    # 与 api_check_* 里，本层不拼 SQL、不重算定位、不改判据。
+    # 错误一律原样上抛 ApiError（status / code / message 一个字不改）：
+    #   400 basis_required / 400 cause_not_applicable / 409 version_conflict /
+    #   400 nothing_to_retract / 400 bad_verify_source / 404 not_found / 400 demo_readonly …
+    # 界面据此显示「依据必填」这类具体原因；这一层绝不吞成一句笼统的「保存失败」。
+    def check_overview(self, class_id, batch=""):
+        """作答核对总览 + 队列；`batch=""` 表示交给后端 resolve_batch 决定当前作业。"""
+        query = {"batch": batch or ""} if batch else {}
+        return api_check_overview(self._ctx(params={"id": class_id}, query=query))
+
+    def check_answer(self, class_id, answer_id):
+        """单份详情：locate / applicability / candidates / judgement / followup 状态。"""
+        return api_check_answer(self._ctx(params={"id": class_id, "answer_id": answer_id}))
+
+    def check_save(self, class_id, answer_id, payload):
+        """保存教师判断：payload 原样透传给 api_check_save（含撤回时只发 progress=pending）。"""
+        body = dict(payload or {})
+        return api_check_save(self._ctx(params={"id": class_id, "answer_id": answer_id}, body=body))
+
+    def check_update_content(self, class_id, answer_id, payload):
+        """补录/校正作答内容：expected_version 版本闸门由后端判定（409 version_conflict）。"""
+        body = dict(payload or {})
+        return api_check_answer_content(
+            self._ctx(params={"id": class_id, "answer_id": answer_id}, body=body))
+
+    def check_records(self, class_id, batch="", cause_state="undecided", verify_source=""):
+        """记录找回：cause_state ∈ undecided/decided/not_applicable/all；
+        verify_source ∈ 空/rule/preset/manual/all（非法值后端 400 bad_verify_source）。"""
+        query = {"cause_state": cause_state or "undecided"}
+        if batch:
+            query["batch"] = batch
+        if verify_source:
+            query["verify_source"] = verify_source
+        return api_check_records(self._ctx(params={"id": class_id}, query=query))
+
+    def check_demo_seed(self, class_id):
+        """载入合成演示数据：返回体（seeded/by_batch/records…）原样返回，不裁剪。"""
+        return api_check_demo_seed(self._ctx(params={"id": class_id}, body={}))
+
+    def check_demo_reset(self, class_id):
+        """重置合成演示数据：返回体（deleted/by_batch…）原样返回，不裁剪。"""
+        return api_check_demo_reset(self._ctx(params={"id": class_id}, body={}))
+
+    # ------------------------------------------------- 个体 AI 开关（R1-T14/T18）
+    def ai_individual_state(self):
+        """读当前登录账号的 `ai_individual_allowed`（走 api，桌面 ctx 注入了 provider，
+        因此 `ai_egress_available` 为 true；网页端这条路径永远是 false）。"""
+        return api_account_ai_individual(self._ctx())
+
+    def set_ai_individual(self, allowed):
+        """写开关。桌面端不自己读库：授权由 api 闸门按账号每请求判定并盖到 provider 实例上。
+
+        注意：`_ctx()` 每次调用都会重新构造 provider，所以开关一改，下一次调用自然拿到新的
+        授权状态（开启前仍是 403 `ai_isolation`），这里不需要维护任何缓存。
+        """
+        return api_account_ai_individual_update(self._ctx(body={"allowed": bool(allowed)}))
 
 
 __all__ = ["ApiError", "DesktopService"]

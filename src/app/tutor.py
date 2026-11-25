@@ -345,14 +345,11 @@ def generate(db, class_id, student_id, provider, service_name, model):
     """发起一次生成。provider 为 None 表示模拟模式：不发请求，也不编造建议。"""
 
     # R1-14：模拟通道（MockProvider 不是 None）先归一化成 None，再照 1.8.1 原样走模拟分支；
-    # 只有「真实通道 + 该账号未显式开启」才会走到最后那道 403。
+    # 只有「真实通道 + 该账号未显式开启」才会走到 403（顺序不能反：先判 mock 再判授权，
+    # 否则 mock 模式也会被当成「未授权真实通道」，界面拿到 403 而不是「当前是模拟分析」）。
     if provider is not None and getattr(provider, "mode", "mock") == "mock":
         provider = None
 
-    # R1-14：默认不外发。只有 api 在确认「该教师账号已显式开启」之后，才会把授权盖到
-    # **这个 provider 实例**上（provider.individual_allowed=True）；没有授权就维持 R1-07 的拦截。
-    if not getattr(provider, "individual_allowed", False):
-        raise TutorError(INDIVIDUAL_FLOW_MESSAGE, 403, INDIVIDUAL_FLOW_CODE)
     data = summary(db, class_id, student_id)
     if not data["items"]:
         raise TutorError("这名学生还没有已确认的错题，暂时不能生成辅导建议。", 409, "empty")
@@ -360,6 +357,10 @@ def generate(db, class_id, student_id, provider, service_name, model):
         raise TutorError(
             "当前是模拟分析，不会生成辅导建议。请先在「AI 设置」里配置服务后再生成。", 409, "mock"
         )
+    # R1-14：默认不外发。只有 api 在确认「该教师账号已显式开启」之后，才会把授权盖到
+    # **这个 provider 实例**上（provider.individual_allowed=True）；没有授权就维持 R1-07 的拦截。
+    if not getattr(provider, "individual_allowed", False):
+        raise TutorError(INDIVIDUAL_FLOW_MESSAGE, 403, INDIVIDUAL_FLOW_CODE)
 
     prompt = build_prompt(data)
     text, usage = provider.chat_text(prompt, SYSTEM_PROMPT)
