@@ -269,6 +269,15 @@ def main():
     section("五、真实模式先确认，取消不发送")
     svc.save_ai_settings("custom", stub_server.base, "stub-vision", "sk-x",
                          service_name="本地模拟服务")
+    # T26 改写①（本节前提）
+    # 原断言：配好真实/自定义通道后，点「生成候选追问」→ 与模型通信并拿到候选。
+    # 原依据：1.8.1「真实模式 = 老师点确认就发送」（数智伴学_Agent开发规格.md 1.8.1 章）。
+    # 新断言：先把当前账号的个体 AI 开关显式置为开启（并断言真的生效），下游断言不变。
+    # 改写依据：R1-07 + R1-14 裁定「默认不外发；教师账号显式开启后才真调用」。
+    individual = svc.set_ai_individual(True)
+    check("五.0 账号级个体 AI 开关已显式开启（否则真实通道一律 403 ai_isolation）",
+          individual.get("ai_individual_allowed") is True,
+          (individual.get("ai_individual_allowed"), individual.get("ai_egress_available")))
     window.reload()
     wait_for(app, lambda: not window.runner.busy, 20)
     captured = []
@@ -312,10 +321,19 @@ def main():
         window.suggest()
         got = wait_for(app, lambda: window.candidates.rowCount() > 0, 20)
         check("确认后生成出候选", got, window.candidates.rowCount())
-        text = window.candidates.item(0, 0).text()
+        # T26 改写②（空态不再以崩溃形式出现）
+        # 原断言：text = window.candidates.item(0, 0).text()（隐含「一定有一行候选」）
+        # 原依据：1.8.1「老师点确认后必定拿到候选」，于是旧套件直接下标取第 0 行。
+        # 新断言：先用一条断言确认候选表非空，非空才取第 0 行；空态本身就是一条断言。
+        # 改写依据：R1-14 下开关关闭时是 403、候选表本来就是空，`item(0,0)` 返回 None
+        #           会抛 AttributeError（旧套件在 :315 崩溃）——崩溃不是断言失败，必须显式写成断言。
+        check("六.1 候选表非空（空态有明确断言，不再以崩溃形式出现）",
+              window.candidates.rowCount() > 0, window.candidates.rowCount())
+        text = window.candidates.item(0, 0).text() if window.candidates.rowCount() else ""
         check("候选是一条问学生的话", "？" in text or "?" in text, text)
         check("候选带原文依据",
-              bool(window.candidates.item(0, 1).text()), window.candidates.item(0, 1).text()[:40])
+              bool(window.candidates.item(0, 1).text()) if window.candidates.rowCount() else False,
+              window.candidates.item(0, 1).text()[:40] if window.candidates.rowCount() else "")
         records_seen = stub_server.records()
         check("桩收到一条候选请求", len(records_seen) == 1, len(records_seen))
         check("请求标为 followup",
@@ -432,6 +450,49 @@ def main():
     check("没有已确认错题时说明原文读不到",
           "没有读到" in window2.evidence.toPlainText() or "刷新" in window2.evidence.toPlainText(),
           window2.evidence.toPlainText()[:40])
+
+    section("十五、个体 AI 开关关闭 → 追问两条链路都 403 ai_isolation；开启 → 立刻可用")
+    # T26 新增（整段为新断言，不替换任何既有断言）：追问相关的两个 AI 入口在
+    # R1-14 下的双路径。桌面「追问候选生成」与「追问后的错因候选生成」是两个独立闸门，
+    # 必须分别验，不能用一个代替另一个。
+    from app import api as api_mod
+
+    off = svc.set_ai_individual(False)
+    check("T26.1 关闭后账号状态是「未授权」",
+          off.get("ai_individual_allowed") is False, off.get("ai_individual_allowed"))
+    before_requests = len(stub_server.records())
+
+    def expect_isolation(name, call):
+        try:
+            result = call()
+        except api_mod.ApiError as exc:
+            check(name,
+                  exc.status == 403 and exc.code == "ai_isolation" and "已停用" in exc.message,
+                  (exc.status, exc.code, (exc.message or "")[:60]))
+            return
+        except Exception as exc:  # noqa: BLE001
+            check(name, False, "未按 403 拦断，而是 %s: %s" % (type(exc).__name__, exc))
+            return
+        check(name, False, "没有抛 403，而是返回了 %r" % (result,))
+
+    expect_isolation("T26.2 追问候选生成 → 403 ai_isolation",
+                     lambda: svc.suggest_followup(cls["id"], zhang["id"], "移项", consent=True))
+    expect_isolation("T26.3 追问后的错因候选生成 → 403 ai_isolation",
+                     lambda: svc.update_followup_causes(cls["id"], zhang["id"],
+                                                        window.followup_id, consent=True))
+    check("T26.4 关闭期间桩一条请求都没收到（拦在组装请求之前）",
+          len(stub_server.records()) == before_requests,
+          [r.get("kind") for r in stub_server.records()])
+    on = svc.set_ai_individual(True)
+    check("T26.5 重新开启后账号状态是「已授权」",
+          on.get("ai_individual_allowed") is True, on.get("ai_individual_allowed"))
+    suggested = svc.suggest_followup(cls["id"], zhang["id"], "移项", consent=True)
+    check("T26.6 开启后同一条业务路径立刻能拿到候选（不是「反正会 403」）",
+          suggested.get("ok") is True and len(suggested.get("candidates") or []) > 0,
+          (suggested.get("ok"), suggested.get("error"), len(suggested.get("candidates") or [])))
+    check("T26.7 开启后确有真实外发（桩收到 followup 请求）",
+          any(r.get("kind") == "followup" for r in stub_server.records()[before_requests:]),
+          [r.get("kind") for r in stub_server.records()[before_requests:]])
 
     stub_server.close()
     app.processEvents()
