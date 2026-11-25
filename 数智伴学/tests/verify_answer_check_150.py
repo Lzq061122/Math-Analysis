@@ -20,6 +20,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import http.cookiejar
 
@@ -28,6 +29,7 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 
 from app import answer_check as C  # noqa: E402
+from app import db as dbmod  # noqa: E402
 from app import demo_answers as D  # noqa: E402
 from app import equation_steps as E  # noqa: E402
 from app.answers import fingerprint as answer_fingerprint  # noqa: E402
@@ -1509,6 +1511,289 @@ def group_15_demo_seed_reset(envs):
           env.checks_count())
 
 
+def _legacy_counts(db_file):
+    """读旧库各表行数（只读打开，不做任何迁移）。"""
+    conn = sqlite3.connect(db_file)
+    try:
+        tables = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        counts = {}
+        for name in ("users", "classes", "students", "answers", "mistakes",
+                     "answer_checks", "answer_followups"):
+            if name in tables:
+                counts[name] = conn.execute("SELECT COUNT(*) FROM %s" % name).fetchone()[0]
+        return counts
+    finally:
+        conn.close()
+
+
+def group_17_batch_isolation(envs):
+    """R1-08 / T6：批次隔离与统计口径的稳定化（触发器撤掉之后仍然干净）。
+
+    依据：任务书 R1-08「批次隔离与数据关联」、基线审查 §14.2（P0 批次名撞名 + 统计不过滤
+    source）、T6 合同第 1/3/4 条。要证的四件事：
+    1. 两个库级「演示批次归位」触发器已删除，且删掉之后演示数据仍进不了真实统计（不再有隐形防线）；
+    2. 两班级 × 两批次 × 合成/真实不混作业；跨班读取被拒；
+    3. stats 与 overview 的 not_applicable / manual 两档口径一致，撤回行不算当前结论；
+    4. 1.7.x 旧库（两张表都不存在）升级不再抛 MigrationError、数据一条不丢 —— 并做反向自证。
+    """
+    section("17. T6 批次隔离与统计口径：触发器已撤仍干净 / 两班两批不混 / 旧库升级可救")
+
+    env = Env("batch-isolation")
+    envs.append(env)
+    class_a = env.add_class("七年级 1 班")
+    class_b = env.add_class("七年级 2 班")
+    stu_a = env.add_student(class_a, "学生甲")
+    stu_b = env.add_student(class_b, "学生乙")
+
+    triggers = {row["name"] for row in env.db.query(
+        "SELECT name FROM sqlite_master WHERE type='trigger'")}
+    check("17.0 新库不再创建演示批次归位触发器（trg_answers_demo_batch_* 已撤）",
+          not ({"trg_answers_demo_batch_ins", "trg_answers_demo_batch_upd"} & triggers), triggers)
+
+    a1 = env.add_answer(class_a, stu_a, "A1", CASE_A, batch="9月第1次作业", question_no="1",
+                        student_name="学生甲")
+    a2 = env.add_answer(class_a, stu_a, "A2", CASE_B, batch="9月第2次作业", question_no="2",
+                        student_name="学生甲")
+    b1 = env.add_answer(class_b, stu_b, "B1", CASE_A, batch="9月第2次作业", question_no="1",
+                        student_name="学生乙")
+    ov_a1 = overview(env, class_a, "9月第1次作业")
+    ov_a2 = overview(env, class_a, "9月第2次作业")
+    check("17.1 同班两批次各算各的（1 班：第1次 1 份 / 第2次 1 份）",
+          ov_a1["assignment"]["total"] == 1 and ov_a1["assignment"]["batch"] == "9月第1次作业"
+          and ov_a2["assignment"]["total"] == 1 and ov_a2["assignment"]["batch"] == "9月第2次作业",
+          jdump([ov_a1["assignment"], ov_a2["assignment"]]))
+    stats_a2 = answer_check_stats(env.db, env.db.query_one(
+        "SELECT * FROM classes WHERE id=?", (class_a,)), "9月第2次作业")
+    check("17.2 2 班的作答不进 1 班的统计（同为「9月第2次作业」也只有 1 份）",
+          stats_a2["expected"] == 1, stats_a2)
+    status, payload = env.client.get("/api/classes/%d/check/answers/%d" % (class_b, a2))
+    check("17.3 跨班读他人作答被拒（404 not_found）",
+          status == 404 and payload.get("code") == "not_found", (status, payload.get("code")))
+    status, payload = env.client.get(
+        "/api/classes/%d/check/overview?batch=%s"
+        % (class_a, urllib.parse.quote("9月第1次作业")))
+    check("17.4 同班按批次过滤：第1次作业的队列里没有第2次那份",
+          status == 200 and (payload.get("next") or {}).get("answer_id") == a1,
+          jdump((payload or {}).get("next")))
+
+    # 17.5 绕过 seed、直接把「演示行」写进真实批次：触发器没了，统计必须仍然干净
+    stamp = now_iso()
+    with env.db.tx() as conn:
+        cur = conn.execute(
+            "INSERT INTO answers(class_id, student_id, record_key, batch, student_name,"
+            " student_code, question_no, question_text, unit, standard_solution, student_steps,"
+            " source, occurred_on, missing, missing_reason, fingerprint, imported_at,"
+            " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (class_a, stu_a, "DEMO-LEGACY-1", "9月第2次作业", "", "", "9",
+             CASE_A["question"], "一元一次方程", CASE_A["standard"], CASE_A["steps"],
+             D.DEMO_SOURCE, "2026-11-24", 0, "", "legacyfingerprint", stamp, stamp, stamp))
+        demo_legacy_id = cur.lastrowid
+    check("17.5 造数自检：演示行确实落在真实批次里（不再被触发器悄悄挪走）",
+          env.db.scalar("SELECT batch FROM answers WHERE id=?", (demo_legacy_id,)) == "9月第2次作业",
+          env.db.scalar("SELECT batch FROM answers WHERE id=?", (demo_legacy_id,)))
+    stats_after = answer_check_stats(env.db, env.db.query_one(
+        "SELECT * FROM classes WHERE id=?", (class_a,)), "9月第2次作业")
+    ov_after = overview(env, class_a, "9月第2次作业")
+    queue_ids = [row["id"] for row in C.queue_rows(env.db, class_a, "9月第2次作业")]
+    check("17.6 触发器删除后统计仍干净：expected / 总览份数 / 队列都不含演示行",
+          stats_after["expected"] == 1 and ov_after["assignment"]["total"] == 1
+          and demo_legacy_id not in queue_ids,
+          jdump([stats_after["expected"], ov_after["assignment"]["total"], queue_ids]))
+    demo_stats = answer_check_stats(env.db, env.db.query_one(
+        "SELECT * FROM classes WHERE id=?", (class_a,)), D.DEMO_BATCH)
+    check("17.7 统计永远不数演示数据（即使显式查演示批次，expected 也是 0）",
+          demo_stats["expected"] == 0, demo_stats["expected"])
+
+    data_a2 = detail(env, class_a, a2)
+    save(env, class_a, a2, save_body(data_a2, cause_state="decided",
+                                    cause_label="移项没变号", basis="第 2 行把 +3 写成 −3"))
+    data_b1 = detail(env, class_b, b1)
+    save(env, class_b, b1, save_body(data_b1, cause_state="decided",
+                                    cause_label="人工判断：漏乘常数项",
+                                    observed="3x-9=12", basis="原图第 2 行是 3x-9=12"))
+    stats_b1 = answer_check_stats(env.db, env.db.query_one(
+        "SELECT * FROM classes WHERE id=?", (class_b,)), "9月第2次作业")
+    ov_b1 = overview(env, class_b, "9月第2次作业")
+    check("17.8 stats 的 manual_verified 与 overview.counts.manual_verified 对齐（2 班=1）",
+          stats_b1["manual_verified"] == (ov_b1["counts"].get("manual_verified") or 0) == 1,
+          jdump({"stats": stats_b1["manual_verified"],
+                 "overview": ov_b1["counts"].get("manual_verified")}))
+    stats_a2b = answer_check_stats(env.db, env.db.query_one(
+        "SELECT * FROM classes WHERE id=?", (class_a,)), "9月第2次作业")
+    check("17.9 stats 的 cause_not_applicable 与 overview.counts.not_applicable_cause 对齐",
+          stats_a2b["cause_not_applicable"]
+          == (ov_after["counts"].get("not_applicable_cause") or 0),
+          jdump({"stats": stats_a2b["cause_not_applicable"],
+                 "overview": ov_after["counts"].get("not_applicable_cause")}))
+    check("17.10 两个新档位都在统计块里（cause_not_applicable / manual_verified 键存在）",
+          "cause_not_applicable" in stats_b1 and "manual_verified" in stats_b1,
+          sorted(stats_b1.keys()))
+
+    checked_before = stats_b1["checked"]
+    retract_body = save_body(detail(env, class_b, b1))
+    retract_body["progress"] = "pending"
+    retract_body["change_reason"] = "判错了，撤回"
+    for key in ("cause_state", "cause_code", "cause_label"):
+        retract_body.pop(key, None)
+    status, _ = save(env, class_b, b1, retract_body)
+    stats_b1_after = answer_check_stats(env.db, env.db.query_one(
+        "SELECT * FROM classes WHERE id=?", (class_b,)), "9月第2次作业")
+    check("17.11 撤回后旧结论退出统计（checked %s → %s、pending 回到 1）"
+          % (checked_before, stats_b1_after["checked"]),
+          status == 200 and stats_b1_after["checked"] == 0
+          and stats_b1_after["pending"] == 1, jdump(stats_b1_after))
+    check("17.12 撤回行本身还在库里（历史不删），只是版本置空",
+          env.db.scalar("SELECT COUNT(*) FROM answer_checks WHERE answer_id=?", (b1,)) >= 1
+          and env.db.scalar("SELECT answer_version FROM answer_checks WHERE answer_id=?"
+                            " ORDER BY id DESC LIMIT 1", (b1,)) == "", "ok")
+
+    # 17.13 1.7.x 旧库升级：不再抛 MigrationError，数据一条不丢
+    fixture = os.path.join(ROOT, "tests", "fixtures", "legacy160", "app.db")
+    legacy_dir = os.path.join(WORK, "legacy-t6")
+    shutil.rmtree(legacy_dir, ignore_errors=True)
+    os.makedirs(legacy_dir)
+    legacy_db = os.path.join(legacy_dir, "app.db")
+    shutil.copy2(fixture, legacy_db)
+    counts_before = _legacy_counts(legacy_db)
+    migrated = None
+    failure = None
+    try:
+        migrated = dbmod.ensure_answer_check_schema(legacy_db)
+    except Exception as exc:  # noqa: BLE001 —— 这里要如实记录失败，而不是抛给上层
+        failure = "%s: %s" % (type(exc).__name__, str(exc)[:120])
+    counts_after = _legacy_counts(legacy_db)
+    check("17.13 1.7.x 旧库升级不再抛 MigrationError（并有备份文件）",
+          failure is None and bool(migrated) and os.path.exists(migrated), failure)
+    check("17.14 升级后原有数据一条不丢、两张新表已建好",
+          counts_after.get("answers") == counts_before.get("answers")
+          and counts_after.get("mistakes") == counts_before.get("mistakes")
+          and counts_after.get("classes") == counts_before.get("classes")
+          and counts_after.get("answer_checks") == 0
+          and counts_after.get("answer_followups") == 0,
+          jdump([counts_before, counts_after]))
+    check("17.15 升级后结构检查通过（answer_checks 就绪判定不再要求那两个触发器）",
+          dbmod.answer_check_schema_ready(legacy_db), "ready")
+
+    # 17.15b/17.15c 服务器启动时的完整升级链：add_student_active → ensure_answers_schema
+    # → ensure_tutor_schema → ensure_followup_schema → ensure_answer_check_schema。
+    # 1.7.x 旧库只有前几套结构，第五步就是本轮修的 bug 所在，所以整链必须一次走通。
+    full_dir = os.path.join(WORK, "legacy-t6-full")
+    shutil.rmtree(full_dir, ignore_errors=True)
+    os.makedirs(full_dir)
+    full_db = os.path.join(full_dir, "app.db")
+    shutil.copy2(fixture, full_db)
+    chain = []
+    for name in ("add_student_active", "ensure_answers_schema", "ensure_tutor_schema",
+                 "ensure_followup_schema", "ensure_answer_check_schema"):
+        try:
+            getattr(dbmod, name)(full_db)
+            chain.append((name, "ok"))
+        except Exception as exc:  # noqa: BLE001 —— 失败要如实记录，而不是让整包崩掉
+            chain.append((name, "%s: %s" % (type(exc).__name__, str(exc)[:80])))
+    check("17.15b 服务器启动链在 1.7.x 旧库上一次走通（5 步迁移全部成功）",
+          all(state == "ok" for _, state in chain), jdump(chain))
+    check("17.15c 整链升级后 answers 与 answer_checks 两套结构都就绪",
+          dbmod.answers_schema_ready(full_db) and dbmod.answer_check_schema_ready(full_db)
+          and _legacy_counts(full_db).get("answers") == counts_before.get("answers"),
+          jdump(_legacy_counts(full_db)))
+
+    # 17.15d/17.15e 旧 answer_checks（T1 时代：还没有 cause_source 列）升级后，
+    # 有结论的行标 legacy（不能读成「从未判断」），没结论的行保持空。
+    old_dir = os.path.join(WORK, "legacy-t6-oldchecks")
+    shutil.rmtree(old_dir, ignore_errors=True)
+    os.makedirs(old_dir)
+    old_db = os.path.join(old_dir, "app.db")
+    shutil.copy2(fixture, old_db)
+    old_conn = sqlite3.connect(old_db)
+    try:
+        with old_conn:
+            old_conn.execute(
+                "CREATE TABLE answer_checks ("
+                " id INTEGER PRIMARY KEY, class_id INTEGER NOT NULL, student_id INTEGER NOT NULL,"
+                " answer_id INTEGER NOT NULL, batch TEXT NOT NULL DEFAULT '',"
+                " answer_version TEXT NOT NULL DEFAULT '', progress TEXT NOT NULL DEFAULT 'checked',"
+                " cause_state TEXT NOT NULL DEFAULT 'undecided',"
+                " observed_step TEXT NOT NULL DEFAULT '', first_bad_index INTEGER,"
+                " locate_status TEXT NOT NULL DEFAULT '', locate_source TEXT NOT NULL DEFAULT '',"
+                " contrast_note TEXT NOT NULL DEFAULT '', cause_code TEXT NOT NULL DEFAULT '',"
+                " cause_label TEXT NOT NULL DEFAULT '', cause_history TEXT NOT NULL DEFAULT '[]',"
+                " teacher_note TEXT NOT NULL DEFAULT '', created_by INTEGER,"
+                " created_at TEXT NOT NULL, updated_at TEXT NOT NULL,"
+                " decided_at TEXT NOT NULL DEFAULT '')")
+            old_conn.execute(
+                "INSERT INTO answer_checks(id, class_id, student_id, answer_id, answer_version,"
+                " cause_state, cause_code, cause_label, created_at, updated_at)"
+                " VALUES (1,1,1,1,'v-old','decided','E-OLD-1','老原因', 't1','t1')")
+            old_conn.execute(
+                "INSERT INTO answer_checks(id, class_id, student_id, answer_id, answer_version,"
+                " cause_state, cause_code, cause_label, created_at, updated_at)"
+                " VALUES (2,1,1,2,'v-old','undecided','','', 't2','t2')")
+    finally:
+        old_conn.close()
+    migrated_old = None
+    failure_old = None
+    try:
+        migrated_old = dbmod.ensure_answer_check_schema(old_db)
+    except Exception as exc:  # noqa: BLE001
+        failure_old = "%s: %s" % (type(exc).__name__, str(exc)[:120])
+    old_rows = {}
+    if failure_old is None:
+        conn = sqlite3.connect(old_db)
+        conn.row_factory = sqlite3.Row
+        try:
+            for row in conn.execute("SELECT id, cause_source, cause_code FROM answer_checks"):
+                old_rows[row["id"]] = dict(row)
+        finally:
+            conn.close()
+    check("17.15d 旧 answer_checks 升级成功（补列 + 建索引，不要求有那两个触发器）",
+          failure_old is None and bool(migrated_old), failure_old)
+    check("17.15e 有结论的历史行回填 cause_source=legacy、没结论的行保持空（不误标「从未判断」）",
+          old_rows.get(1, {}).get("cause_source") == "legacy"
+          and old_rows.get(2, {}).get("cause_source") == "", jdump(old_rows))
+
+    # 17.18 升级安装：旧库里残留的触发器，打开时被显式删掉（不再保留隐形行为）
+    retire_dir = os.path.join(WORK, "retired-trigger")
+    shutil.rmtree(retire_dir, ignore_errors=True)
+    os.makedirs(retire_dir)
+    retire_db = os.path.join(retire_dir, "app.db")
+    seed_db = Database(retire_db)
+    with seed_db.tx() as conn:
+        conn.execute(
+            "CREATE TRIGGER trg_answers_demo_batch_ins AFTER INSERT ON answers"
+            " BEGIN UPDATE answers SET batch=batch WHERE id=NEW.id; END")
+    seed_db.conn.close()
+    reopened = Database(retire_db, create=True)
+    try:
+        left_triggers = [row["name"] for row in reopened.query(
+            "SELECT name FROM sqlite_master WHERE type='trigger'")]
+    finally:
+        reopened.conn.close()
+    check("17.18 旧库残留的演示批次触发器在打开时被显式删除（升级安装不再保留隐形行为）",
+          left_triggers == [], left_triggers)
+
+    # 17.16 反向自证：把「先建表」改回旧顺序（补列在建表之前），同一份夹具必须变红
+    root = _copy_app(os.path.join(WORK, "mutants", "m6"))
+    patched = _patch(os.path.join(root, "app", "db.py"),
+                     '            for ddl in _answer_check_ddl_by_kind("table"):',
+                     '            for ddl in []:  # 变异体：复刻旧顺序（先补列、后建表）')
+    check("17.16 变异体6（迁移顺序）补丁命中唯一位置", patched)
+    code = (
+        "import json,os,shutil,sys,tempfile;sys.path.insert(0,%r);"
+        "from app import db as D;"
+        "work=tempfile.mkdtemp();target=os.path.join(work,'app.db');"
+        "shutil.copy2(%r,target)\n"
+        "try:\n"
+        "    D.ensure_answer_check_schema(target)\n"
+        "    print(json.dumps(['ok']))\n"
+        "except D.MigrationError as exc:\n"
+        "    print(json.dumps(['err',str(exc)[:40]]))\n"
+    ) % (root, fixture)
+    rc, out, err = _run_mutant(root, code)
+    check("17.17 变异体6 把建表放到补列之后 → 同一夹具必须抛 MigrationError（断言不恒真）",
+          rc == 0 and out.startswith('["err"'), "%s %s" % (out, err))
+
+
 def group_14_regression():
     section("14. 三条既有回归线（如实记录，含已知失败）")
 
@@ -1587,6 +1872,8 @@ def main():
         group_12_mutants(envs, queue_env, queue_class, basis_env, basis_class, basis_answer)
         group_13_demo_rule_invariant()
         group_15_demo_seed_reset(envs)
+        # T6：批次隔离 / 统计口径 / 旧库升级（含迁移顺序的反向自证）
+        group_17_batch_isolation(envs)
         group_14_regression()
     finally:
         for env in ENVS:

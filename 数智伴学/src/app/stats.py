@@ -208,6 +208,17 @@ def answer_check_stats(db, class_row, batch=""):
     缺测与正确作答不计入原题错误数：original_errors 只数「当前版本 check 且定位为首处错步」，
     cause_decided 单独数「教师已判断」，两者不是同一个分母。
     桌面端打开旧库时可能还没有新表，这里退化成零值而不报错。
+
+    R1-08 / T6 的三条口径收紧（契约 §3.6）：
+    1. **合成演示数据不进真实统计**：所有计数都带 `a.source<>'合成演示'`。这条从 T6 起是
+       **唯一**防线——原先两个「写入时把演示行挪回演示批次」的库级触发器已删除，
+       所以这里必须显式过滤，不能指望数据被悄悄归位。
+    2. **当前结论的判定只有一条**：`c.answer_version=a.fingerprint`。撤回（版本置空）旧的 check
+       因此自动退出统计；历史行仍在库里，只是不计入。
+    3. **人工核验单独一档** `manual_verified`，与 `overview.counts.manual_verified` 同一口径
+       （都只数当前版本、排除合成演示）；`cause_not_applicable` 也单列，
+       与 `overview.counts.not_applicable_cause` 对齐。JOIN 上补 `a.class_id=c.class_id`，
+       避免 answers.class_id 被改动后跨班统计串味。
     """
     block = {
         "batch": "",
@@ -218,6 +229,8 @@ def answer_check_stats(db, class_row, batch=""):
         "checked": 0,
         "original_errors": 0,
         "cause_decided": 0,
+        "cause_not_applicable": 0,
+        "manual_verified": 0,
         "basis": ANSWER_CHECK_BASIS,
     }
     if not check_state.table_ready(db):
@@ -225,33 +238,33 @@ def answer_check_stats(db, class_row, batch=""):
 
     batch = check_state.resolve_batch(db, class_row["id"], batch)
     block["batch"] = batch
+    demo_source = check_state.DEMO_SOURCE
     row = db.query_one(
         "SELECT COUNT(*) AS expected,"
         " COALESCE(SUM(CASE WHEN a.missing=1 THEN 1 ELSE 0 END), 0) AS missing,"
         " COALESCE(SUM(CASE WHEN EXISTS (SELECT 1 FROM answer_checks c"
         "   WHERE c.answer_id=a.id AND c.answer_version=a.fingerprint) THEN 1 ELSE 0 END), 0) AS checked"
-        " FROM answers a WHERE a.class_id=? AND a.batch=?",
-        (class_row["id"], batch),
+        " FROM answers a WHERE a.class_id=? AND a.batch=? AND a.source<>?",
+        (class_row["id"], batch, demo_source),
     ) or {}
     expected = int(row.get("expected") or 0)
     missing = int(row.get("missing") or 0)
     checked = int(row.get("checked") or 0)
 
-    # 只认当前版本：重导后旧 check 自动退出统计，不写任何清理逻辑。
+    # 只认当前版本：重导/撤回后旧 check 自动退出统计，不写任何清理逻辑。
+    base_sql = (
+        "SELECT COUNT(DISTINCT c.answer_id) FROM answer_checks c"
+        " JOIN answers a ON a.id=c.answer_id AND a.class_id=c.class_id"
+        " WHERE c.class_id=? AND a.batch=? AND c.answer_version=a.fingerprint"
+        " AND a.source<>?"
+    )
+    params = (class_row["id"], batch, demo_source)
     original_errors = db.scalar(
-        "SELECT COUNT(DISTINCT c.answer_id) FROM answer_checks c"
-        " JOIN answers a ON a.id=c.answer_id"
-        " WHERE c.class_id=? AND a.batch=? AND c.answer_version=a.fingerprint"
-        " AND c.locate_status='first_bad' AND a.missing=0",
-        (class_row["id"], batch),
-    ) or 0
-    cause_decided = db.scalar(
-        "SELECT COUNT(DISTINCT c.answer_id) FROM answer_checks c"
-        " JOIN answers a ON a.id=c.answer_id"
-        " WHERE c.class_id=? AND a.batch=? AND c.answer_version=a.fingerprint"
-        " AND c.cause_state='decided'",
-        (class_row["id"], batch),
-    ) or 0
+        base_sql + " AND c.locate_status='first_bad' AND a.missing=0", params) or 0
+    cause_decided = db.scalar(base_sql + " AND c.cause_state='decided'", params) or 0
+    cause_not_applicable = db.scalar(
+        base_sql + " AND c.cause_state='not_applicable'", params) or 0
+    manual_verified = db.scalar(base_sql + " AND c.verify_source='manual'", params) or 0
 
     block.update({
         "expected": expected,
@@ -261,5 +274,7 @@ def answer_check_stats(db, class_row, batch=""):
         "checked": checked,
         "original_errors": int(original_errors),
         "cause_decided": int(cause_decided),
+        "cause_not_applicable": int(cause_not_applicable),
+        "manual_verified": int(manual_verified),
     })
     return block
