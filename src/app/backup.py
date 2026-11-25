@@ -98,6 +98,11 @@ def _counts(conn):
         counts["answer_followups"] = conn.execute(
             "SELECT COUNT(*) FROM answer_followups"
         ).fetchone()[0]
+    # t14 的外发审计（可选表：旧备份/旧库没有它，有表才统计）
+    if "ai_egress_audit" in tables:
+        counts["ai_egress_audit"] = conn.execute(
+            "SELECT COUNT(*) FROM ai_egress_audit"
+        ).fetchone()[0]
     return counts
 
 
@@ -515,6 +520,57 @@ FOLLOWUP_UPDATE_COLUMNS = (
     "status", "created_at", "decided_at",
 )
 
+# R1-T15（B1）：作答核对与追问原话。外键（class_id / student_id / answer_id / check_id）
+# **不在**这个清单里——它们在恢复时按 student_map / answer_map / check_map 换成新 id，
+# 绝不沿用暂存库里的旧 id。其余列原样搬：包括撤回行的 `answer_version=''` 与
+# `invalidated_at/_reason/_by`（撤回痕迹与「这条追问已失效」都必须跟着搬，不能只恢复有效行）。
+ANSWER_CHECK_COLUMNS = (
+    "answer_version", "progress", "cause_state", "cause_source", "observed_step",
+    "first_bad_index", "locate_status", "locate_source", "contrast_note", "completion_state",
+    "failed_line_index", "verification_scope", "manual_state", "manual_reason", "locate_detail",
+    "cause_code", "cause_label", "cause_history", "teacher_note", "basis_note", "change_reason",
+    "created_by", "created_at", "updated_at", "decided_at", "decided_by",
+    "invalidated_at", "invalidated_reason", "invalidated_by",
+    "verify_source", "teacher_error_text", "teacher_verified_at", "teacher_verified_by",
+)
+
+ANSWER_FOLLOWUP_COLUMNS = (
+    "answer_version", "question", "source", "source_detail", "answer_text", "asked_at",
+    "answered_at", "evidence_snapshot", "invalidated_at", "invalidated_reason",
+    "created_at", "updated_at",
+)
+
+# t14 的「真的外发过一次」审计：按账号（不是按班级）落库，所以不放进 per-class 循环，
+# 在班级全部搬完之后按 user_id 整体重写；字段只存形状，不含任何取值。
+AI_EGRESS_AUDIT_COLUMNS = ("username", "flow", "model_channel", "payload_fields",
+                           "payload_bytes", "created_at")
+
+# 旧格式备份缺列时的默认值：文本类补空串，JSON 类补各自的空壳，整数类补 NULL。
+# 1.8.1 的备份没有 verify_source/teacher_error_text/teacher_verified_*（R1-T5 增列）
+# 与 evidence_snapshot（R1-T6 增列），按这里的默认值补，恢复照常成功。
+_COLUMN_DEFAULTS = {
+    "first_bad_index": None, "failed_line_index": None, "created_by": None,
+    "decided_by": None, "invalidated_by": None, "teacher_verified_by": None,
+    "payload_bytes": 0, "payload_fields": "[]",
+    "locate_detail": "{}", "cause_history": "[]", "evidence_snapshot": "{}",
+}
+
+
+def _row_values(row, columns):
+    """按列清单取值：暂存库里没有这一列（旧格式备份）就用默认值，不报错也不塞 NULL。"""
+    keys = row.keys() if hasattr(row, "keys") else ()
+    out = []
+    for col in columns:
+        if col in keys:
+            out.append(row[col])
+        else:
+            out.append(_COLUMN_DEFAULTS.get(col, ""))
+    return tuple(out)
+
+
+def _table_names(conn):
+    return {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+
 
 def _fault(name):
     if name in (os.environ.get("MISTAKE_FAULT") or "").split(","):
@@ -641,6 +697,11 @@ def apply_staged(staging_dir, data_dir, user_id, app_version=VERSION, mode="rest
     mode="restore"：备份必须可靠地属于 user_id（backup_key 相同；旧版备份需
     legacy_confirmed=True 且 id 与用户名同时匹配）。
     mode="import"：把备份里的班级等重映射给 user_id，要求该账号还没有任何班级。
+
+    R1-T15（B1）：恢复范围包含 answer_checks（教师判断 / 人工核验 / 撤回）与
+    answer_followups（追问原话 + 证据快照），外键按 student_map / answer_map / check_map
+    重映射；撤回行（answer_version=''）与 invalidated_* 原样保留。旧格式备份没有这两张表时
+    整段跳过、恢复照常成功。ai_egress_audit（t14）按账号整体重写。
 
     返回 {"safety": 恢复前自动备份路径, "counts": 恢复后的条数}。
     任何一步失败都回滚事务、删除本次复制进来的照片，原数据保持可用；
@@ -773,6 +834,48 @@ def apply_staged(staging_dir, data_dir, user_id, app_version=VERSION, mode="rest
                             conn, "answers", ("class_id", "student_id") + ANSWER_COLUMNS,
                             (new_class, new_student) + tuple(ans[col] for col in ANSWER_COLUMNS),
                         )
+                # R1-T15：作答核对与追问原话（B1）。必须排在 answers 之后（answer_map 已就绪），
+                # 且都要过 student_map/answer_map 重映射；旧格式备份没有这两张表就整段跳过。
+                check_map = {}
+                if "answer_checks" in src_tables:
+                    _fault("check_restore")
+                    for chk in src.execute(
+                        "SELECT * FROM answer_checks WHERE class_id=? ORDER BY id", (row["id"],)
+                    ):
+                        new_student = student_map.get(chk["student_id"])
+                        new_answer = answer_map.get(chk["answer_id"])
+                        if new_student is None or new_answer is None:
+                            # 找不到所属学生/作答的核对记录不能硬塞：宁可整体回滚，也不留半条。
+                            raise BackupError("备份里的核对记录找不到所属学生或作答")
+                        values = list(_row_values(chk, ANSWER_CHECK_COLUMNS))
+                        # 操作人列都是「本账号的 user id」：导入到别的账号时换成新账号，避免指向不存在的人。
+                        for pos, col in enumerate(ANSWER_CHECK_COLUMNS):
+                            if col in ("created_by", "decided_by", "invalidated_by",
+                                       "teacher_verified_by"):
+                                values[pos] = user_id if values[pos] is not None else None
+                        check_map[chk["id"]] = _insert(
+                            conn, "answer_checks",
+                            ("class_id", "student_id", "answer_id") + ANSWER_CHECK_COLUMNS,
+                            (new_class, new_student, new_answer) + tuple(values),
+                        )
+                if "answer_followups" in src_tables:
+                    for fol2 in src.execute(
+                        "SELECT * FROM answer_followups WHERE class_id=? ORDER BY id", (row["id"],)
+                    ):
+                        new_student = student_map.get(fol2["student_id"])
+                        new_answer = answer_map.get(fol2["answer_id"])
+                        if new_student is None or new_answer is None:
+                            raise BackupError("备份里的追问原话找不到所属学生或作答")
+                        new_check = None
+                        if fol2["check_id"] is not None:
+                            new_check = check_map.get(fol2["check_id"])
+                        _insert(
+                            conn, "answer_followups",
+                            ("class_id", "student_id", "answer_id", "check_id")
+                            + ANSWER_FOLLOWUP_COLUMNS,
+                            (new_class, new_student, new_answer, new_check)
+                            + _row_values(fol2, ANSWER_FOLLOWUP_COLUMNS),
+                        )
                 review_map = {}
                 if "answer_reviews" in src_tables:
                     # 审核记录跟着作答和错题一起搬：两边的 id 都换成本库的新 id。
@@ -837,6 +940,15 @@ def apply_staged(staging_dir, data_dir, user_id, app_version=VERSION, mode="rest
                                 conn, "followup_updates", ("followup_id",) + FOLLOWUP_UPDATE_COLUMNS,
                                 (new_parent,) + tuple(upd[col] for col in FOLLOWUP_UPDATE_COLUMNS),
                             )
+            # R1-T15：外发审计按账号落库（没有 class_id），所以放在 per-class 循环之后整体重写。
+            # 语义与班级一致：恢复 = 用备份里的状态替换这个账号的这份数据，重复恢复不叠加。
+            # 注意：这段必须在 `finally: src.close()` **之前**执行 —— 它要读备份库。
+            if "ai_egress_audit" in src_tables and "ai_egress_audit" in _table_names(conn):
+                conn.execute("DELETE FROM ai_egress_audit WHERE user_id=?", (user_id,))
+                for audit in src.execute("SELECT * FROM ai_egress_audit ORDER BY id"):
+                    _insert(conn, "ai_egress_audit",
+                            ("user_id",) + AI_EGRESS_AUDIT_COLUMNS,
+                            (user_id,) + _row_values(audit, AI_EGRESS_AUDIT_COLUMNS))
         finally:
             src.close()
 

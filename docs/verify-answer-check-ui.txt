@@ -1,21 +1,21 @@
 数智伴学｜作答核对网页：浏览器端到端（Edge headless + CDP，1366×768）
-时间：2026-11-25T19:01:00+08:00
+时间：2026-11-25T19:58:59+08:00
 命令：python.exe tests\verify_answer_check_ui.py
 目录：E:\Agent\小挑
 环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
-被测文件 src/web/app.js sha256=1003A5F9039A mtime=2026-11-25 18:20:18 size=140752
-被测文件 src/web/styles.css sha256=9D1454513298 mtime=2026-11-25 18:20:18 size=17331
+被测文件 src/web/app.js sha256=78FA2433904A mtime=2026-11-25 19:33:21 size=152109
+被测文件 src/web/styles.css sha256=D79BE41F2E2F mtime=2026-11-25 19:04:44 size=17896
 被测文件 src/app/equation_steps.py sha256=11D90941D317 mtime=2026-11-25 18:20:18 size=36183
-被测文件 src/app/demo_answers.py sha256=E9B96DDC2F50 mtime=2026-11-25 18:20:18 size=37655
+被测文件 src/app/demo_answers.py sha256=819B6463F1DA mtime=2026-11-25 19:14:10 size=44511
 被测文件 src/app/answer_check.py sha256=9D06934B23B1 mtime=2026-11-25 19:00:12 size=108473
 服务：http://127.0.0.1:8899（数据目录 E:\Agent\小挑\tests\.tmp-e2e-web）
 截图目录：E:\Agent\小挑\docs\screenshots
 PASS 13.0 服务在 127.0.0.1:8899 上启动（演示数据已种）
 PASS 13.0.1 演示账号能登录
 演示班级：初二(3)班 (id=1)
-PASS 13.0.2 合成演示数据已载入（4 份）
-合成作答 id：{'DEMO-A-01': 1, 'DEMO-B-01': 2, 'DEMO-C-01': 3, 'DEMO-OK-01': 4}
-PASS 13.0.3 四份合成作答齐备
+PASS 13.0.2 合成演示数据已载入（6 份，与 build() 同数）
+合成作答 id：{'DEMO-A-01': 1, 'DEMO-B-01': 2, 'DEMO-C-01': 3, 'DEMO-OK-01': 4, 'DEMO-OOS-01': 5, 'DEMO-MV-01': 6}
+PASS 13.0.3 合成作答齐备（6 份、record_key 与 build() 完全一致）
 PASS 13.0.4 新建一个空班级（no_answers 取证用）
 
 == 13.1 A1：班级列表 → 进入班级即见「查看待核对作答」（一次点击直达作答） ==
@@ -140,7 +140,7 @@ PASS 13.11.7 已核对完时不把作业表渲染成空表（作业表有行）
 PASS 13.11.8 已核对完时提示去「查看核对记录」找回原因待判断的记录
 PASS 13.11.8b all_checked 态主按钮为可点的「查看核对记录」（契约 §4.2 R-06）
 PASS 13.11.9 all_checked 截图已保存且尺寸正确
-长作答 id=5（15 行）
+长作答 id=7（15 行）
 PASS 13.0.5 长作答已写入（15 行，用于折叠与横向滚动取证）
 
 == 13.9b A6：长作答默认折叠、展开后仍无横向滚动 ==
@@ -154,7 +154,7 @@ PASS 13.9.14 展开长作答后仍无横向滚动（scrollWidth<=1366）
 PASS 13.9.15 长作答展开截图已保存且尺寸正确
 
 == 13.10 保存失败留页：拦截保存请求返回 500，页面不跳走、输入不丢 ==
-拦截到的保存请求：['http://127.0.0.1:8899/api/classes/2/check/answers/5/save']
+拦截到的保存请求：['http://127.0.0.1:8899/api/classes/2/check/answers/7/save']
 PASS 13.10.1 保存返回 500 后页面显示失败横幅
 PASS 13.10.2 横幅写明 500 与「可以再点一次」
 PASS 13.10.3 页面没有跳走（hash 不变）
@@ -175,8 +175,8 @@ PASS 13.14.4 人工判断截图已保存且尺寸正确
 PASS 15.1 A7 总览页有「合成演示数据」卡，写明不需要选文件/配模型/等网络
 PASS 15.2 A7 卡上写明「只影响合成数据，真实导入的作答不受影响」
 PASS 15.3 A7 卡上有「载入合成演示数据」「重置合成数据」两个可见按钮
-PASS 15.4 A7 点「载入合成演示数据」→ 页面显示 seeded 数字（新增 4 份）
-PASS 15.5 A7 载入后库里确实多出 4 份合成作答（1 → 5）
+PASS 15.4 A7 点「载入合成演示数据」→ 页面显示 seeded 数字（新增 6 份）
+PASS 15.5 A7 载入后库里确实多出 6 份合成作答（1 → 7）
 PASS 15.6 A7 载入后「当前作业」仍是真实作业（演示批次不抢占当前作业）
 PASS 15.6a A7 作业表里单独列出演示批次（4/0/4 那一行）
 PASS 15.6b A7 演示批次页：待核对作答 4 份 + 主按钮「查看待核对作答」
@@ -208,7 +208,7 @@ PASS 15.22 保存时间是 YYYY-MM-DD HH:MM，不是原始 ISO 串
 PASS 15.22b 记录行内「打开」是按钮，不是纯文字
 A6 态测量 记录：{"label": "记录", "overflowX": 0, "scrollWidth": 1366, "innerWidth": 1366, "primary": 1}
 PASS 15.23 A6 记录态无横向滚动且 .btn.primary=1
-PASS 15.24 A7 点「重置合成数据」→ 页面显示 deleted/kept 数字
+PASS 15.24 A7 点「重置合成数据」→ 页面显示 deleted/kept 数字（删除 6 份）
 PASS 15.25 A7 重置只删合成数据：班里只剩那条真实导入作答
 PASS 15.26 A7 重置没有动真实导入作答的判断（check 仍在）
 PASS 15.27 A7 重置截图已保存且尺寸正确
@@ -222,11 +222,11 @@ A1 空状态主按钮：{"tag": "A", "text": "导入作答", "href": "#/upload?c
 PASS 15.30 A1(a) 空状态主按钮是可点的链接（不再是 disabled 按钮）
 PASS 15.31 A1(a) 空状态主按钮逐字「导入作答」且指向 #/upload?class={id}
 PASS 15.32 A1 空状态不再显示「当前作业：未命名批次」
-A6 态测量 no_answers：{"label": "no_answers", "overflowX": 0, "scrollWidth": 1366, "innerWidth": 1366, "primary": 1}
+A6 态测量 no_answers：{"label": "no_answers", "overflowX": -15, "scrollWidth": 1351, "innerWidth": 1366, "primary": 1}
 PASS 15.33 A6 空状态无横向滚动且 .btn.primary=1
 PASS 15.34 A1 空状态截图已保存且尺寸正确
 PASS 15.35 A1(b) 班级卡用「待确认错题 / 已确认错题」，不再出现孤立的「待核对」
-A1(b) 取证：hero='待核对作答 4 份\n当前作业：【合成演示】不计入真实作业\n去括号：是规则没掌握，还是这次漏写？\n\n下一份待核对作答：学生甲 · 第 1 题。待核对数与「查看待核' 表头=['作业', '应交', '已核对', '待核对作答', ''] 班级卡=['0学生0待确认错题0已确认错题', '10学生4待确认错题9已确认错题', '1学生0待确认错题0已确认错题']
+A1(b) 取证：hero='待核对作答 4 份\n当前作业：【合成演示】不计入真实作业\n去括号：是规则没掌握，还是这次漏写？\n\n下一份待核对作答：学生甲 · 第 1 题。待核对数与「查看待核' 表头=['作业', '应交', '已核对', '待核对作答', ''] 班级卡=['0学生0待确认错题0已确认错题', '12学生4待确认错题9已确认错题', '1学生0待确认错题0已确认错题']
 PASS 15.36 A1(b) 作答核对页用「待核对作答」，不再出现班级卡那一侧的错题口径词
 PASS 15.37 A1(b) 两处用词不同且各自可解释（错题 vs 作答）
 
@@ -239,6 +239,42 @@ PASS 13.13.5 只有答案的作答不标错（没有 bad 行）
 PASS 13.13.6 只有答案显示「缺少步骤」并说明不猜错在哪一行
 PASS 13.13.7 只有答案仍能保存处理进度（主按钮在）
 PASS 13.13.8 缺少步骤截图已保存且尺寸正确
+
+== 13.17 R1-T12：五条新增能力的网页入口（批次选择 / 人工核对 / 补录校正 / 追问复核 / 演示数据） ==
+PASS 13.17.0 一键载入演示数据：6 份、2 个演示批次，逐批次都有作答
+PASS 13.17.0b 六份演示作答的 id 已取到（供本段导航用）
+PASS 13.17.1 总览页有批次选择：当前作业 + 全部批次 + 每个演示批次都在选项里
+PASS 13.17.1b 选择器下方写明「当前作业」与「全部批次」的区别
+PASS 13.17.2a 下拉切到「全部批次」后页面重新渲染（下拉可用）
+PASS 13.17.2 切到「全部批次」：标题与合计数字随之变化，并说明与「当前作业」的分母不同
+PASS 13.17.2b 「全部批次」总览截图（1366×768）
+PASS 13.17.3a 下拉切到第二个演示批次（值已生效）
+PASS 13.17.3 切到第二个演示批次：本批演示行可见（待核对 2 份，不是 0/0）
+PASS 13.17.3b 第二个演示批次截图（1366×768）
+PASS 13.17.4 真实批次里看不到任何演示行（逐批次对账）
+PASS 13.17.5 记录页有批次选择：默认「全部批次」并写明范围
+PASS 13.17.6 out_of_scope 作答页出现「人工核对并记录错误」入口
+PASS 13.17.7 点入口后展开人工填写区，并把焦点放到「判断依据」
+PASS 13.17.8 依据为空时保存被拒：页面写明要填判断依据（服务端 400 basis_required）
+PASS 13.17.9 填好依据后保存成功：回执显示「教师已判断」与「教师填写」来源
+PASS 13.17.9b 这条结论在「记录找回」里按「教师已判断」可查（不再永远挂账）
+PASS 13.17.9c 人工核对截图（1366×768）
+PASS 13.17.10 缺步骤作答提供「补录 / 校正原始作答」入口，且预填当前学生步骤
+PASS 13.17.11 补录保存后页内回执给出旧/新版本号，并说明本份回到待核对
+PASS 13.17.12 补录后按新内容重新分析：版本变化、定位重算成 correct、本份回到待核对
+PASS 13.17.12b 演示作答被校正后明确说明「预置已失效 / 重置可恢复」
+PASS 13.17.12c 补录校正截图（1366×768）
+PASS 13.17.13 移项题的追问句按本条错步生成（不含「括号」），并给出来源标注
+PASS 13.17.14 记录学生回答后回执给出问句与来源（预置问句可由老师改写）
+PASS 13.17.15a 观察到的错步已改成与规则不同的写法（人工核验）
+PASS 13.17.15 改了关键错步后回执提示「依据已更新，需复核」
+PASS 13.17.15b 旧确认不再算「已记录」：recorded=false、needs_review=true
+PASS 13.17.15c 追问复核截图（1366×768）
+T12 三页度量 总览：{"overflowX": -15, "primary": 1, "hash": "#/class/1/check", "bar": [], "label": "总览"}
+T12 三页度量 记录：{"overflowX": 0, "primary": 1, "hash": "#/class/1/check/records?cause_state=all", "bar": [], "label": "记录"}
+T12 三页度量 核对：{"overflowX": -15, "primary": 1, "hash": "#/class/1/check/13", "bar": ["保存错步，原因待判断"], "label": "核对"}
+PASS 13.17.16 三页在 1366×768 下无横向滚动、主按钮仍唯一
+PASS 13.17.17 真实作答冒用演示批名时，reset 也不删它（三条口径少一条都不删）
 
 == 13.12 旧五个 tab 回归：overview / students / mistakes / stats / advice ==
 PASS 13.12.1 旧 tab overview 正常渲染（关键词 待确认错题/已确认错题 都在，console 无未捕获异常）
@@ -256,6 +292,6 @@ PASS 13.16.3 同一页对应的保存真的被拒（400 basis_required，提示�
 PASS 13.16.4 记成「无需判断」后不再要求依据（提示消失，标签回到可选）
 PASS 13.16.5 first_bad 页不显示必填（A5 快路径保持可选）
 
-合计 191 项，通过 191，失败 0（另：未验证 0 项；已知缺口 0 项，见上面「未通过（缺口）」行）
-截图清单：ui-a1-all-checked-1366x768.png, ui-a1-empty-primary-1366x768.png, ui-a1-no-answers-1366x768.png, ui-a2-missing-steps-1366x768.png, ui-a5-adopt-receipt-1366x768.png, ui-a5-receipt-1366x768.png, ui-a6-first-bad-1366x768.png, ui-a6-long-answer-expanded-1366x768.png, ui-a6-receipt-first-screen-1366x768.png, ui-a7-demo-reset-1366x768.png, ui-a7-demo-seeded-1366x768.png, ui-fix-empty.png, ui-fix-receipt.png, ui-r1-02-manual-cause-1366x768.png, ui-save-failed-500-1366x768.png, walkthrough-0-classlist.png, walkthrough-1.png, walkthrough-2.png, walkthrough-3.png, walkthrough-4.png
+合计 222 项，通过 222，失败 0（另：未验证 0 项；已知缺口 0 项，见上面「未通过（缺口）」行）
+截图清单：t12-1-batches-overview-1366x768.png, t12-2-demo-batch2-1366x768.png, t12-3-manual-check-1366x768.png, t12-4-supplement-1366x768.png, t12-5-followup-review-1366x768.png, ui-a1-all-checked-1366x768.png, ui-a1-empty-primary-1366x768.png, ui-a1-no-answers-1366x768.png, ui-a2-missing-steps-1366x768.png, ui-a5-adopt-receipt-1366x768.png, ui-a5-receipt-1366x768.png, ui-a6-first-bad-1366x768.png, ui-a6-long-answer-expanded-1366x768.png, ui-a6-receipt-first-screen-1366x768.png, ui-a7-demo-reset-1366x768.png, ui-a7-demo-seeded-1366x768.png, ui-fix-empty.png, ui-fix-receipt.png, ui-r1-02-manual-cause-1366x768.png, ui-save-failed-500-1366x768.png, walkthrough-0-classlist.png, walkthrough-1.png, walkthrough-2.png, walkthrough-3.png, walkthrough-4.png
 退出码：0

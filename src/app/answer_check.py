@@ -1496,6 +1496,8 @@ def _save(db, class_row, user_id, answer_id, body):
                 check_id, check = _retract(
                     db, conn, answer, existing, latest, user_id, change_reason, now
                 )
+                # R1-16：撤回 → 原版错题同步退回（只送回我方写的那条）
+                _sync_mistake(db, conn, answer, check, user_id, now)
             else:
                 # 人工核验必须留依据：老师自己给定错步/在规则判不了的作答上下判断时，
                 # 「凭什么」只能是他写下来的那句依据，不写就是「绕过证据」。
@@ -1510,6 +1512,8 @@ def _save(db, class_row, user_id, answer_id, body):
                     db, conn, answer, check_id, version, followup_question, followup_text,
                     change_reason, now, suggestion,
                 )
+                # R1-16：教师判断 → 原版错题（幂等：同一份作答只有一条）
+                _sync_mistake(db, conn, answer, check, user_id, now)
     except AnswerCheckError:
         raise
     except Exception:
@@ -1729,6 +1733,120 @@ def _merged_history(latest, now, user_id, changes, existing):
         if changed and has_content:
             history.append(_history_snapshot(existing, "revise", now, user_id))
     return history
+
+
+# ---------------------------------------------------------------------------
+# R1-16：「作答核对 → 原版错题」的写入/回滚（幂等，键 = answers.id）
+# ---------------------------------------------------------------------------
+# 原版四个页面（个人学情 tutor / 班级统计 stats / 错题管理 records / 个性化辅导 advice）
+# 一律只读 `mistakes(status='confirmed')`，而作答核对原先只写 answer_checks。于是老师在
+# 「作答核对」里判了错因，这四个页面看不见——统计里 cause_decided=1、错题数却是 0。
+# 这里把教师判断用**幂等**方式落到原版 mistakes：同一份作答永远只有一条（mistakes.answer_id
+# 局部唯一索引），撤回/改判都作用在同一条上；不新建平行表，也不改这四个页面的读法。
+MISTAKE_SOURCE = "作答核对"
+MISTAKE_LOCATE_STATUSES = ("first_bad", "missing_steps")
+MISTAKE_RETURNED_REASON = "作答核对撤回或改判：本条不再计入当前结论"
+
+
+def _mistake_row_for_answer(db, answer):
+    """这份作答已经对应的错题：先看 answer_id 绑定，再看「作答分析」确认时回写的 mistake_id。"""
+    row = db.query_one("SELECT * FROM mistakes WHERE answer_id=?", (answer["id"],))
+    if row:
+        return row
+    review = db.query_one(
+        "SELECT mistake_id FROM answer_reviews WHERE answer_id=? AND status='confirmed'"
+        " AND mistake_id IS NOT NULL ORDER BY id DESC LIMIT 1",
+        (answer["id"],),
+    )
+    if review and review.get("mistake_id"):
+        return db.query_one("SELECT * FROM mistakes WHERE id=?", (review["mistake_id"],))
+    return None
+
+
+def _mistake_fields(answer, check, now, source_type):
+    """教师判断 → 原版错题的字段。只用教师判断与作答本身，**不调用任何生成式模型**。"""
+    label = (check.get("cause_label") or "").strip()
+    code = (check.get("cause_code") or "").strip()
+    observed = (check.get("observed_step") or "").strip()
+    basis = (check.get("basis_note") or "").strip()
+    where = "%s · 题%s" % (answer.get("batch") or "未命名批次", answer.get("question_no") or "-")
+    note = "来源：%s（教师判断「%s」%s）｜%s" % (
+        MISTAKE_SOURCE,
+        label or code or "未命名原因",
+        "，编码 %s" % code if code else "",
+        where,
+    )
+    if basis:
+        note += "｜判断依据：%s" % basis
+    return {
+        "status": "confirmed",
+        "source_type": source_type,
+        "source_detail": where,
+        "question_text": answer.get("question_text") or "",
+        "solution_text": answer.get("standard_solution") or "",
+        "error_type": label,
+        "observed_errors": json.dumps([observed] if observed else [], ensure_ascii=False),
+        "occurred_on": answer.get("occurred_on") or "",
+        "note": note,
+        "answer_id": answer["id"],
+        "updated_at": now,
+    }
+
+
+def _sync_mistake(db, conn, answer, check, user_id, now):
+    """保存/撤回之后同步原版错题；返回 (动作, mistake_id)。
+
+    动作三种，全部幂等（同一份作答重复保存只会得到同一个动作与同一行）：
+    - `created`：新建一条 status='confirmed'、source_type='作答核对' 的错题；
+    - `updated`：这份作答已经有错题（我方上次写的，或「作答分析」确认时生成的那条）→ 更新同一条
+      并绑定 answer_id，绝不插第二条；
+    - `returned`：撤回 / 改判成「无需判断」/ 定位结论不再是错步 → **我方写入**的那条置 returned
+      （原版语义：退回的错题不进四个页面），「作答分析」生成的那条不动它的状态（它独立存在）。
+
+    判定「这次该不该算一条错题」只看当前结论：`cause_state=decided` + 定位结论 first_bad/missing_steps
+    + `answer_version == answers.fingerprint`（版本对不上说明这条结论已过期）。
+    """
+    row = _mistake_row_for_answer(db, answer)
+    current = bool(check) and (check.get("answer_version") or "") == (answer.get("fingerprint") or "")
+    decided = current and (check.get("cause_state") or "") == CAUSE_DECIDED
+    located = current and (check.get("locate_status") or "") in MISTAKE_LOCATE_STATUSES
+    if decided and located:
+        if row is None:
+            fields = _mistake_fields(answer, check, now, MISTAKE_SOURCE)
+            columns = ["class_id", "student_id", "created_at", "confirmed_at", "confirmed_by"]
+            values = [answer["class_id"], answer["student_id"], now, now, user_id]
+            for key, value in fields.items():
+                columns.append(key)
+                values.append(value)
+            conn.execute(
+                "INSERT INTO mistakes(%s) VALUES (%s)"
+                % (", ".join(columns), ", ".join("?" * len(columns))),
+                tuple(values),
+            )
+            return "created", conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        # 已有错题：绑定 answer_id 并更新为教师判断（source_type 保持原样，来源另记在 note 里）
+        fields = _mistake_fields(answer, check, now, row.get("source_type") or MISTAKE_SOURCE)
+        fields.pop("source_type", None)
+        if row.get("source_type") != MISTAKE_SOURCE:
+            fields["note"] = fields["note"] + "｜沿用已有错题（原来源：%s）" % (
+                row.get("source_type") or "未知")
+        assignments = ", ".join("%s=?" % name for name in fields)
+        conn.execute(
+            "UPDATE mistakes SET " + assignments
+            + ", returned_at='', returned_reason='' WHERE id=?",
+            tuple(fields[name] for name in fields) + (row["id"],),
+        )
+        return "updated", row["id"]
+    if row is None:
+        return "none", None
+    if (row.get("source_type") or "") == MISTAKE_SOURCE and row.get("status") != "returned":
+        conn.execute(
+            "UPDATE mistakes SET status='returned', returned_at=?, returned_reason=?, updated_at=?"
+            " WHERE id=?",
+            (now, MISTAKE_RETURNED_REASON, now, row["id"]),
+        )
+        return "returned", row["id"]
+    return "kept", row["id"]
 
 
 def _write_check(db, conn, answer, existing, latest, view, changes, observed_step,

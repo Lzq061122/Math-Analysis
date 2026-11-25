@@ -4,6 +4,7 @@
 再由它调用网页版同一批处理器，保证两种界面共用一份账号与数据逻辑。
 """
 import csv
+import html
 import os
 import re
 import uuid
@@ -12,6 +13,7 @@ from PySide6.QtCore import QDate, QPoint, QRect, QSize, Qt, QThread, QTimer, Sig
 from PySide6.QtGui import QColor, QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDateEdit,
@@ -19,6 +21,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
@@ -29,6 +32,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QSizePolicy,
     QStackedWidget,

@@ -1,0 +1,51 @@
+数智伴学｜R1-T15（B1）备份恢复：answer_checks / answer_followups 随备份走
+时间：2026-11-25T20:04:37+08:00
+命令：python.exe tests\verify_r1_15_backup_tables.py
+目录：E:\Agent\小挑
+环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
+临时库：E:\Agent\小挑\tests\.tmp-r1-15
+网络：无（纯本地 SQLite 与 zip）
+恢复前 counts：{"ai_egress_audit": 2, "answer_checks": 4, "answer_followups": 3, "answer_reviews": 2, "answers": 4, "classes": 2, "followup_updates": 0, "followups": 0, "mistakes": 2, "students": 3, "tutor_advice": 0}
+
+== 1. 备份侧：导出范围包含两张新表（整库快照，不需要第二套导出格式） ==
+FAIL 1.1 create_backup 清单里 answer_checks=3、answer_followups=3（不是 0） {"classes": 2, "students": 3, "mistakes": 2, "answers": 4, "answer_reviews": 2, "tutor_advice": 0, "followups": 0, "followup_updates": 0, "answer_checks": 4, "answer_followups": 3, "ai_egress_audit": 2, "photos": 0}
+FAIL 1.2 暂存库（解开后的备份）里同样是 3/3，且备份文件里只有一份 app.db {"classes": 2, "students": 3, "mistakes": 2, "answers": 4, "answer_reviews": 2, "tutor_advice": 0, "followups": 0, "followup_updates": 0, "answer_checks": 4, "answer_followups": 3, "ai_egress_audit": 2}
+FAIL 1.3 inspect_backup 认为这份备份就是本账号的（same_key） {"same_key": false, "legacy": false, "id_match": false, "username_match": false}
+
+== 2. 恢复侧：按 answer_map / student_map 重建，外键全部重映射 ==
+PASS 2.0 造一份「空库」作为恢复目标（两张新表为 0、旧表清空）
+恢复后 counts：{"ai_egress_audit": 2, "answer_checks": 4, "answer_followups": 3, "answer_reviews": 2, "answers": 4, "classes": 2, "followup_updates": 0, "followups": 0, "mistakes": 2, "students": 3, "tutor_advice": 0}
+FAIL 2.1 恢复后 answer_checks=3、answer_followups=3（都搬回来了） {"classes": 2, "students": 3, "mistakes": 2, "answers": 4, "answer_reviews": 2, "tutor_advice": 0, "followups": 0, "followup_updates": 0, "answer_checks": 4, "answer_followups": 3, "ai_egress_audit": 2}
+PASS 2.2 恢复后 9 张旧表条数与备份时一致（classes/students/mistakes/answers/reviews）
+FAIL 2.3 核对记录与作答/学生/班级三处外键对得上（没有沿用旧 id） [{"id": 1, "class_id": 1, "student_id": 1, "answer_id": 1}, {"id": 2, "class_id": 1, "student_id": 2, "answer_id": 2}, {"id": 3, "class_id": 1, "student_id": 1, "answer_id": 3}, {"id": 4, "class_id": 2, "student_id": 3, "answer_id": 4}]
+PASS 2.4 跨班级不串：一班 3 条、二班 1 条，且各自挂在自己的班级上
+PASS 2.5 追问原话的 check_id 指向恢复后的新核对行（不是暂存库里的旧 501/502/504）
+
+== 3. 保留语义：撤回行与 invalidated_* 原样保留 ==
+PASS 3.1 撤回行（answer_version 为空）被原样搬回，没有被「只恢复有效行」过滤掉
+PASS 3.2 撤回行的 cause_history 也原样保留（含 retract 事件）
+PASS 3.3 已失效的追问原话连同 invalidated_at/_reason 一起搬回
+PASS 3.4 证据快照（evidence_snapshot）逐字保留
+PASS 3.5 人工核验那一列组（verify_source/teacher_error_text/basis_note）逐字保留
+PASS 3.6 t14 的外发审计按账号整体搬回（2 条、user_id 重映射为当前账号）
+
+== 4. 返回的 counts 与库内实际条数一致 ==
+PASS 4.1 apply_staged 返回的 counts 与恢复后库内实际条数逐项相等
+FAIL 4.2 返回的 answer_checks / answer_followups 不再是 0（旧版这里恒 0） {"classes": 2, "students": 3, "mistakes": 2, "answers": 4, "answer_reviews": 2, "tutor_advice": 0, "followups": 0, "followup_updates": 0, "answer_checks": 4, "answer_followups": 3, "ai_egress_audit": 2}
+
+== 5. 重复恢复不叠加（恢复 = 用备份状态替换该账号的数据） ==
+FAIL 5.1 第二次恢复后仍是 3/3/2（没有翻倍） {"classes": 2, "students": 3, "mistakes": 2, "answers": 4, "answer_reviews": 2, "tutor_advice": 0, "followups": 0, "followup_updates": 0, "answer_checks": 4, "answer_followups": 3, "ai_egress_audit": 2}
+
+== 6. 向后兼容：1.8.1 形态的旧备份（没有这两张表）恢复照常成功 ==
+PASS 6.1 旧格式备份恢复成功（不报错、不抛 BackupError）
+PASS 6.2 旧格式备份恢复后旧表照常回来（classes/answers/mistakes 与备份一致）
+PASS 6.3 旧格式备份里没有的两张新表为 0，且返回的 counts 不报错
+
+== 7. 失败回滚：新增步骤上的故障不留半恢复状态 ==
+PASS 7.1 注入 check_restore 故障 → 抛 BackupError（而且是「原数据未改动」那句）
+PASS 7.2 回滚后库内条数与恢复前完全相同（不留半恢复状态，含两张新表与旧表）
+FAIL 7.3 回滚后两张新表仍是原来的 3/3（没有被清空、也没有被塞一半） {"classes": 2, "students": 3, "mistakes": 2, "answers": 4, "answer_reviews": 2, "tutor_advice": 0, "followups": 0, "followup_updates": 0, "answer_checks": 4, "answer_followups": 3, "ai_egress_audit": 2}
+PASS 7.4 暂存库里核对记录指向不存在的作答 → 抛错并整体回滚（不留半条）
+
+合计 25 项，通过 17，失败 8
+退出码：1

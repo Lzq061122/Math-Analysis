@@ -1,14 +1,14 @@
 数智伴学｜R1-05 人工核对路径 + R1-06 追问记录与证据更新机制（源码级验收）
-时间：2026-11-25T19:02:52+08:00
+时间：2026-11-25T20:04:45+08:00
 命令：python.exe tests\verify_r1_05_06_manual_followup.py
 目录：E:\Agent\小挑
 环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
 临时库：E:\Agent\小挑\tests\.tmp-r1-05-06
 网络：只用 127.0.0.1 随机端口环回，无任何外部请求
-被测文件 src/app/answer_check.py sha256=9D06934B23B1 size=108473
-被测文件 src/app/db.py sha256=4BBAECCB0D8A size=63351
-被测文件 src/app/api.py sha256=6A17BD410E0B size=88776
-被测文件 src/web/app.js sha256=1003A5F9039A size=140752
+被测文件 src/app/answer_check.py sha256=829B39C759F0 size=114969
+被测文件 src/app/db.py sha256=AC46D72F9E29 size=65242
+被测文件 src/app/api.py sha256=E298B41426CC size=89797
+被测文件 src/web/app.js sha256=78FA2433904A size=152109
 
 == 1. R1-05：out_of_scope 有人工核对出路（记录数学错误 + 核验依据 + 留痕，不再永久卡死） ==
 PASS 1.1 规则判不了这份作答：locate.status=out_of_scope（source 只记 rule/none，不冒充预置）

@@ -395,7 +395,8 @@ CREATE TABLE IF NOT EXISTS mistakes (
     confirmed_at          TEXT NOT NULL DEFAULT '',
     confirmed_by          INTEGER,
     returned_at           TEXT NOT NULL DEFAULT '',
-    returned_reason       TEXT NOT NULL DEFAULT ''
+    returned_reason       TEXT NOT NULL DEFAULT '',
+    answer_id             INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_mistakes_class   ON mistakes(class_id, status);
@@ -571,12 +572,30 @@ ANSWER_INDEX_NAMES = (
     "idx_answers_source",
     "idx_reviews_answer",
     "idx_reviews_answer_confirmed",
+    "idx_mistakes_answer",
 )
 
 # 已废弃的库级触发器名：T6 起不再创建，旧库打开时由 Database._ensure_columns() 显式 DROP。
 RETIRED_TRIGGER_NAMES = (
     "trg_answers_demo_batch_ins",
     "trg_answers_demo_batch_upd",
+)
+
+# ---------------------------------------------------------------------------
+# R1-16：「作答核对 → 原版错题」的幂等键
+# ---------------------------------------------------------------------------
+# mistakes 原先没有任何指向 answers 的列，于是「作答核对」页的教师判断没法进原版四个页面
+# （个人学情 / 班级统计 / 错题管理 / 个性化辅导 都只读 mistakes）。这里补一个可空外键列：
+# - 可空：原有手工录入的错题没有来源作答，必须保持合法（新列默认 NULL）；
+# - 唯一：同一份作答最多一条错题（局部唯一索引，NULL 不参与），重复保存只会更新同一条；
+# - 老库升级走 ensure_answers_schema 的加列套路（先备份再 BEGIN IMMEDIATE），
+#   桌面端启动时调的就是它，因此旧库打开即可用。
+MISTAKE_ANSWER_COLUMNS = (
+    ("answer_id", "INTEGER"),
+)
+MISTAKE_ANSWER_DDL = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_mistakes_answer"
+    " ON mistakes(answer_id) WHERE answer_id IS NOT NULL",
 )
 
 
@@ -592,12 +611,14 @@ def answers_schema_ready(db_file):
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         indexes = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
         columns = {row[1] for row in conn.execute("PRAGMA table_info(students)")}
+        mistake_columns = {row[1] for row in conn.execute("PRAGMA table_info(mistakes)")}
     finally:
         conn.close()
     return (
         "answers" in tables
         and "answer_reviews" in tables
         and "code" in columns
+        and "answer_id" in mistake_columns
         and all(name in indexes for name in ANSWER_INDEX_NAMES)
     )
 
@@ -668,6 +689,11 @@ def ensure_answers_schema(db_file):
             )
             for name in RETIRED_TRIGGER_NAMES:
                 conn.execute("DROP TRIGGER IF EXISTS %s" % name)
+            # R1-16：让「作答核对」的教师判断以幂等方式落到原版 mistakes。
+            # 幂等键 = answers.id（mistakes 原先没有任何指向作答的列），同一份作答只允许一条。
+            _add_missing_columns(conn, "mistakes", MISTAKE_ANSWER_COLUMNS)
+            for ddl in MISTAKE_ANSWER_DDL:
+                conn.execute(ddl)
             _migration_fault("answers_commit")
             conn.execute("COMMIT")
         except Exception as exc:
@@ -1251,6 +1277,10 @@ class Database:
             self.conn.execute("ALTER TABLE users ADD COLUMN backup_key TEXT NOT NULL DEFAULT ''")
         # R1-14：教师账号级「个体 AI 外发」开关，默认关（0）。桌面端 create=False 打开旧库时
         # 不会走到这里，由 ensure_ai_switch_column() 在写入开关时补列（读侧缺列按「关」处理）。
+        # R1-16：「作答核对 → 错题」的幂等键（create=True 直接打开旧库时也补上）
+        _add_missing_columns(self.conn, "mistakes", MISTAKE_ANSWER_COLUMNS)
+        for ddl in MISTAKE_ANSWER_DDL:
+            self.conn.execute(ddl)
         if USER_AI_SWITCH_COLUMN[0] not in existing_users:
             self.conn.execute(
                 "ALTER TABLE users ADD COLUMN %s %s" % USER_AI_SWITCH_COLUMN)
