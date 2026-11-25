@@ -12,4 +12,8 @@ src/last-data-dir.txt
 *.log
 classdemo/
 *.lock
+build/
+build-desktop/
+dist/
+*.spec
 
