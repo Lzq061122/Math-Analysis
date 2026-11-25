@@ -289,7 +289,32 @@ def _is_demo_batch(batch):
     return bool(name) and batch == name
 
 
-def _source_scope(batch, alias="a"):
+def _batch_has_real(db, class_id, batch):
+    """该批次里有没有真实作答（source<>合成演示）。**内容判据**，不是批名判据。"""
+    if not batch:
+        return False
+    return bool(db.scalar(
+        "SELECT COUNT(*) FROM answers WHERE class_id=? AND batch=? AND source<>?",
+        (class_id, batch, DEMO_SOURCE),
+    ) or 0)
+
+
+def _batch_is_synthetic(db, class_id, batch):
+    """这个批次在**当前口径**下算不算「合成演示批次」。
+
+    R1-08 评审缺陷（T27）：原先只看批名。老师在 CSV 的「来源批次」列里把真实作答填成
+    演示批名时，_source_scope 只数演示行 → 总览/队列里这份真实作答不可见，而 stats
+    按 source<>演示 统计又把它们数进去 → 「看不见但数得到」的口径分裂。
+
+    现在改成「批名命中演示批名 **且** 该批次里没有任何真实行」。只要该批次存在真实作答，
+    就按真实批次处理（synthetic=False，只数真实行）；演示数据本身仍不进真实统计。
+    """
+    if not _is_demo_batch(batch):
+        return False
+    return not _batch_has_real(db, class_id, batch)
+
+
+def _source_scope(batch, alias="a", demo_scope=None):
     """按批次区分 source 的过滤片段（R1-01 第 6 条）。
 
     只靠批名隔离不够：批名由老师在 CSV 的「来源批次」列自由填写，历史库里也可能留着
@@ -300,7 +325,8 @@ def _source_scope(batch, alias="a"):
 
     返回 (sql 片段, 参数元组)，调用方把它接在 WHERE 后面即可。
     """
-    if _is_demo_batch(batch):
+    synthetic = _is_demo_batch(batch) if demo_scope is None else bool(demo_scope)
+    if synthetic:
         return " AND %s.source=?" % alias, (DEMO_SOURCE,)
     return " AND %s.source<>?" % alias, (DEMO_SOURCE,)
 
@@ -704,7 +730,8 @@ def queue_rows(db, class_id, batch):
     批次里再按 source 收口（`_source_scope`）：真实作业的队列里不会有演示作答，
     演示批次的队列里也不会有真实作答。
     """
-    scope_sql, scope_params = _source_scope(batch)
+    scope_sql, scope_params = _source_scope(
+        batch, demo_scope=_batch_is_synthetic(db, class_id, batch))
     return db.query(
         "SELECT a.id, a.batch, a.question_no, a.question_text, a.standard_solution,"
         " a.student_steps, a.missing, a.missing_reason, a.student_name, a.fingerprint,"
@@ -727,7 +754,9 @@ def _real_answers(db, class_id):
 
 
 def _batch_counts(db, class_id, batch):
-    scope_sql, scope_params = _source_scope(batch)
+    # R1-08/T27：演示与否按「批名 + 该批内是否只有演示行」双判，不再只看批名。
+    synthetic = _batch_is_synthetic(db, class_id, batch)
+    scope_sql, scope_params = _source_scope(batch, demo_scope=synthetic)
     row = db.query_one(
         "SELECT COUNT(*) AS total,"
         " COALESCE(SUM(CASE WHEN a.missing=1 THEN 1 ELSE 0 END), 0) AS missing,"
@@ -746,7 +775,7 @@ def _batch_counts(db, class_id, batch):
         "pending": total - checked,
         "checked": checked,
         "missing": int(row["missing"] or 0),
-        "synthetic": _is_demo_batch(batch),
+        "synthetic": synthetic,
     }
 
 
