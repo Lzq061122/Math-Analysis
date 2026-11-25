@@ -499,11 +499,6 @@ def causes_note(answer=None):
     return note_for(answer) or getattr(module, "CAUSES_NOTE", "") or FALLBACK_CAUSES_NOTE
 
 
-def _default_question(answer):
-    """旧名字的兼容壳：等价于「这条作答的建议问句」，没有依据时是空串（不是写死的那句）。"""
-    return followup_suggestion(answer)["question"]
-
-
 # --------------------------------------------------------------------------
 # 追问建议（R1-06）：问句必须由本条的错步/错因决定，没有依据就说「暂无适用追问」
 # --------------------------------------------------------------------------
@@ -1046,6 +1041,8 @@ def _judgement(check, stale=False, retracted=None):
         "progress": check.get("progress") or PROGRESS_PENDING,
         "cause_state": cause_state,
         "progress_label": PROGRESS_LABELS.get(check.get("progress"), "待核对"),
+        # 注意（契约 §12.8）：这里是**状态标签**（展示文案，如「教师已判断」），不是教师原文；
+        # 教师原文在下一行的 cause_label_text（对应落库列 answer_checks.cause_label）。
         "cause_label": CAUSE_LABELS.get(cause_state, "原因待判断"),
         "cause_code": check.get("cause_code") or "",
         "cause_label_text": check.get("cause_label") or "",
@@ -1245,10 +1242,14 @@ def _review_reason_text(reason):
 def _legacy_followups(db, answer):
     """只读桥（R1-T22 S2）：把第一轮「原版追问」表里的记录读出来给作答核对的追问卡。
 
-    只 SELECT，绝不写 ollowups / ollowup_updates（同一张库、另一套表，谁写谁负责）。
+    只 SELECT，绝不写 
+ollowups / 
+ollowup_updates（同一张库、另一套表，谁写谁负责）。
     关联口径（从强到弱，逐条标在 link 上，页面据此说明「凭什么认为这条属于这份作答」）：
-      mistake → ollowups.mistake_id 指向这份作答的错题；
-      review  → ollowups.review_id 指向这份作答的分析记录；
+      mistake → 
+ollowups.mistake_id 指向这份作答的错题；
+      review  → 
+ollowups.review_id 指向这份作答的分析记录；
       problem → 原版记录的 problem 与这份作答的单元/题号一致。
     """
     tables = {row["name"] for row in db.query(
@@ -1528,11 +1529,6 @@ def followup_origin(question, answer, suggestion=None):
         if (item.get("question") or "").strip() == text:
             return "library", "library:%s" % (item.get("id") or "curated")
     return "teacher", "teacher"
-
-
-def _followup_source(question, answer):
-    """旧名字的兼容壳：只返回来源值（写入规则见 `followup_origin`）。"""
-    return followup_origin(question, answer)[0]
 
 
 def _history_snapshot(check, action, at, user_id):
@@ -2500,7 +2496,9 @@ def records(db, class_row, batch="", cause_state=CAUSE_UNDECIDED, verify_source=
         sql += " AND a.batch=?"
         params.append(batch)
         # 指定批次时再按 source 收口：查真实批次不可能查出演示记录，反之亦然（R1-01 第 6 条）。
-        scope_sql, scope_params = _source_scope(batch)
+        # R1-08/T27：这里同样按「批名 + 内容」双判，真实作答撞了演示批名时仍按真实批次列出。
+        scope_sql, scope_params = _source_scope(
+            batch, demo_scope=_batch_is_synthetic(db, class_row["id"], batch))
         sql += scope_sql
         params.extend(scope_params)
     if cause_state != "all":
