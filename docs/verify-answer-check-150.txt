@@ -1,17 +1,17 @@
 数智伴学｜作答核对与追问（第一轮 A1–A7）源码级验收
-时间：2026-11-25T18:41:38+08:00
+时间：2026-11-25T18:42:22+08:00
 命令：python.exe tests\verify_answer_check_150.py
-目录：E:\Agent\Math-Analysis-r1\数智伴学
+目录：E:\Agent\小挑
 环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
-临时库：E:\Agent\Math-Analysis-r1\数智伴学\tests\.tmp-answer-check
+临时库：E:\Agent\小挑\tests\.tmp-answer-check
 网络：只用 127.0.0.1 随机端口环回，无任何外部请求
-被测文件 src/web/app.js sha256=1003A5F9039A mtime=2026-11-25 17:42:58 size=140752
-被测文件 src/web/styles.css sha256=9D1454513298 mtime=2026-11-25 15:04:47 size=17331
-被测文件 src/app/equation_steps.py sha256=11D90941D317 mtime=2026-11-25 14:08:53 size=36183
-被测文件 src/app/demo_answers.py sha256=E9B96DDC2F50 mtime=2026-11-25 14:08:15 size=37655
+被测文件 src/web/app.js sha256=1003A5F9039A mtime=2026-11-25 18:20:18 size=140752
+被测文件 src/web/styles.css sha256=9D1454513298 mtime=2026-11-25 18:20:18 size=17331
+被测文件 src/app/equation_steps.py sha256=11D90941D317 mtime=2026-11-25 18:20:18 size=36183
+被测文件 src/app/demo_answers.py sha256=E9B96DDC2F50 mtime=2026-11-25 18:20:18 size=37655
 被测文件 src/app/answer_check.py sha256=46FD511AB30A mtime=2026-11-25 18:33:19 size=106674
 被测文件 src/app/stats.py sha256=D737CA4A9042 mtime=2026-11-25 18:22:31 size=12454
-被测文件 src/app/api.py sha256=33D2F34A202E mtime=2026-11-25 16:11:19 size=86129
+被测文件 src/app/api.py sha256=33D2F34A202E mtime=2026-11-25 18:20:18 size=86129
 
 == 1. 确定位：5 种 status（correct / first_bad / missing_steps / missing / out_of_scope）+ 正确作答不标错 + 只有答案不猜行 ==
 PASS 1.1 案例A status=first_bad
