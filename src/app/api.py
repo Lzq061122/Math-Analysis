@@ -450,6 +450,45 @@ def _decode_image(raw):
     return blob, mime, ALLOWED_MIME[mime]
 
 
+def _authorized_job(ctx, row):
+    """**已授权**的真实通道作业：从 uploads 读出照片字节，塞进白名单字段。
+
+    与 _mock_job 的分工（R1-T31）：
+    - _mock_job：本机模拟的既有语义——**不读照片字节**，一行不改；
+    - 本函数：只有 api 层确认「这次可以外发」（provider 已被授权）时才走这里，
+      把 image_bytes / image_mime 带上，真实通道才可能真的把照片发出去。
+
+    缺图或超限**不在这里抛**：交给 ision.job_field_error 用既有文案判定，
+    由 _analysis_job 转成明确错误并停止发送（不另造措辞）。
+    """
+    job = _mock_job(ctx, row)
+    name = (row["image_file"] or "").strip()
+    blob = b""
+    if name:
+        path = ctx.uploads.path(name)
+        if os.path.exists(path):
+            with open(path, "rb") as fh:
+                blob = fh.read()
+    job["image_bytes"] = blob
+    job["image_mime"] = (row["image_mime"] or "").strip() or "image/jpeg"
+    return job
+
+
+def _analysis_job(ctx, row, provider):
+    """按通道选作业：已授权 → 带图作业（先过 vision 白名单校验）；其余 → 原 _mock_job。
+
+    未授权时**一次 uploads 读取都不会发生**（_mock_job 不碰磁盘），这也是 R1-T31 的验收点之一。
+    """
+    if not getattr(provider, "individual_allowed", False):
+        return _mock_job(ctx, row)
+    job = _authorized_job(ctx, row)
+    error = vision.job_field_error(job)
+    if error:
+        # 缺图/超 12MB：用 vision 的既有文案明确报错，且**不发送**。
+        raise ApiError(error, 400, "payload")
+    return job
+
+
 def _analysis_provider(ctx=None):
     """只认当前会话显式注入的 provider；没有注入时给本机模拟，绝不读环境变量。
 
@@ -956,7 +995,7 @@ def api_reanalyze(ctx):
     provider = _analysis_provider(ctx)
     _reject_individual_ai("错题重新分析", provider, ctx)
     try:
-        result = provider.analyze(_mock_job(ctx, row))
+        result = provider.analyze(_analysis_job(ctx, row, provider))
     except vision.AnalysisError as exc:
         # 分析失败不丢已有内容：只记录失败原因，供老师手动补充。
         _record_analysis_failure(ctx, row["id"], exc.message, exc.code)
@@ -981,7 +1020,7 @@ def api_preview_analysis(ctx):
     _reject_individual_ai("错题照片分析建议", provider, ctx)
     store = _preview_store(ctx)
     try:
-        result = provider.analyze(_mock_job(ctx, row))
+        result = provider.analyze(_analysis_job(ctx, row, provider))
     except vision.AnalysisError as exc:
         # 这里只把失败交回界面，一个字都不写：结果可能已经迟到，
         # 窗口是否关掉、账号是否换过只有界面知道，由它确认后再单独记。

@@ -394,6 +394,20 @@ def main():
         # 「403 未授权」守卫写在「if provider is None: 409 mock」之前，于是 mock 模式也被当成
         # 未授权真实通道 → 界面拿到 403，而不是原版 1.8.1 的 409「当前是模拟分析…」。
         # 该类回归只有桌面 UI 套件能抓到（verify_tutor_170 全绿也发现不了），因此单列在此。
+        # 前提（R1-T31 修复后新增）：授权开启时「错题重新分析」现在真的会跑通，而 1.8.1 的语义是
+        # 重新分析会把该错题退回「待确认」。4b 验的是闸门顺序，需要一名「有已确认错题」的学生，
+        # 所以这里先把那条错题重新确认，否则 tutor.generate 会先因为 409 empty 拦住，测不到闸门。
+        current_row = db.query_one("SELECT status FROM mistakes WHERE id=?", (mid,))
+        if current_row and current_row["status"] != "confirmed":
+            fresh_row = api.api_get_mistake(FakeCtx(db, user, uploads, params={"id": mid}))
+            api.api_confirm_mistake(FakeCtx(
+                db, user, uploads, params={"id": mid},
+                body={"base_fingerprint": fresh_row["base_fingerprint"]}))
+        confirmed_count = db.scalar(
+            "SELECT COUNT(*) FROM mistakes WHERE student_id=? AND status='confirmed'", (sid,)) or 0
+        check("4b.0 前置：该生有已确认错题（否则 tutor.generate 先返回 409 empty，测不到闸门顺序）",
+              confirmed_count >= 1, confirmed_count)
+
         from app import tutor as tutor_mod
 
         def _generate_with(provider):
