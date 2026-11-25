@@ -294,6 +294,31 @@ ANSWER_FOLLOWUP_COLUMNS = (
     ("evidence_snapshot", "TEXT NOT NULL DEFAULT '{}'"),
 )
 
+# ---------------------------------------------------------------------------
+# R1-14：个体 AI 外发的账号级开关 + 审计
+# ---------------------------------------------------------------------------
+# 开关存在 users 表上（教师账号级，默认关）。桌面端以 create=False 打开旧库，不会跑
+# Database._ensure_columns()，所以写入开关时由 ensure_ai_switch_column() 补列；
+# **读取时缺列按「关」处理**，绝不让旧库因为少一列而报错。
+USER_AI_SWITCH_COLUMN = ("ai_individual_allowed", "INTEGER NOT NULL DEFAULT 0")
+
+# 审计表：每次「真的把个体内容发出去」之前写一行。字段清单只记**形状**（字段名/角色/类型），
+# 不记任何取值——审计表不能变成第二个身份数据库。
+AI_EGRESS_AUDIT_TABLE = "ai_egress_audit"
+AI_EGRESS_AUDIT_DDL = (
+    """CREATE TABLE IF NOT EXISTS ai_egress_audit (
+    id             INTEGER PRIMARY KEY,
+    user_id        INTEGER,
+    username       TEXT NOT NULL DEFAULT '',
+    flow           TEXT NOT NULL DEFAULT '',
+    model_channel  TEXT NOT NULL DEFAULT '',
+    payload_fields TEXT NOT NULL DEFAULT '[]',
+    payload_bytes  INTEGER NOT NULL DEFAULT 0,
+    created_at     TEXT NOT NULL
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_ai_egress_user ON ai_egress_audit(user_id, created_at)",
+)
+
 SCHEMA = """
 PRAGMA foreign_keys = ON;
 
@@ -396,7 +421,7 @@ CREATE TABLE IF NOT EXISTS app_meta (
     key    TEXT PRIMARY KEY,
     value  TEXT NOT NULL
 );
-""" + "\n".join(ddl.rstrip(";") + ";" for ddl in ANSWERS_DDL + REVIEWS_DDL + TUTOR_DDL + FOLLOWUP_DDL + ANSWER_CHECK_DDL) + """
+""" + "\n".join(ddl.rstrip(";") + ";" for ddl in ANSWERS_DDL + REVIEWS_DDL + TUTOR_DDL + FOLLOWUP_DDL + ANSWER_CHECK_DDL + AI_EGRESS_AUDIT_DDL) + """
 """
 
 # 桌面版对「已有 1.3.0 数据目录」做只读完整性检查时用：必需表及其必需列。
@@ -916,6 +941,117 @@ def _add_missing_columns(conn, table, columns):
     return added
 
 
+# ---------------------------------------------------------------------------
+# R1-14：账号级个体 AI 开关 + 外发审计（旧库兼容：缺列/缺表一律按「关」/「还没发生过」处理）
+# ---------------------------------------------------------------------------
+def _users_columns(conn):
+    return {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+
+
+def ai_switch_ready(db):
+    """只读判断 users 表有没有开关列（没有 = 旧库，读作「关」）。"""
+    return USER_AI_SWITCH_COLUMN[0] in _users_columns(db.conn)
+
+
+def ensure_ai_switch_column(db):
+    """给旧库补 users.ai_individual_allowed 列（幂等）；返回是否新加了列。
+
+    桌面端用 create=False 打开旧库，不会跑 Database._ensure_columns()，所以补列放在这里，
+    由「写开关」这一动作触发；读取侧不补列、缺列直接按「关」，避免 GET 请求写库。
+    """
+    if ai_switch_ready(db):
+        return False
+    with db.tx() as conn:
+        conn.execute("ALTER TABLE users ADD COLUMN %s %s" % USER_AI_SWITCH_COLUMN)
+    return True
+
+
+def ai_individual_allowed(db, user_id):
+    """该教师账号是否显式开启「个体 AI 外发」。默认关；缺列（旧库）也是关。"""
+    if not ai_switch_ready(db):
+        return False
+    try:
+        owner = int(user_id)
+    except (TypeError, ValueError):
+        return False
+    value = db.scalar(
+        "SELECT ai_individual_allowed FROM users WHERE id=?", (owner,))
+    try:
+        return bool(int(value or 0))
+    except (TypeError, ValueError):
+        return False
+
+
+def set_ai_individual_allowed(db, user_id, allowed):
+    """写开关（先补列）。返回写入后的值。"""
+    ensure_ai_switch_column(db)
+    owner = int(user_id)
+    with db.tx() as conn:
+        conn.execute(
+            "UPDATE users SET ai_individual_allowed=? WHERE id=?",
+            (1 if allowed else 0, owner),
+        )
+    return ai_individual_allowed(db, owner)
+
+
+def ensure_ai_egress_audit(conn, db_file=None):
+    """建外发审计表（幂等）。新库由 SCHEMA 直接建；旧库在第一次真实外发时自建。"""
+    if db_file is not None:
+        conn = sqlite3.connect(db_file, timeout=15, isolation_level=None)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            for ddl in AI_EGRESS_AUDIT_DDL:
+                conn.execute(ddl)
+            conn.execute("COMMIT")
+        finally:
+            conn.close()
+        return True
+    for ddl in AI_EGRESS_AUDIT_DDL:
+        conn.execute(ddl)
+    return True
+
+
+def record_ai_egress(db, user_id=None, username="", flow="", model_channel="",
+                     fields=(), payload_bytes=0):
+    """写一条「真的要发出去」的审计，返回行 id。
+
+    只记字段**形状**（`fields` 是字段名列表），不记取值——审计表不是第二个身份数据库。
+    写不进去时抛异常：调用方（vision._note_egress）据此在 urlopen 之前中止发送。
+    """
+    blob = json.dumps(list(fields or ()), ensure_ascii=False)
+    stamp = now_iso()
+    with db.tx() as conn:
+        ensure_ai_egress_audit(conn)
+        cur = conn.execute(
+            "INSERT INTO ai_egress_audit(user_id, username, flow, model_channel,"
+            " payload_fields, payload_bytes, created_at) VALUES (?,?,?,?,?,?,?)",
+            (int(user_id) if user_id is not None else None, username or "", flow or "",
+             model_channel or "", blob, int(payload_bytes or 0), stamp),
+        )
+        return cur.lastrowid
+
+
+def ai_egress_audit_rows(db, user_id=None, limit=50):
+    """读最近的外发审计（新→旧）。表不存在时返回 []（旧库还没发生过外发）。"""
+    names = {row["name"] for row in db.query("SELECT name FROM sqlite_master WHERE type='table'")}
+    if AI_EGRESS_AUDIT_TABLE not in names:
+        return []
+    limit = max(1, int(limit or 1))
+    if user_id is None:
+        rows = db.query(
+            "SELECT * FROM ai_egress_audit ORDER BY id DESC LIMIT ?", (limit,))
+    else:
+        rows = db.query(
+            "SELECT * FROM ai_egress_audit WHERE user_id=? ORDER BY id DESC LIMIT ?",
+            (int(user_id), limit))
+    for row in rows:
+        try:
+            row["payload_fields"] = json.loads(row.get("payload_fields") or "[]")
+        except (TypeError, ValueError):
+            row["payload_fields"] = []
+    return rows
+
+
 def _dedupe_answer_checks(conn):
     """建唯一索引前先合并重复的 (answer_id, answer_version)：保留 id 最大的一条。
 
@@ -1113,6 +1249,11 @@ class Database:
         existing_users = {row[1] for row in self.conn.execute("PRAGMA table_info(users)")}
         if "backup_key" not in existing_users:
             self.conn.execute("ALTER TABLE users ADD COLUMN backup_key TEXT NOT NULL DEFAULT ''")
+        # R1-14：教师账号级「个体 AI 外发」开关，默认关（0）。桌面端 create=False 打开旧库时
+        # 不会走到这里，由 ensure_ai_switch_column() 在写入开关时补列（读侧缺列按「关」处理）。
+        if USER_AI_SWITCH_COLUMN[0] not in existing_users:
+            self.conn.execute(
+                "ALTER TABLE users ADD COLUMN %s %s" % USER_AI_SWITCH_COLUMN)
         existing_students = {row[1] for row in self.conn.execute("PRAGMA table_info(students)")}
         if "code" not in existing_students:
             self.conn.execute("ALTER TABLE students ADD COLUMN code TEXT NOT NULL DEFAULT ''")

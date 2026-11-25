@@ -265,9 +265,28 @@ def _demo_batch():
 
 
 def _is_demo_batch(batch):
-    """这个批次是不是合成演示批次（真实作业只认非演示批次）。"""
+    """这个批次是不是合成演示批次（真实作业只认非演示批次）。
+
+    判据的单一来源在 `demo_answers.is_demo_batch`：演示数据可以分多个批次
+    （答辩要演示「不同作业批次的核对与统计」），所以这里不再用「等于单个
+    DEMO_BATCH」的严格相等。旧版演示模块没有这个函数时退回单批次相等判定，
+    行为与升级前一致。
+
+    刻意**不用批名前缀**判定：批名由老师在 CSV 里自由填写，靠「【合成演示】」
+    前缀猜会把老师自己的真实批次误判成演示批次，从而被统计口径整批排除。
+    """
     name = _demo_batch()
-    return bool(name) and (batch or "") == name
+    batch = (batch or "")
+    if not batch:
+        return False
+    module = _demo_module()
+    checker = getattr(module, "is_demo_batch", None) if module is not None else None
+    if checker is not None:
+        try:
+            return bool(checker(batch))
+        except Exception:  # noqa: BLE001 — 演示模块出问题不能把真实批次判成演示批次
+            return False
+    return bool(name) and batch == name
 
 
 def _source_scope(batch, alias="a"):

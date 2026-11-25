@@ -47,7 +47,7 @@ import urllib.request
 
 from .analysis import (
     ALLOWED_EGRESS_PURPOSES, ERROR_TYPES, INDIVIDUAL_FLOW_CODE, INDIVIDUAL_FLOW_MESSAGE,
-    KNOWLEDGE_POINTS, PURPOSE_OFFLINE_TOOL,
+    KNOWLEDGE_POINTS, PURPOSE_OFFLINE_TOOL, PURPOSE_TEACHER_INDIVIDUAL,
 )
 from .db import now_iso
 from .version import VERSION
@@ -226,20 +226,28 @@ class AnalysisError(Exception):
 # 发送前的两道硬判定：用途 + 地址（业务隔离），字段白名单（请求体形状）
 # 两条都返回「错误文案」，空串表示可以发送；调用方必须在组装/发送之前调用。
 # ---------------------------------------------------------------------------
-def egress_error(base_url, purpose):
-    """业务隔离判定：只有离线工具用途、且目标是本机回环地址时才允许真的发请求。
+def egress_error(base_url, purpose, individual_allowed=False):
+    """业务隔离判定：返回错误文案，空串表示可以发送。
 
-    正式教师业务流程的个体内容（题目原文、学生步骤、追问原话、照片）不进入生成式模型，
-    所以业务侧的调用点不带 PURPOSE_OFFLINE_TOOL，一律在这里被拦下，不会走到 urlopen。
+    两条放行通道，除此之外一律 INDIVIDUAL_FLOW_MESSAGE（文案与 R1-07 逐字相同）：
+    1. 离线工具用途（`PURPOSE_OFFLINE_TOOL`）且目标是本机回环 —— 设置自检/桩验证/离线资源制作；
+    2. **教师账号已显式开启个体外发**（`individual_allowed=True`，由 api 在确认账号开关后盖到
+       这个 provider 实例上）且用途是 `PURPOSE_TEACHER_INDIVIDUAL`。
+
+    第 2 条不是「再开一个默认口子」：开关默认关，关闭时这个用途根本不会被构造出来；
+    开启时也只对**被授权的 provider 实例**生效（授权只存在于本次请求的 provider 对象上，
+    不写全局变量、不读环境变量）。
     """
-    if purpose not in ALLOWED_EGRESS_PURPOSES:
-        return INDIVIDUAL_FLOW_MESSAGE
-    if not is_loopback_base(base_url):
-        return (
-            "离线工具用途也只允许发往本机回环地址（127.0.0.1 或 localhost），当前地址是 %s，"
-            "已停止发送。%s" % (base_url or "（空）", INDIVIDUAL_FLOW_MESSAGE)
-        )
-    return ""
+    if purpose in ALLOWED_EGRESS_PURPOSES:
+        if not is_loopback_base(base_url):
+            return (
+                "离线工具用途也只允许发往本机回环地址（127.0.0.1 或 localhost），当前地址是 %s，"
+                "已停止发送。%s" % (base_url or "（空）", INDIVIDUAL_FLOW_MESSAGE)
+            )
+        return ""
+    if individual_allowed and purpose == PURPOSE_TEACHER_INDIVIDUAL:
+        return ""
+    return INDIVIDUAL_FLOW_MESSAGE
 
 
 def _field_type_error(value, expected):
@@ -332,6 +340,40 @@ def payload_field_error(body):
     if system is not None and (not isinstance(system, str) or len(system) > MAX_PAYLOAD_TEXT_CHARS):
         return "请求体的 system 不合规，已停止发送。"
     return ""
+
+
+def payload_field_names(payload):
+    """审计用：只列出请求体里的**字段名/形状**，绝不包含任何取值（姓名、学号、题目原文都不进审计）。
+
+    例：`["model", "messages[system,user]", "content[text]", "image_url", "usage"]`。
+    用途：事后能回答「这次发出去的是哪些字段」，同时审计表本身不成为第二个身份数据库。
+    """
+    names = []
+    if not isinstance(payload, dict):
+        return names
+    for key, value in payload.items():
+        if key == "messages" and isinstance(value, list):
+            roles = []
+            for message in value:
+                if not isinstance(message, dict):
+                    continue
+                roles.append(str(message.get("role") or "?"))
+                content = message.get("content")
+                if isinstance(content, list):
+                    parts = [str(part.get("type") or "?") for part in content
+                             if isinstance(part, dict)]
+                    if parts:
+                        names.append("content[%s]" % ",".join(sorted(set(parts))))
+                    if any(isinstance(part, dict) and "image_url" in part for part in content):
+                        names.append("image_url")
+                    if any(isinstance(part, dict) and "source" in part for part in content):
+                        names.append("image_source")
+            names.insert(0, "messages[%s]" % ",".join(roles))
+        elif key in ("image_bytes", "image_mime", "image_file"):
+            names.append("image")
+        else:
+            names.append(str(key))
+    return names
 
 
 def job_field_error(job):
@@ -712,6 +754,38 @@ class CloudVisionProvider:
         self.api = config.get("api") or "chat"
         self.service = config.get("service") or service_name(self.mode, config.get("custom_name") or "")
         self.last_payload = None
+        # R1-14：个体外发授权。默认 False = 业务用途一律在 egress_error 被拦（与 R1-07 等价）。
+        # 只有 api 层确认「该教师账号显式开启」之后，才会把这两个属性盖到**这个实例**上：
+        #   individual_allowed = True   —— 允许 PURPOSE_TEACHER_INDIVIDUAL 用途
+        #   audit_sink(payload)        —— 真的发送之前写一条审计（谁/何时/哪个流程/哪些字段/通道）
+        self.individual_allowed = False
+        self.audit_sink = None
+
+    def _effective_purpose(self, purpose):
+        """业务调用点不带用途；只有被授权（账号开关已开）时才认作个体外发用途。"""
+        if purpose:
+            return purpose
+        return PURPOSE_TEACHER_INDIVIDUAL if self.individual_allowed else ""
+
+    def _note_egress(self, payload):
+        """真的要把这份请求发出去之前的最后一步：记 last_payload + 写审计。
+
+        审计写失败就不发送（抛 AnalysisError）——「发了但没留痕」比「没发」更糟；
+        这一步在 urlopen 之前，所以失败时一个字节都没出去。
+        """
+        self.last_payload = payload
+        sink = self.audit_sink
+        if sink is None:
+            return
+        try:
+            sink(payload)
+        except Exception as exc:  # noqa: BLE001 —— 任何审计异常都按「不发送」处理
+            raise AnalysisError(
+                "这次外发没有留下审计记录，已停止发送（%s）。请检查数据目录是否可写后重试。"
+                % (str(exc)[:80] or "未知原因"),
+                "audit",
+                True,
+            )
 
     def _prompt(self, job):
         question = (job.get("question_text") or "").strip()
@@ -813,12 +887,14 @@ class CloudVisionProvider:
         error = self._target_error(base, bool(self.config.get("test_base")), "作答内容")
         if error:
             raise AnalysisError(error, "config", False)
-        error = egress_error(base, purpose)
+        purpose = self._effective_purpose(purpose)
+        error = egress_error(base, purpose, individual_allowed=self.individual_allowed)
         if error:
             raise AnalysisError(error, INDIVIDUAL_FLOW_CODE, False)
         error = payload_field_error(body)
         if error:
             raise AnalysisError(error, "payload", False)
+        self._note_egress(body)
         request = urllib.request.Request(
             request_url(self.config["base_url"], self.api),
             data=json.dumps(body).encode("utf-8"),
@@ -907,6 +983,7 @@ class CloudVisionProvider:
         purpose = str(job.get("purpose") or "")
         if not purpose and job.get("trial"):
             purpose = PURPOSE_OFFLINE_TOOL
+        purpose = self._effective_purpose(purpose)
         api_key = str(self.config.get("api_key") or "").strip()
         if not api_key:
             raise AnalysisError(
@@ -919,7 +996,7 @@ class CloudVisionProvider:
         error = self._target_error(base, test_base, "照片")
         if error:
             raise AnalysisError(error, "config", False)
-        error = egress_error(base, purpose)
+        error = egress_error(base, purpose, individual_allowed=self.individual_allowed)
         if error:
             raise AnalysisError(error, INDIVIDUAL_FLOW_CODE, False)
         error = job_field_error(job)
@@ -929,6 +1006,7 @@ class CloudVisionProvider:
         error = payload_field_error(request_body)
         if error:
             raise AnalysisError(error, "payload", False)
+        self._note_egress(request_body)
 
         body = json.dumps(request_body).encode("utf-8")
         request = urllib.request.Request(

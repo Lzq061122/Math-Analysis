@@ -1,5 +1,5 @@
 数智伴学｜作答核对与追问（第一轮 A1–A7）源码级验收
-时间：2026-11-25T18:42:22+08:00
+时间：2026-11-25T18:57:25+08:00
 命令：python.exe tests\verify_answer_check_150.py
 目录：E:\Agent\小挑
 环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
@@ -9,9 +9,9 @@
 被测文件 src/web/styles.css sha256=9D1454513298 mtime=2026-11-25 18:20:18 size=17331
 被测文件 src/app/equation_steps.py sha256=11D90941D317 mtime=2026-11-25 18:20:18 size=36183
 被测文件 src/app/demo_answers.py sha256=E9B96DDC2F50 mtime=2026-11-25 18:20:18 size=37655
-被测文件 src/app/answer_check.py sha256=46FD511AB30A mtime=2026-11-25 18:33:19 size=106674
+被测文件 src/app/answer_check.py sha256=0AF7EE6E3FFE mtime=2026-11-25 18:57:20 size=107619
 被测文件 src/app/stats.py sha256=D737CA4A9042 mtime=2026-11-25 18:22:31 size=12454
-被测文件 src/app/api.py sha256=33D2F34A202E mtime=2026-11-25 18:20:18 size=86129
+被测文件 src/app/api.py sha256=6A17BD410E0B mtime=2026-11-25 18:57:24 size=88776
 
 == 1. 确定位：5 种 status（correct / first_bad / missing_steps / missing / out_of_scope）+ 正确作答不标错 + 只有答案不猜行 ==
 PASS 1.1 案例A status=first_bad
@@ -218,9 +218,9 @@ PASS 17.17 变异体6 把建表放到补列之后 → 同一夹具必须抛 Migr
 == 14. 三条既有回归线（如实记录，含已知失败） ==
 回归 verify_answers_150.py：退出码 0，用时 1.0s，合计 60 项，通过 60，失败 0
 PASS 14.1 verify_answers_150.py 合计 60 项、通过 60、失败 0（无失败）
-回归 verify_followup_180.py：退出码 0，用时 1.5s，合计 126 项，通过 126，失败 0
+回归 verify_followup_180.py：退出码 0，用时 2.1s，合计 126 项，通过 126，失败 0
 PASS 14.2 verify_followup_180.py 合计 126 项、通过 126、失败 0（无失败）
-回归 verify_review_160.py：退出码 1，用时 3.6s，合计 135 项，通过 134，失败 1
+回归 verify_review_160.py：退出码 1，用时 3.7s，合计 135 项，通过 134，失败 1
 PASS 14.3 verify_review_160.py 合计 135 项、通过 134、失败 1（已知失败：FAIL 1.8.0 版本号 1.8.1）
 PASS 14.4 verify_review_160.py 的唯一失败是已知的历史版本号断言
 

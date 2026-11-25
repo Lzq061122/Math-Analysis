@@ -33,6 +33,12 @@ INDIVIDUAL_FLOW_MESSAGE = (
 PURPOSE_OFFLINE_TOOL = "offline_tool"
 ALLOWED_EGRESS_PURPOSES = frozenset({PURPOSE_OFFLINE_TOOL})
 
+# R1-14：教师账号显式开启「个体 AI」之后的用途标记。
+# 它**不在** ALLOWED_EGRESS_PURPOSES 里 —— 只有 api 层确认「该账号已显式开启」并把授权
+# 盖到 provider 上（`provider.individual_allowed = True`）之后，vision.egress_error 才认这个用途。
+# 也就是说：默认关 = 这个用途根本不会出现；开启 = 只有被授权的那一个 provider 实例能发。
+PURPOSE_TEACHER_INDIVIDUAL = "teacher_individual"
+
 KNOWLEDGE_POINTS = [
     "一元一次方程",
     "一元二次方程",

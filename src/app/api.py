@@ -29,6 +29,7 @@ from .analysis import (
     ERROR_TYPES, INDIVIDUAL_FLOW_CODE, INDIVIDUAL_FLOW_MESSAGE, KNOWLEDGE_POINTS, MockProvider,
 )
 from .db import now_iso
+from . import db as db_mod
 from .preview import PreviewError
 from .records import DECISIVE_FIELDS, edited_fields, insert_mistake, record_fingerprint
 from .stats import answer_check_stats, build_stats, options_for_filters
@@ -466,16 +467,74 @@ def _is_mock_provider(provider):
     return getattr(provider, "mode", "mock") == "mock"
 
 
-def _reject_individual_ai(flow, provider=None):
-    """R1-07 业务隔离闸门：真要调用生成式模型时，在组装请求体之前拦断。
+def _individual_ai_authorized(ctx):
+    """R1-14：这次请求是否有资格做「个体 AI 外发」。
 
-    依据数智伴学_Agent开发规格.md §「业务环境只运行固定规则与人工流程，不发起个体化生成式请求」
-    与「AI 接口不读取学生记录、不直写业务库」。这里不再用「默认关闭 + 老师手点 + 勾选同意」
-    充当隔离：勾选与开关都不是隔离，所以只要配置指向真实通道，整条路径直接返回业务错误，
-    服务端不再读记录、不再拼提示词。mock 是本机模拟（不联网、无外部模型），不构成生成式调用，
-    因此保留其原有行为，返回 False 表示「可以继续走本地模拟」。
+    两个条件同时成立才为真（缺一个都按「关」）：
+    1. 这个客户端注入了 provider（桌面端按账号设置构造；网页端 server.py 恒不注入 → 永远假）；
+    2. 该**教师账号**在库里显式开启 `ai_individual_allowed`（默认关）。
+    只看账号开关、不看环境变量；也不看「老师勾了同意」这类客户端布尔值。
+    """
+    if ctx is None or getattr(ctx, "ai_provider", None) is None:
+        return False
+    user = getattr(ctx, "user", None) or {}
+    try:
+        user_id = int(user.get("id"))
+    except (TypeError, ValueError):
+        return False
+    return db_mod.ai_individual_allowed(ctx.db, user_id)
+
+
+def _authorize_individual(provider, ctx, flow):
+    """把「这次可以外发」盖到**这个 provider 实例**上，并挂上审计钩子。
+
+    授权只存在于本次请求的 provider 对象上：不写全局变量、不读环境变量，
+    因此一个请求被授权不会让下一个请求也自动放行（下次仍要过账号开关）。
+    """
+    provider.individual_allowed = True
+
+    def _sink(payload):
+        _record_ai_egress(ctx, flow, provider, payload)
+
+    provider.audit_sink = _sink
+
+
+def _record_ai_egress(ctx, flow, provider, payload):
+    """真实外发之前的审计：谁、什么时候、哪个流程、发了哪些字段、模型通道。
+
+    只记字段**形状**（`vision.payload_field_names`），不记任何取值——审计表不能变成
+    第二个身份数据库。写不进去时抛异常，由 vision 在 urlopen 之前中止发送。
+    """
+    user = getattr(ctx, "user", None) or {}
+    channel = "%s/%s" % (getattr(provider, "mode", "") or "", getattr(provider, "service", "") or "")
+    db_mod.record_ai_egress(
+        ctx.db,
+        user_id=user.get("id"),
+        username=user.get("username") or "",
+        flow=flow,
+        model_channel=channel,
+        fields=vision.payload_field_names(payload),
+        payload_bytes=len(json.dumps(payload, ensure_ascii=False).encode("utf-8")),
+    )
+
+
+def _reject_individual_ai(flow, provider=None, ctx=None):
+    """R1-07/R1-14 的个体 AI 闸门：真要调用生成式模型时，在组装请求体之前判定。
+
+    三种情形：
+    1. mock provider —— 本机模拟，不联网，直接放行（与 R1-07 逐字等价）；
+    2. 真实通道 + 该教师账号显式开启个体外发（`ai_individual_allowed=1`）—— 放行，并把
+       「本次可外发」盖到这个 provider 实例上（vision 依据它才认 `teacher_individual` 用途），
+       同时挂审计钩子：每次真的发送之前写一条审计；
+    3. 其余 —— 403 `ai_isolation`，文案与 R1-07 逐字相同（默认关时行为不变）。
+
+    依据：数智伴学_Agent开发规格.md「业务环境只运行固定规则与人工流程」+ 本轮船长裁定
+    「默认不外发 + 教师账号显式开启后才真调用」（不是恢复 1.8.1 的无条件外发）。
     """
     if _is_mock_provider(provider):
+        return False
+    if _individual_ai_authorized(ctx):
+        _authorize_individual(provider, ctx, flow)
         return False
     raise ApiError(
         "「%s」已停用：%s" % (flow, INDIVIDUAL_FLOW_MESSAGE),
@@ -895,7 +954,7 @@ def api_reanalyze(ctx):
     """对一条错题重新分析。真实通道已停用；本机模拟照旧（不联网、不读照片字节）。"""
     row = owned_mistake(ctx.db, ctx.user, ctx.params["id"])
     provider = _analysis_provider(ctx)
-    _reject_individual_ai("错题重新分析", provider)
+    _reject_individual_ai("错题重新分析", provider, ctx)
     try:
         result = provider.analyze(_mock_job(ctx, row))
     except vision.AnalysisError as exc:
@@ -919,7 +978,7 @@ def api_preview_analysis(ctx):
     """
     row = owned_mistake(ctx.db, ctx.user, ctx.params["id"])
     provider = _analysis_provider(ctx)
-    _reject_individual_ai("错题照片分析建议", provider)
+    _reject_individual_ai("错题照片分析建议", provider, ctx)
     store = _preview_store(ctx)
     try:
         result = provider.analyze(_mock_job(ctx, row))
@@ -1160,7 +1219,7 @@ def api_student_advice_generate(ctx):
     """
     class_row, student = _insight_student(ctx)
     provider = _analysis_provider(ctx)
-    _reject_individual_ai("个人辅导建议生成", provider)
+    _reject_individual_ai("个人辅导建议生成", provider, ctx)
     try:
         result = tutor_mod.generate(ctx.db, class_row["id"], student["id"], provider, "", "")
     except tutor_mod.TutorError as exc:
@@ -1224,7 +1283,7 @@ def api_followup_suggest(ctx):
     """
     class_row, student = _followup_student(ctx)
     provider = _analysis_provider(ctx)
-    _reject_individual_ai("追问候选生成", provider)
+    _reject_individual_ai("追问候选生成", provider, ctx)
 
     def run():
         return followup_mod.suggest(
@@ -1284,7 +1343,7 @@ def api_followup_update(ctx):
     """
     class_row, student = _followup_student(ctx)
     provider = _analysis_provider(ctx)
-    _reject_individual_ai("追问后的错因候选生成", provider)
+    _reject_individual_ai("追问后的错因候选生成", provider, ctx)
 
     def run():
         return followup_mod.update_causes(
@@ -1390,7 +1449,41 @@ def api_meta(ctx):
             "last_restore": _last_restore_summary(ctx.server.data_dir),
         }
     )
+    # R1-14：个体 AI 开关只在「注入了 provider 的客户端」（桌面端）上出现；
+    # 网页端连这个键都不返回，避免把「外发开关」暴露成网页功能。
+    if getattr(ctx, "ai_provider", None) is not None:
+        user = getattr(ctx, "user", None) or {}
+        data["ai_individual_allowed"] = db_mod.ai_individual_allowed(ctx.db, user.get("id") or 0)
+        data["ai_individual_switch"] = "account"
     return data
+
+
+def api_account_ai_individual(ctx):
+    """教师账号级「个体 AI 外发」开关（R1-14）。
+
+    只对注入了 provider 的客户端（桌面端）开放：网页端 provider 恒为缺省（MockProvider），
+    这里直接 403，网页上不出现、也调不到这个开关。
+
+    `allowed=true` 之后，6 个个体入口在真实通道下会真的发出去，但**每次都受两道约束**：
+    vision 的字段白名单（身份字段没有入口）与「发之前写一条审计」（审计失败则不发送）。
+    """
+    if getattr(ctx, "ai_provider", None) is None:
+        raise ApiError("当前环境不提供该开关。", 403, code=INDIVIDUAL_FLOW_CODE)
+    body = ctx.body or {}
+    if "allowed" not in body:
+        raise ApiError("缺少 allowed（true 表示允许个体 AI 外发，false 表示关闭）。", 400, code="invalid")
+    allowed = body.get("allowed")
+    if not isinstance(allowed, bool):
+        raise ApiError("allowed 只能是 true 或 false。", 400, code="invalid")
+    user = ctx.user or {}
+    value = db_mod.set_ai_individual_allowed(ctx.db, user.get("id"), allowed)
+    return {
+        "ok": True,
+        "ai_individual_allowed": bool(value),
+        "ai_individual_switch": "account",
+        "note": "开启后每次真实外发都会写一条审计（谁/何时/哪个流程/哪些字段/哪条通道）；"
+                "关闭立即恢复拦截（403 %s），不需要重启。" % INDIVIDUAL_FLOW_CODE,
+    }
 
 
 def api_info(ctx):
@@ -1748,7 +1841,7 @@ def api_answer_analyse(ctx):
     """
     cls = owned_class(ctx.db, ctx.user, ctx.params["id"])
     provider = _analysis_provider(ctx)
-    _reject_individual_ai("作答分析", provider)
+    _reject_individual_ai("作答分析", provider, ctx)
     try:
         review = review_mod.analyse(
             ctx.db, cls["id"], int(ctx.params["answer_id"]), provider, "模拟分析", "",
@@ -1883,6 +1976,8 @@ ROUTES = [
     ("POST", r"^/api/auth/logout$", api_logout, True),
     ("GET", r"^/api/auth/me$", api_me, True),
     ("POST", r"^/api/auth/password$", api_change_password, True),
+    # R1-14：教师账号级「个体 AI 外发」开关（只对注入了 provider 的桌面端可用，网页端 403）
+    ("POST", r"^/api/account/ai-individual$", api_account_ai_individual, True),
     ("GET", r"^/api/meta$", api_meta, True),
     ("GET", r"^/api/info$", api_info, False),
     ("POST", r"^/api/backup$", api_backup, True),
