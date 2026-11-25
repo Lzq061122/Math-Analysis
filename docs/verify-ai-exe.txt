@@ -1,0 +1,108 @@
+时间：2026-11-25T21:24:47+08:00
+命令：python.exe tests\verify_ai_146_exe.py
+目录：E:\Agent\小挑
+环境：Python 3.12.10 / Windows-11-10.0.26300-SP0
+
+== 一、1.8.1 交付包与 EXE
+PASS 1.8.1 桌面 ZIP 存在 ｜ E:\Agent\小挑\build\程序包\数智伴学-1.8.1.zip
+ZIP：45999298 字节，SHA-256 BF03667132C76292719697F61494C4C68944FCFC702910BBFC4E314CAEDD536B
+PASS 从 1.8.1 ZIP 解压出 EXE ｜ E:\Agent\小挑\tests\.tmp-test\exe-146-613087\解压件\数智伴学\数智伴学.exe
+EXE：2589423 字节，SHA-256 6F7CBF2195C12CFEA4C56C431E7F9AFEEAF79325670734107EC4072E1EBC91D7
+
+== 二、首次启动默认模拟，注册并建班/学生
+PASS 首次启动状态写明模拟（不发送） ｜ 当前：模拟分析（不发送）。
+PASS 旧 Console 环境变量未改变首次启动模式 ｜ 当前：模拟分析（不发送）。
+PASS 首次启动不显示真实模式密钥框
+PASS 启动后没有任何云端请求 ｜ 0
+
+== 三、AI 设置里选择 Go、填写密钥并保存
+PASS AI 设置窗口已打开
+PASS 分析方式选中 Go
+PASS Go 页出现图片模型下拉
+PASS 保存后设置窗口不自动关闭
+PASS 保存后状态为已配置但未验证 ｜ 当前：OpenCode Go（订阅），已配置，尚未验证。
+PASS 界面显示 Go 服务名 ｜ 服务：OpenCode Go（订阅） / 基底地址：http://127.0.0.1:52483 / 完整请求地址：http://127.0.0.1:52483/messages / 模型：qwen3.8-max / 密钥：本次登录已填写 / 测试地址：htt
+PASS 界面显示完整请求地址 ｜ 服务：OpenCode Go（订阅） / 基底地址：http://127.0.0.1:52483 / 完整请求地址：http://127.0.0.1:52483/messages / 模型：qwen3.8-max / 密钥：本次登录已填写 / 测试地址：http://127.0.0.1:52483（仅自动化测试）
+PASS Go 页标明本机测试地址 ｜ 服务：OpenCode Go（订阅） / 基底地址：http://127.0.0.1:52483 / 完整请求地址：http://127.0.0.1:52483/messages / 模型：qwen3.8-max / 密钥：本次登录已填写 / 测试地址：http://127.0.0.1:52483（仅自动化测试）
+PASS 界面不出现旧 Console 地址 ｜ 服务：OpenCode Go（订阅） / 基底地址：http://127.0.0.1:52483 / 完整请求地址：http://127.0.0.1:52483/messages / 模型：qwen3.8-max / 密钥：本次登录已填写 / 测试地址：http://127.0.0.1:52483（仅自动化测试）
+PASS 保存不触发云端请求 ｜ 0
+
+== 四、自制题图试分析（本地桩，图片实际发送）
+PASS 试分析显示 Go 服务名 ｜ 服务：OpenCode Go（订阅） / 基底地址：http://127.0.0.1:52483 / 完整请求地址：http://127.0.0.1:52483/messages / 模型：qwen3.8-max / 模式：真实云端调用 / 测试地址：http
+PASS 试分析显示 /messages 地址 ｜ 服务：OpenCode Go（订阅） / 基底地址：http://127.0.0.1:52483 / 完整请求地址：http://127.0.0.1:52483/messages / 模型：qwen3.8-max / 模式：真实云端调用 / 测试地址：http://127.0.0.1:52483（仅自动化测试）
+PASS 试分析题图已带入 ｜ E:\Agent\小挑\tests\.tmp-test\exe-146-613087\题图\自制题图-解方程.png
+PASS 试分析成功 ｜ Go 试分析成功（图片已发送）；耗时 61 毫秒；prompt 1200 / completion 180 / total 1380；计费来源：go；费用：$0；额度计入：$0.00348
+PASS 标明 Go 计费来源 ｜ Go 试分析成功（图片已发送）；耗时 61 毫秒；prompt 1200 / completion 180 / total 1380；计费来源：go；费用：$0；额度计入：$0.00348
+PASS 标明费用为 0 ｜ Go 试分析成功（图片已发送）；耗时 61 毫秒；prompt 1200 / completion 180 / total 1380；计费来源：go；费用：$0；额度计入：$0.00348
+PASS 标明额度计入 ｜ Go 试分析成功（图片已发送）；耗时 61 毫秒；prompt 1200 / completion 180 / total 1380；计费来源：go；费用：$0；额度计入：$0.00348
+PASS 试分析结果含结构化建议 ｜ 服务：OpenCode Go（订阅） / 请求地址：http://127.0.0.1:52483/messages / 模型：qwen3.8-max /  / 【题目内容】 / 解方程：3(x-2)=2x+5 /  / 【解题过
+PASS 试分析确实发出一次请求 ｜ 1
+PASS 请求走 /messages ｜ /messages
+PASS 请求带 Go 会话标识 ｜ math-mistakes-desktop-1.8.1-24b5e3a829cb4ac18fb1a6fd673aa86a
+PASS 请求带真实软件 UA ｜ math-mistakes-desktop/1.8.1
+PASS 请求实际包含图片 ｜ {'model': 'qwen3.8-max', 'has_image': True, 'max_tokens': 32000, 'text': '这是一张不含学生身份信息的试分析题图。\n请输出以下 JSON（字段名固定，列表最多 6 条）：\n{\n  "question_text": "识别出的题目，保留关键数学式",\n  "solution_text": "识别出的学生解题过程，按行保留；看不清就写已看清的部分",\n  "knowledge_points": ["从下列知识点中选 1-3 个"],\n  "error_type": "从下列错误类型中选 1 个；判断不出就留空字符串",\n  "observed_errors": ["照片上能直接看到的具体错误及位置，例如：第 2 行移项后 -3 写成 3"],\n  "possible_causes": "可能原因，用推测语气；多条用分号隔开；判断不出写「暂不确定」",\n  "advice_text": "针对这道题或这位学生的教学/学习建议",\n  "insufficient": false,\n  "insufficient_reason": "信息不足时写明缺什么；否则空字符串",\n  "likely_correct": false\n}\n知识点：一元一次方程、一元二次方程、分式运算、整式与因式分解、不等式、函数与图象、几何证明、圆、面积与周长、统计与概率\n错误类型：计算错误、符号错误、概念混淆、审题遗漏、步骤缺失、表达不规范、单位/格式、其他\n\n老师已填写的题目（可能为空）：\n（空）\n老师已填写的解题过程（可能为空）：\n（空）', 'followup': '', 'time': '2026-11-25T21:25:57+08:00', 'path': '/messages', 'status': 200, 'session': 'math-mistakes-desktop-1.8.1-24b5e3a829cb4ac18fb1a6fd673aa86a', 'user_agent': 'math-mistakes-desktop/1.8.1', 'authorization': True, 'bytes': 52446, 'billing_source': 'go', 'cost': 0, 'allowance': 0.00348, 'kind': 'vision'}
+PASS 请求文字不含学生姓名 ｜ 未出现学生姓名
+
+== 四之二、自定义 AI 服务：填写服务名/地址/模型/密钥并试分析
+PASS 分析方式选中自定义服务
+PASS 自定义页出现服务名输入
+PASS 自定义页出现接口地址输入
+PASS 自定义页出现模型输入
+[步骤] 填写自定义服务配置
+[步骤] 自定义服务配置已填写
+PASS 自定义页显示完整请求地址 ｜ 完整请求地址：http://127.0.0.1:52483/custom/v1/chat/completions
+PASS 自定义页地址去掉了重复斜杠 ｜ 完整请求地址：http://127.0.0.1:52483/custom/v1/chat/completions
+PASS 自定义保存后为已配置未验证 ｜ 当前：测试云，已配置，尚未验证。
+PASS 设置页显示自定义服务名 ｜ 服务：测试云 / 基底地址：http://127.0.0.1:52483/custom/v1 / 完整请求地址：http://127.0.0.1:52483/custom/v1/chat/completions / 模型：vision-x / 密钥：本次登录已填写 / 测试地址：http://127.0.0.1:52483（仅自动化测试）
+PASS 设置页显示自定义完整地址 ｜ 服务：测试云 / 基底地址：http://127.0.0.1:52483/custom/v1 / 完整请求地址：http://127.0.0.1:52483/custom/v1/chat/completions / 模型：vision-x / 密钥：本次登录已填写 / 测试地址：http://127.0.0.1:52483（仅自动化测试） / 说明：自定义服务由服务商决定是否兼容图片输入，保存配置不代表已经连接成功。
+PASS 自定义页说明不代表已接通 ｜ 服务：测试云 / 基底地址：http://127.0.0.1:52483/custom/v1 / 完整请求地址：http://127.0.0.1:52483/custom/v1/chat/completions / 模型：vision-x / 密钥：本次登录已填写 / 测试地址：http://127.0.0.1:52483（仅自动化测试） / 说明：自定义服务由服务商决定是否兼容图片输入，保存配置不代表已经连接成功。
+PASS 自定义保存不触发请求 ｜ 1
+PASS 自定义试分析显示服务名 ｜ 服务：测试云 / 基底地址：http://127.0.0.1:52483/custom/v1 / 完整请求地址：http://127.0.0.1:52483/custom/v1/chat/completions / 模型：vision-x / 模式：真实云
+PASS 自定义试分析显示完整地址 ｜ 服务：测试云 / 基底地址：http://127.0.0.1:52483/custom/v1 / 完整请求地址：http://127.0.0.1:52483/custom/v1/chat/completions / 模型：vision-x / 模式：真实云端调用 / 测试地址：http://127.0.0.1:52483（仅自动化测试）
+PASS 自定义试分析未勾选被拦下 ｜ 请先勾选同意，才会发送给云端。
+PASS 自定义试分析未勾选不发请求 ｜ 0
+PASS 自定义试分析成功 ｜ 自定义服务试分析成功（图片已发送）；耗时 31 毫秒；prompt 1200 / completion 180 / total 1380；计费来源：尚未确认；费用：$0
+PASS 自定义结果不把 Go 计费来源当成自定义服务的 ｜ 自定义服务试分析成功（图片已发送）；耗时 31 毫秒；prompt 1200 / completion 180 / total 1380；计费来源：尚未确认；费用：$0
+PASS 自定义结果不显示额度计入 ｜ 自定义服务试分析成功（图片已发送）；耗时 31 毫秒；prompt 1200 / completion 180 / total 1380；计费来源：尚未确认；费用：$0
+PASS 自定义试分析结果含结构化建议 ｜ 服务：测试云 / 请求地址：http://127.0.0.1:52483/custom/v1/chat/completions / 模型：vision-x /  / 【题目内容】 / 解方程：3(x-2)=2x+5 /  / 【
+PASS 自定义试分析走 chat 路径 ｜ /custom/v1/chat/completions
+PASS 自定义请求不带 Go 会话标识
+PASS 自定义请求带 1.8.1 UA ｜ math-mistakes-desktop/1.8.1
+PASS 自定义请求实际包含图片 ｜ {'model': 'vision-x', 'has_image': True, 'max_tokens': 32000, 'text': '你是一名谨慎的初中数学老师助理，只根据照片内容分析学生的错题。\n必须遵守：\n1. 只写照片里能看清的内容，看不清、残缺或模糊就如实说信息不足，不要补全题目或编造步骤。\n2. 把「观察到的错误」和「推测的原因」严格分开：观察要指向具体步骤或式子；原因用「可能/疑似」，不得下结论说学生粗心、不认真或没掌握。\n3. 如果学生的解答看起来正确，或你无法判断有错，把 likely_correct 设为 true，不要强行判错。\n4. 只输出一个 JSON 对象，不要输出解释文字、Markdown 代码块或多余字段。\n5. 不要输出学生姓名、班级、学校等身份信息。\n这是一张不含学生身份信息的试分析题图。\n请输出以下 JSON（字段名固定，列表最多 6 条）：\n{\n  "question_text": "识别出的题目，保留关键数学式",\n  "solution_text": "识别出的学生解题过程，按行保留；看不清就写已看清的部分",\n  "knowledge_points": ["从下列知识点中选 1-3 个"],\n  "error_type": "从下列错误类型中选 1 个；判断不出就留空字符串",\n  "observed_errors": ["照片上能直接看到的具体错误及位置，例如：第 2 行移项后 -3 写成 3"],\n  "possible_causes": "可能原因，用推测语气；多条用分号隔开；判断不出写「暂不确定」",\n  "advice_text": "针对这道题或这位学生的教学/学习建议",\n  "insufficient": false,\n  "insufficient_reason": "信息不足时写明缺什么；否则空字符串",\n  "likely_correct": false\n}\n知识点：一元一次方程、一元二次方程、分式运算、整式与因式分解、不等式、函数与图象、几何证明、圆、面积与周长、统计与概率\n错误类型：计算错误、符号错误、概念混淆、审题遗漏、步骤缺失、表达不规范、单位/格式、其他\n\n老师已填写的题目（可能为空）：\n（空）\n老师已填写的解题过程（可能为空）：\n（空）', 'followup': '', 'time': '2026-11-25T21:26:37+08:00', 'path': '/custom/v1/chat/completions', 'status': 200, 'session': '', 'user_agent': 'math-mistakes-desktop/1.8.1', 'authorization': True, 'bytes': 52447, 'billing_source': 'go', 'cost': 0, 'allowance': 0.00348, 'kind': 'vision'}
+PASS 自定义请求不含学生姓名 ｜ 未出现学生姓名
+
+== 四之三、用量缺失与 0 的显示（同一 EXE、同一下拉配置）
+PASS EXE 部分用量缺失时缺项写尚未确认 ｜ 自定义服务试分析成功（图片已发送）；耗时 14 毫秒；prompt 1200 / completion 尚未确认 / total 尚未确认；计费来源：尚未确认；费用：尚未确认
+PASS EXE 部分用量缺失时费用写尚未确认 ｜ 自定义服务试分析成功（图片已发送）；耗时 14 毫秒；prompt 1200 / completion 尚未确认 / total 尚未确认；计费来源：尚未确认；费用：尚未确认
+PASS EXE 部分用量缺失时不显示 None ｜ 自定义服务试分析成功（图片已发送）；耗时 14 毫秒；prompt 1200 / completion 尚未确认 / total 尚未确认；计费来源：尚未确认；费用：尚未确认
+PASS EXE 用量为 0 时正常显示 0 ｜ 自定义服务试分析成功（图片已发送）；耗时 16 毫秒；prompt 0 / completion 0 / total 0；计费来源：尚未确认；费用：$0
+PASS EXE 费用为 0 时显示 $0 ｜ 自定义服务试分析成功（图片已发送）；耗时 16 毫秒；prompt 0 / completion 0 / total 0；计费来源：尚未确认；费用：$0
+PASS EXE 服务未返回用量时写尚未确认 ｜ 自定义服务试分析成功（图片已发送）；耗时 14 毫秒；用量：尚未确认（服务没有返回用量、费用和计费来源）
+PASS EXE 服务未返回用量时不显示 None ｜ 自定义服务试分析成功（图片已发送）；耗时 14 毫秒；用量：尚未确认（服务没有返回用量、费用和计费来源）
+
+== 五、录入错题、正式分析、老师修改并确认
+PASS 正式分析前弹出确认框
+PASS 确认框写明可能产生费用或消耗额度 ｜ 服务：测试云 / 模型：vision-x /  / 本次会发送： / · 错题照片 / · 题目文字 / · 学生写的过程 /  / 软件不会单独发送学生姓名、班级或账号字段。 / 自定义 AI 服务的费用、用量和计费来源以服务商实际返回为准；服务没有返回时，界面显示「尚未确
+PASS 确认框说明不单独发送姓名班级账号 ｜ 服务：测试云 / 模型：vision-x /  / 本次会发送： / · 错题照片 / · 题目文字 / · 学生写的过程 /  / 软件不会单独发送学生姓名、班级或账号字段。 / 自定义 AI 服务的费用、用量和计费来源以服务商实际返回为准；服务没有返回时，界面显示「尚未确认」，本软件不估算费用，也不推断免费或属于某种订阅。 / 照片、题目和解题过程会发送给老师选择的服务商，由该服务商按其条款与隐私政策处理；本软件无法控制对方的留存与
+FAIL 分析失败时照片与录入内容保留 ｜ 分析失败：「错题照片分析建议」已停用：正式教师业务流程不向生成式模型发送学生的作答、作答原文、身份或追问原话。本次没有组装请求，也没有把任何内容发出去；分析类内容请用规则定位与人工判断录入，结论照常可以保存与统计。
+PASS 失败后主动重试会再确认
+Traceback (most recent call last):
+  File "E:\Agent\小挑\tests\verify_ai_146_exe.py", line 540, in main
+    suggestion = V.wait_child(mistakes, "aiSuggestionDialog", timeout=90)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\Agent\小挑\tests\verify_mistakes_pack.py", line 550, in wait_child
+    raise RuntimeError("等不到控件：%s（窗口 %r）" % (auto_id, window.window_text()))
+RuntimeError: 等不到控件：aiSuggestionDialog（窗口 '数智伴学 · 错题'）
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "E:\Agent\小挑\tests\verify_ai_146_exe.py", line 648, in <module>
+    code = main()
+           ^^^^^^
+  File "E:\Agent\小挑\tests\verify_ai_146_exe.py", line 552, in main
+    suggestion = V.wait_child(mistakes, "aiSuggestionDialog", timeout=90)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\Agent\小挑\tests\verify_mistakes_pack.py", line 550, in wait_child
+    raise RuntimeError("等不到控件：%s（窗口 %r）" % (auto_id, window.window_text()))
+RuntimeError: 等不到控件：aiSuggestionDialog（窗口 '数智伴学 · 错题'）
