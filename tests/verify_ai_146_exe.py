@@ -369,6 +369,26 @@ def main():
     time.sleep(0.8)
     classes = V.find_window(app, V.TITLE, require_id="currentUser", timeout=60)
 
+    print("\n== 二b、在打包版自己的数据库里开启「个体数据外发」开关")
+    # T30 改写①（本节前提，与 t26 源码级口径一致）
+    # 原断言：配好自定义通道后，点「分析这条错题」→ 确认 → 弹出 AI 建议并采用（1.8.1 口径）。
+    # 原依据：1.8.1「真实模式 = 老师点确认就发送」（数智伴学_Agent开发规格.md 1.8.1 章）。
+    # 新断言：先按 R1-14 在**EXE 自己那个库**里把账号开关置为开启并读回确认；后续断言不变。
+    # 改写依据：R1-07 + R1-14 裁定「默认不外发；教师账号显式开启后才真调用」。
+    #           桌面 UI 同一开关的入口是「个体数据外发（默认关闭）」（src/desktop/ui.py:4289），
+    #           这里写的是它背后同一个 users.ai_individual_allowed 列。
+    conn = sqlite3.connect(str(V.DATA / "app.db"))
+    try:
+        conn.execute("UPDATE users SET ai_individual_allowed=1 WHERE username=?", (USERNAME,))
+        conn.commit()
+        allowed = conn.execute(
+            "SELECT ai_individual_allowed FROM users WHERE username=?", (USERNAME,)).fetchone()[0]
+    finally:
+        conn.close()
+    check("二b.1 EXE 库里的账号开关已开启（否则六入口一律 403 ai_isolation）",
+          int(allowed) == 1, allowed)
+
+
     print("\n== 三、AI 设置里选择 Go、填写密钥并保存")
     V.click(classes, "openAiSettingsButton")
     dialog = V.wait_child(classes, "aiSettingsDialog", timeout=60)
@@ -549,8 +569,31 @@ def main():
         while time.time() < deadline and not V.ctl(mistakes, "aiConsentOk").is_enabled():
             time.sleep(0.1)
         V.click(mistakes, "aiConsentOk")
-        suggestion = V.wait_child(mistakes, "aiSuggestionDialog", timeout=90)
-    check("正式分析返回建议预览", bool(suggestion))
+        # T30 改写②（把「等不到控件」从崩溃改成空态断言）
+        # 原断言：suggestion = V.wait_child(mistakes, "aiSuggestionDialog", timeout=90)
+        #         等不到就抛 RuntimeError，整套件在 :552 被打断
+        #         （t29 实测：RuntimeError: 等不到控件 aiSuggestionDialog）。
+        # 原依据：1.8.1「失败后重试必定弹出 AI 建议窗」。
+        # 新断言：捕获后返回 None，由下面「正式分析返回建议预览」写成带原因的空态断言。
+        # 改写依据：R1-14 下账号开关关闭时界面只写 403 文案、不弹建议窗，这是可预期空态；
+        #           空态必须是断言（有失败标题），不是异常替我们报错。
+        try:
+            suggestion = V.wait_child(mistakes, "aiSuggestionDialog", timeout=90)
+        except RuntimeError:
+            suggestion = None
+    check("正式分析返回建议预览（空态：等不到建议窗时给明确原因，不再抛异常）",
+          bool(suggestion),
+          "等不到 aiSuggestionDialog；错题状态：%s"
+          % ((V.text_of(mistakes, "mistakeStatus", "") or "")[:100]))
+    if suggestion is None:
+        # T30：建议窗没出现时不再往下点 aiApplySuggestion（那会抛「找不到控件」把整套件打断）。
+        # 这里显式收尾：把失败原因留在日志里，退出码由失败条数决定。
+        kill_stub(stub)
+        failed_now = [item for item in V.results if not item[1]]
+        print("\n合计 %d 项，通过 %d 项，失败 %d 项"
+              % (len(V.results), len(V.results) - len(failed_now), len(failed_now)))
+        print("退出码：%d" % (1 if failed_now else 0))
+        return 1 if failed_now else 0
     body = V.text_of(mistakes, "aiSuggestionBody", "") or ""
     check("建议来自实际请求", "一元一次方程" in body, body[:80])
     V.click(mistakes, "aiApplySuggestion")
@@ -635,6 +678,59 @@ def main():
     check("数据库与 WAL 不含密钥", not leaked, leaked)
 
     V.stop(proc2)
+
+    print("\n== 八、个体 AI 开关：关闭 → 六入口 403；开启 → 立即可用")
+    # T30 新增（整段为新断言，不替换任何既有断言）：EXE 关掉后在同一个库上验双路径。
+    from app import api as api_mod
+    from desktop.service import ApiError as ServiceApiError, DesktopService
+
+    gate_service = DesktopService(str(V.DATA))
+    gate_service.login(USERNAME, PASSWORD)
+    gate_service.save_ai_settings("custom", stub_base + "/custom/v1", "vision-x",
+                                  CUSTOM_SECRET, service_name="测试云")
+    conn = sqlite3.connect(str(V.DATA / "app.db"))
+    try:
+        class_id, student_id = conn.execute(
+            "SELECT c.id, s.id FROM classes c JOIN students s ON s.class_id=c.id LIMIT 1").fetchone()
+        mistake_id = conn.execute(
+            "SELECT id FROM mistakes ORDER BY id DESC LIMIT 1").fetchone()[0]
+    finally:
+        conn.close()
+    off = gate_service.set_ai_individual(False)
+    check("八.1 关闭后账号状态是「未授权」",
+          off.get("ai_individual_allowed") is False, off.get("ai_individual_allowed"))
+
+    def expect_isolation(name, call):
+        try:
+            result = call()
+        except ServiceApiError as exc:
+            check(name,
+                  exc.status == 403 and exc.code == "ai_isolation" and "已停用" in exc.message,
+                  (exc.status, exc.code, (exc.message or "")[:60]))
+            return
+        except Exception as exc:  # noqa: BLE001
+            check(name, False, "未按 403 拦断，而是 %s: %s" % (type(exc).__name__, exc))
+            return
+        check(name, False, "没有抛 403，而是返回了 %r" % (result,))
+
+    expect_isolation("八.2 错题照片分析建议 → 403 ai_isolation",
+                     lambda: gate_service.preview_analysis(mistake_id, consent=True,
+                                                           task_id="t30-ai"))
+    expect_isolation("八.3 错题重新分析（旧入口同一道闸门）→ 403 ai_isolation",
+                     lambda: api_mod.api_reanalyze(
+                         gate_service._ctx(params={"id": mistake_id}, body={"consent": True})))
+    expect_isolation("八.4 个人辅导建议生成 → 403 ai_isolation",
+                     lambda: gate_service.generate_student_advice(class_id, student_id,
+                                                                  consent=True))
+    on = gate_service.set_ai_individual(True)
+    check("八.5 重新开启后账号状态是「已授权」",
+          on.get("ai_individual_allowed") is True, on.get("ai_individual_allowed"))
+    preview = gate_service.preview_analysis(mistake_id, consent=True, task_id="t30-ai-on")
+    check("八.6 开启后同一条业务路径不再被闸门拦（失败原因不再是 ai_isolation / 已停用）",
+          preview.get("error_code") != "ai_isolation"
+          and "已停用" not in (preview.get("error") or ""),
+          (preview.get("ok"), preview.get("error_code"), (preview.get("error") or "")[:60]))
+
     kill_stub(stub)
     failed = [item for item in V.results if not item[1]]
     print("\n合计 %d 项，通过 %d 项，失败 %d 项" % (len(V.results), len(V.results) - len(failed), len(failed)))

@@ -242,7 +242,9 @@ def wait_review(app, answers_win, timeout=90):
     log("当前窗口标题：%s" % titles)
     log("进程内所有窗口：%s" % [
         "%s(visible=%s)" % (text, visible) for _, text, visible in native_windows(app.process)])
-    raise RuntimeError("等不到窗口：分析建议")
+    # T30 改写②：返回 None，由调用处写成显式空态断言（原来是 raise RuntimeError，
+    # 会让整套件以「崩溃」结束、拿不到失败标题；见 :245 的 t29 实测）。
+    return None
 
 
 def analyse_again(app, answers_win, attempts=3):
@@ -368,6 +370,26 @@ def main():
     check("导入后作答内容已保存", set(answers_before) == {"EX1", "EX2"})
 
     log("")
+    log("== 二b、在打包版自己的数据库里开启「个体数据外发」开关 ==")
+    # T30 改写①（本节前提，与 t26 源码级口径一致）
+    # 原断言：配好自定义通道后，点分析 → 确认 → 弹出「分析建议」窗并写入待核对建议（1.8.1 口径）。
+    # 原依据：1.8.1「真实模式 = 老师点确认就发送」（数智伴学_Agent开发规格.md 1.8.1 章）。
+    # 新断言：先按 R1-14 在**EXE 自己那个库**里把账号开关置为开启并读回确认；后续断言不变。
+    # 改写依据：R1-07 + R1-14 裁定「默认不外发；教师账号显式开启后才真调用」。
+    #           桌面 UI 侧同一开关的入口是「个体数据外发（默认关闭）」（src/desktop/ui.py:4289），
+    #           这里是它背后同一个账号列的等价写库。
+    conn = sqlite3.connect(os.path.join(str(V.DATA), "app.db"))
+    try:
+        conn.execute("UPDATE users SET ai_individual_allowed=1 WHERE username='exe_teacher'")
+        conn.commit()
+        allowed = conn.execute(
+            "SELECT ai_individual_allowed FROM users WHERE username='exe_teacher'").fetchone()[0]
+    finally:
+        conn.close()
+    check("二b.1 EXE 库里的账号开关已开启（否则六入口一律 403 ai_isolation）",
+          int(allowed) == 1, allowed)
+
+    log("")
     log("== 三、在软件里配置自定义服务（本机桩） ==")
     V.click(students, "backToClasses")
     classes = V.find_window(app, V.TITLE, require_id="currentUser", timeout=60)
@@ -433,6 +455,19 @@ def main():
         log("首次分析遇到本机回环失败，按老师重试的做法再点一次：%s" % status_now[:40])
         review = analyse_again(app, answers_win)
     check("建议对话框打开", bool(review))
+    # T30 改写②（把「等不到窗口」从崩溃改成空态断言）
+    # 原断言：wait_review(...) 等不到就 raise RuntimeError，整套件在 :245 被打断
+    #         （t29 实测：等不到分析建议 → 列表状态「分析没有完成（403 ai_isolation）」）。
+    # 原依据：1.8.1「点确认后必定弹出分析建议窗」。
+    # 新断言：wait_review 改为返回 None；这里先断言「建议窗应当出现」，不出现就记失败并收尾，
+    #         不再对 None 取控件、也不让异常替我们报错。
+    # 改写依据：R1-14 下账号开关关闭时界面只显示 403 文案、不弹建议窗，这是可预期空态；
+    #           空态必须是断言（带失败标题），不是崩溃。
+    if review is None:
+        check("四.0 等不到建议窗时的空态说明（不再抛异常打断整套件）", False,
+              "等不到「分析建议」窗口；列表状态：%s"
+              % (V.text_of(answers_win, "answerListStatus", "") or "")[:80])
+        return finish()
     status_text = V.text_of(review, "answerReviewStatus", "") or ""
     check("建议标为待核对", "还没有确认" in status_text or "待核对" in status_text, status_text)
     table = V.table_text(review, "answerCauseTable")
@@ -547,6 +582,55 @@ def main():
             wal += open(path, "rb").read()
     check("数据库里没有 API 密钥", b"sk-exe-review-1234" not in wal)
     V.stop(proc)
+
+    log("")
+    log("== 七、个体 AI 开关：关闭 → 六入口 403；开启 → 立即可用 ==")
+    # T30 新增（整段为新断言，不替换任何既有断言）：EXE 关掉后在同一个库上验双路径。
+    from app import api as api_mod
+    from desktop.service import ApiError as ServiceApiError, DesktopService
+
+    gate_service = DesktopService(str(V.DATA))
+    gate_service.login("exe_teacher", "pw123456")
+    gate_service.save_ai_settings("custom", stub_base, "stub-vision", "sk-x",
+                                  service_name="本地模拟服务")
+    conn = sqlite3.connect(os.path.join(str(V.DATA), "app.db"))
+    try:
+        class_id, student_id = conn.execute(
+            "SELECT c.id, s.id FROM classes c JOIN students s ON s.class_id=c.id LIMIT 1").fetchone()
+        answer_id = conn.execute("SELECT id FROM answers LIMIT 1").fetchone()[0]
+    finally:
+        conn.close()
+    off = gate_service.set_ai_individual(False)
+    check("七.1 关闭后账号状态是「未授权」",
+          off.get("ai_individual_allowed") is False, off.get("ai_individual_allowed"))
+
+    def expect_isolation(name, call):
+        try:
+            result = call()
+        except ServiceApiError as exc:
+            check(name,
+                  exc.status == 403 and exc.code == "ai_isolation" and "已停用" in exc.message,
+                  (exc.status, exc.code, (exc.message or "")[:60]))
+            return
+        except Exception as exc:  # noqa: BLE001
+            check(name, False, "未按 403 拦断，而是 %s: %s" % (type(exc).__name__, exc))
+            return
+        check(name, False, "没有抛 403，而是返回了 %r" % (result,))
+
+    expect_isolation("七.2 作答分析 → 403 ai_isolation",
+                     lambda: gate_service.analyse_answer(class_id, answer_id, consent=True))
+    expect_isolation("七.3 个人辅导建议生成 → 403 ai_isolation",
+                     lambda: gate_service.generate_student_advice(class_id, student_id,
+                                                                  consent=True))
+    expect_isolation("七.4 追问候选生成 → 403 ai_isolation",
+                     lambda: gate_service.suggest_followup(class_id, student_id, "去括号",
+                                                           consent=True))
+    on = gate_service.set_ai_individual(True)
+    check("七.5 重新开启后账号状态是「已授权」",
+          on.get("ai_individual_allowed") is True, on.get("ai_individual_allowed"))
+    review_now = gate_service.analyse_answer(class_id, answer_id, consent=True)
+    check("七.6 开启后同一条业务路径立刻能产出建议（不是「反正会 403」）",
+          review_now.get("ok") is True, (review_now.get("ok"), review_now.get("error")))
 
     return finish()
 
