@@ -1259,17 +1259,19 @@ FIELD_LABELS = {
 
 
 def _force_undecided(answer, status):
-    """这一份有没有「可归因的错步」：没有（缺测 / 正确 / 缺少步骤 / 超范围）就是 False 的反面。
+    """这一份有没有「可归因的错步」：没有（缺测 / 正确 / 缺少步骤 / 超范围）就返回 True。
 
     名字沿用旧称，语义已随 R1-02 契约变更而变：以前它表示「强制压回待判断」（结果是把
     out_of_scope / missing_steps 永久挂在待判断上，R1-00 §15.3 实测 3 条永远处理不掉）；
-    现在它只回答「本题有没有可归因的错步」，`_applicability()` 据此决定原因轴记
-    `not_applicable`（无需判断）还是要求老师判断。**不再改写老师提交的判断。**
+    现在它只回答「本题有没有可归因的错步」，**不再改写老师提交的判断**。
+
+    T6 死代码取证：**仍然在线上**，唯一调用点是 `_applicability()`
+    （`answer_check.py` 里 `if _force_undecided(answer, status): return APPLICABLE_FORBIDDEN`），
+    它在「保存」的每一条路径上都会被 `_read_cause()` 通过 `applicability` 用到
+    （决定这次能不能记 decided、以及要不要把「没判原因」收口成 not_applicable）。
+    因此保留；曾有的别名 `_no_attributable_error` 无人调用，已在 T6 删除。
     """
     return _missing(answer) or status in ("correct", "missing_steps", "out_of_scope")
-
-
-_no_attributable_error = _force_undecided
 
 
 def _field_text(body, field, key=None):
@@ -1555,10 +1557,14 @@ def _manual_verification(answer, view, observed_step, observed_given, cause_stat
 
 
 def _require_manual_evidence(manual, changes, clear_notes, existing):
-    """人工核验必须带判断依据（R1-05「保存核验依据、不得绕过证据」）。
+    """人工核验必须带判断依据（R1-05「保存核验依据、不得绕过证据」+ §3.10 的 out_of_scope 收口）。
 
     只拦「人工核验」这一档：规则定位出首处错步、老师照它判原因时，证据本来就是规则给的，
-    不额外要求他写依据（那是 T11 要单独收口的另一条规则：out_of_scope 改判 decided）。
+    不要求他额外写依据（那是 A5「保存错步，原因待判断」的快路径）。
+
+    `out_of_scope` 的教师改判（`cause_state=decided`）在 `_manual_verification()` 里同样记为
+    `verify_source=manual`（规则判不了、证据只能来自人），因此**也走这一道闸门**：
+    optional + decided + 有效依据为空 → 400 `basis_required`（契约 §3.10，T11 落地）。
     之前已经写过的依据仍然算数——只在这次既没填、旧行也没有依据时才拒绝。
     """
     if manual["verify_source"] != VERIFY_MANUAL:

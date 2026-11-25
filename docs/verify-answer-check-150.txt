@@ -1,17 +1,17 @@
 数智伴学｜作答核对与追问（第一轮 A1–A7）源码级验收
-时间：2026-11-25T18:23:15+08:00
+时间：2026-11-25T18:41:38+08:00
 命令：python.exe tests\verify_answer_check_150.py
-目录：E:\Agent\小挑
+目录：E:\Agent\Math-Analysis-r1\数智伴学
 环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
-临时库：E:\Agent\小挑\tests\.tmp-answer-check
+临时库：E:\Agent\Math-Analysis-r1\数智伴学\tests\.tmp-answer-check
 网络：只用 127.0.0.1 随机端口环回，无任何外部请求
-被测文件 src/web/app.js sha256=1003A5F9039A mtime=2026-11-25 18:20:18 size=140752
-被测文件 src/web/styles.css sha256=9D1454513298 mtime=2026-11-25 18:20:18 size=17331
-被测文件 src/app/equation_steps.py sha256=11D90941D317 mtime=2026-11-25 18:20:18 size=36183
-被测文件 src/app/demo_answers.py sha256=E9B96DDC2F50 mtime=2026-11-25 18:20:18 size=37655
-被测文件 src/app/answer_check.py sha256=B51C777452C3 mtime=2026-11-25 18:20:18 size=106009
-被测文件 src/app/stats.py sha256=7844D2A7363D mtime=2026-11-24 13:49:11 size=11174
-被测文件 src/app/api.py sha256=33D2F34A202E mtime=2026-11-25 18:20:18 size=86129
+被测文件 src/web/app.js sha256=1003A5F9039A mtime=2026-11-25 17:42:58 size=140752
+被测文件 src/web/styles.css sha256=9D1454513298 mtime=2026-11-25 15:04:47 size=17331
+被测文件 src/app/equation_steps.py sha256=11D90941D317 mtime=2026-11-25 14:08:53 size=36183
+被测文件 src/app/demo_answers.py sha256=E9B96DDC2F50 mtime=2026-11-25 14:08:15 size=37655
+被测文件 src/app/answer_check.py sha256=46FD511AB30A mtime=2026-11-25 18:33:19 size=106674
+被测文件 src/app/stats.py sha256=D737CA4A9042 mtime=2026-11-25 18:22:31 size=12454
+被测文件 src/app/api.py sha256=33D2F34A202E mtime=2026-11-25 16:11:19 size=86129
 
 == 1. 确定位：5 种 status（correct / first_bad / missing_steps / missing / out_of_scope）+ 正确作答不标错 + 只有答案不猜行 ==
 PASS 1.1 案例A status=first_bad
@@ -190,6 +190,31 @@ PASS 15.4 reset 删除 4 份合成作答、kept.imported_answers=1
 PASS 15.5 reset 后 source='合成演示' 归零，只剩真实导入那一条
 PASS 15.6 reset 不动真实作答的判断（check 仍在、详情仍显示已核对）
 
+== 17. T6 批次隔离与统计口径：触发器已撤仍干净 / 两班两批不混 / 旧库升级可救 ==
+PASS 17.0 新库不再创建演示批次归位触发器（trg_answers_demo_batch_* 已撤）
+PASS 17.1 同班两批次各算各的（1 班：第1次 1 份 / 第2次 1 份）
+PASS 17.2 2 班的作答不进 1 班的统计（同为「9月第2次作业」也只有 1 份）
+PASS 17.3 跨班读他人作答被拒（404 not_found）
+PASS 17.4 同班按批次过滤：第1次作业的队列里没有第2次那份
+PASS 17.5 造数自检：演示行确实落在真实批次里（不再被触发器悄悄挪走）
+PASS 17.6 触发器删除后统计仍干净：expected / 总览份数 / 队列都不含演示行
+PASS 17.7 统计永远不数演示数据（即使显式查演示批次，expected 也是 0）
+PASS 17.8 stats 的 manual_verified 与 overview.counts.manual_verified 对齐（2 班=1）
+PASS 17.9 stats 的 cause_not_applicable 与 overview.counts.not_applicable_cause 对齐
+PASS 17.10 两个新档位都在统计块里（cause_not_applicable / manual_verified 键存在）
+PASS 17.11 撤回后旧结论退出统计（checked 1 → 0、pending 回到 1）
+PASS 17.12 撤回行本身还在库里（历史不删），只是版本置空
+PASS 17.13 1.7.x 旧库升级不再抛 MigrationError（并有备份文件）
+PASS 17.14 升级后原有数据一条不丢、两张新表已建好
+PASS 17.15 升级后结构检查通过（answer_checks 就绪判定不再要求那两个触发器）
+PASS 17.15b 服务器启动链在 1.7.x 旧库上一次走通（5 步迁移全部成功）
+PASS 17.15c 整链升级后 answers 与 answer_checks 两套结构都就绪
+PASS 17.15d 旧 answer_checks 升级成功（补列 + 建索引，不要求有那两个触发器）
+PASS 17.15e 有结论的历史行回填 cause_source=legacy、没结论的行保持空（不误标「从未判断」）
+PASS 17.18 旧库残留的演示批次触发器在打开时被显式删除（升级安装不再保留隐形行为）
+PASS 17.16 变异体6（迁移顺序）补丁命中唯一位置
+PASS 17.17 变异体6 把建表放到补列之后 → 同一夹具必须抛 MigrationError（断言不恒真）
+
 == 14. 三条既有回归线（如实记录，含已知失败） ==
 回归 verify_answers_150.py：退出码 0，用时 1.0s，合计 60 项，通过 60，失败 0
 PASS 14.1 verify_answers_150.py 合计 60 项、通过 60、失败 0（无失败）
@@ -199,5 +224,5 @@ PASS 14.2 verify_followup_180.py 合计 126 项、通过 126、失败 0（无失
 PASS 14.3 verify_review_160.py 合计 135 项、通过 134、失败 1（已知失败：FAIL 1.8.0 版本号 1.8.1）
 PASS 14.4 verify_review_160.py 的唯一失败是已知的历史版本号断言
 
-合计 149 项，通过 149，失败 0（另：未验证 0 项）
+合计 172 项，通过 172，失败 0（另：未验证 0 项）
 退出码：0

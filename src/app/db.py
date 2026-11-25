@@ -635,10 +635,14 @@ def ensure_answers_schema(db_file):
             # 一次性归位：旧版本把演示作答写进了真实批次（DEMO_BATCH 曾与真实作业撞名），
             # 这里把「确实由演示写入」的行挪回演示批次。判据用 record_key 前缀 + 来源标记，
             # 老师的真实作答一条都不动（它没有 DEMO- 前缀）。
+            # T6：这套归位是**唯一**保留的「自动纠正」——它只在升级迁移时跑一次、有备份、
+            # 可审计；原先两个每次写入都会发作的触发器已删除（见 ANSWERS_DDL 上的说明）。
             conn.execute(
                 "UPDATE answers SET batch=? WHERE source=? AND record_key LIKE ? AND batch<>?",
                 (DEMO_BATCH, DEMO_SOURCE, DEMO_RECORD_PREFIX + "%", DEMO_BATCH),
             )
+            for name in RETIRED_TRIGGER_NAMES:
+                conn.execute("DROP TRIGGER IF EXISTS %s" % name)
             _migration_fault("answers_commit")
             conn.execute("COMMIT")
         except Exception as exc:
@@ -960,6 +964,22 @@ def _dedupe_answer_checks(conn):
     return merged
 
 
+def _answer_check_ddl_by_kind(kind):
+    """按语句种类取 `ANSWER_CHECK_DDL` 里的语句：`table` 只取建表，`index` 取全部建索引。
+
+    为什么必须分两步执行（T5 发现的 1.7.x 迁移 bug）：
+    - `answer_checks` 与 `answer_followups` 在 1.7.x 旧库里**都不存在**；
+    - 补列语句 `ALTER TABLE answer_followups ADD COLUMN ...` 若在「建表」之前跑，
+      会直接抛 `no such table: answer_followups`（实测见 t6 探针），整次迁移回滚；
+    - 唯一索引 `idx_checks_answer_version` 又必须在合并重复行之后建，否则历史重复数据会让它失败。
+    所以顺序固定为：**先建表 → 再补列 → 再合并重复行 → 最后建索引**。
+    """
+    statements = [ddl for ddl in ANSWER_CHECK_DDL if isinstance(ddl, str)]
+    if kind == "table":
+        return [ddl for ddl in statements if ddl.lstrip().upper().startswith("CREATE TABLE")]
+    return [ddl for ddl in statements if "INDEX" in ddl.lstrip().upper()[:24]]
+
+
 def ensure_answer_check_schema(db_file):
     """给旧库补上作答核对与追问原话表、R1-02/03 新列与唯一索引；本来就齐全时返回 None。
 
@@ -1016,8 +1036,10 @@ def ensure_answer_check_schema(db_file):
                 "原有数据没有改动。备份文件：%s" % (exc, backup_file)
             )
         try:
-            for ddl in ANSWER_CHECK_DDL[:3]:
-                conn.execute(ddl)                       # 两张表 + 两个普通索引
+            # T6 修复：旧库（1.7.x）两张表都不存在，必须**先建表**再补列，
+            # 否则 ALTER TABLE answer_followups 会抛 no such table（T5 实测、本轮探针复现）。
+            for ddl in _answer_check_ddl_by_kind("table"):
+                conn.execute(ddl)
             _add_missing_columns(conn, "answer_checks", ANSWER_CHECK_COLUMNS)
             _add_missing_columns(conn, "answer_followups", ANSWER_FOLLOWUP_COLUMNS)
             # 历史行没有来源记录：有结论的按历史行标注，避免读成「未判断」。
@@ -1025,13 +1047,10 @@ def ensure_answer_check_schema(db_file):
                 "UPDATE answer_checks SET cause_source='legacy'"
                 " WHERE (cause_source IS NULL OR cause_source='') AND cause_code <> ''"
             )
-            conn.execute(ANSWER_CHECK_DDL[4])           # 追问表
             _dedupe_answer_checks(conn)
-            conn.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_checks_answer_version"
-                " ON answer_checks(answer_id, answer_version) WHERE answer_version <> ''"
-            )
-            conn.execute(ANSWER_CHECK_DDL[5])
+            # 索引放到最后：唯一索引必须在合并重复行之后建（否则历史重复数据会让建索引失败）。
+            for ddl in _answer_check_ddl_by_kind("index"):
+                conn.execute(ddl)
             _migration_fault("answer_check_commit")
             conn.execute("COMMIT")
         except Exception as exc:
@@ -1106,6 +1125,11 @@ class Database:
                 "SELECT name FROM sqlite_master WHERE type='table'")}
             if table in tables:
                 _add_missing_columns(self.conn, table, columns)
+        # T6：撤掉两个「演示批次归位」触发器（隐形行为）。旧库里若已建过，打开时显式删除；
+        # 新库根本不会再建。删掉之后「演示数据不进真实作业/统计」由查询侧的
+        # (batch, source) 收口与 stats 的 a.source 过滤保证，不依赖任何隐式写入改写。
+        for name in RETIRED_TRIGGER_NAMES:
+            self.conn.execute("DROP TRIGGER IF EXISTS %s" % name)
 
     # -- 连接 -------------------------------------------------------------
     def _connect(self):
