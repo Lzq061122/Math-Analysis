@@ -1,6 +1,6 @@
-时间：2026-11-25T19:55:36+08:00
-命令：python.exe tests\verify_ai_146.py
-目录：E:\Agent\小挑
+时间：2026-11-25T20:25:28+08:00
+命令：python.exe C:\Users\Public\t7-verify\repo\tests\verify_ai_146.py
+目录：C:\Users\Public\t7-verify\repo
 环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
 
 == 一、地址、模式与请求地址拼接

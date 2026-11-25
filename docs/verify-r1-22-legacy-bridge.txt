@@ -1,0 +1,42 @@
+数智伴学｜R1-T22 旧数据只读桥（answer_reviews 候选 + 原版 followups 追问记录）
+时间：2026-11-25T20:43:01+08:00
+命令：python.exe tests\verify_r1_22_legacy_bridge.py
+目录：E:\Agent\小挑
+环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
+
+== 零、桥之前：真实作答既没有候选，也没有原版追问（明确文案，不是空数组糊弄） ==
+PASS 0.1 没有 answer_reviews 时候选为空
+PASS 0.2 candidates_note 明确写「暂无候选」
+PASS 0.3 candidate_sources 为空（没有来源可标）
+PASS 0.4 追问卡里 legacy_items 为空且 legacy_note 有说明
+
+== 一、第一轮 answer_reviews（pending）的候选错因：只读读得到，带来源与状态 ==
+PASS 1.1 详情里读到了第一轮的两条候选
+PASS 1.2 每条候选都标了 source=answer_review
+PASS 1.3 带上当时的确认状态（pending）
+PASS 1.4 candidate_sources 标明来源是 answer_review
+PASS 1.5 有候选时 candidates_note 为空（不需要「暂无」提示）
+PASS 1.6 证据只保留确实是本条作答原文的切片
+
+== 二、第一轮原版 followups / followup_updates：追问卡只读可读 ==
+PASS 2.1 追问卡读到了原版追问记录（1 条）
+PASS 2.2 带问句与学生原话
+PASS 2.3 带时间（问了/答了）
+PASS 2.4 标明来源是「原版追问记录」
+PASS 2.5 说明凭什么认为它属于这份作答（problem 对上）
+PASS 2.6 原版候选更新也读得到（followup_updates）
+PASS 2.7 有原版记录时 legacy_note 为空
+
+== 三、只读：桥本身一行都不写旧表 ==
+PASS 3.1 反复调用详情/候选之后，answer_reviews 行数与时间戳不变
+PASS 3.2 followups 行数与时间戳不变
+PASS 3.3 followup_updates 行数与时间戳不变
+PASS 3.4 桥过程中 answer_reviews 从 0 → 1 只发生在测试自己插入的那一次
+
+== 四、缺证据不 404：追问卡给明确说明 ==
+PASS 4.1 另一份没有证据的作答，详情不抛异常（不 404）
+PASS 4.2 追问建议缺失时给出明确 note（不是空白）
+PASS 4.3 原版追问记录给出可读结果或明确「暂无原版追问记录」文案
+
+合计 24 项，通过 24，失败 0
+退出码：0

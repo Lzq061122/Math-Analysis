@@ -388,6 +388,39 @@ def main():
               analysis.INDIVIDUAL_FLOW_MESSAGE)
 
         # ---------------------------------------------------------------
+        section("四之二、闸门顺序：mock/None 必须是 409 mock，**不是** 403 ai_isolation")
+        # ---------------------------------------------------------------
+        # 这条是给「闸门顺序写反」兜底的专项断言：t14 恢复四个入口时，tutor.generate 曾把
+        # 「403 未授权」守卫写在「if provider is None: 409 mock」之前，于是 mock 模式也被当成
+        # 未授权真实通道 → 界面拿到 403，而不是原版 1.8.1 的 409「当前是模拟分析…」。
+        # 该类回归只有桌面 UI 套件能抓到（verify_tutor_170 全绿也发现不了），因此单列在此。
+        from app import tutor as tutor_mod
+
+        def _generate_with(provider):
+            try:
+                tutor_mod.generate(db, cid, sid, provider, "", "")
+            except Exception as exc:  # noqa: BLE001 —— 只读 status/code/message
+                return getattr(exc, "status", None), getattr(exc, "code", None), \
+                    getattr(exc, "message", "") or ""
+            return None, None, ""
+
+        status, code, text = _generate_with(analysis.get_provider({"mode": "mock"}))
+        check("4b.1 mock provider → 409 + code=mock（文案含「当前是模拟分析」，绝不是 403 ai_isolation）",
+              (status, code) == (409, "mock") and "当前是模拟分析" in text,
+              (status, code, text[:40]))
+        status_none, code_none, _ = _generate_with(None)
+        check("4b.2 provider=None（模拟）→ 同样 409 + code=mock",
+              (status_none, code_none) == (409, "mock"), (status_none, code_none))
+        unauthorized = vision.CloudVisionProvider(vision.resolve_config({
+            "mode": "custom", "api_key": "sk-r1-14", "base_url": "http://127.0.0.1:9/v1",
+            "model": "stub-model", "allow_env": False,
+        }))
+        status_real, code_real, _ = _generate_with(unauthorized)
+        check("4b.3 真实通道 + 未开启 → 仍 403 ai_isolation（放行顺序不反噬真实通道）",
+              (status_real, code_real) == (403, analysis.INDIVIDUAL_FLOW_CODE),
+              (status_real, code_real))
+
+        # ---------------------------------------------------------------
         section("五、旧库兼容：缺开关列 / 缺审计表时按「关」处理，写入时补列建表")
         # ---------------------------------------------------------------
         legacy_dir = os.path.join(WORK, "legacy")

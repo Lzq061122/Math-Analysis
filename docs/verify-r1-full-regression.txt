@@ -1,0 +1,55 @@
+﻿T7 全量回归原始记录（快照副本，逐套件串行）
+生成时间：2026-11-25T20:46:52+08:00
+快照目录：C:\Users\Public\t7-verify\repo（E:\Agent\小挑 工作树在 20:46 时刻的逐字节副本，排除 .git/screenshots/.tmp-*）
+解释器：C:\Python314\python.exe（3.14.7）；桌面 service 套件用 E:\Agent\venv-desktop（PySide6 6.6.3.1）
+源码指纹见 docs/R1-反例与回归记录.md §2
+
+T7 full regression in snapshot C:\Users\Public\t7-verify\repo
+started 2026-11-25T20:24:00.0812151+08:00
+
+RESULT  verify_answer_check_150.py  exit=0  PASS=172 FAIL=0  15s
+
+RESULT  verify_answer_check_ui.py  exit=0  PASS=238 FAIL=0  54s
+
+RESULT  verify_r1_05_06_manual_followup.py  exit=0  PASS=76 FAIL=0  4s
+
+RESULT  verify_r1_07_isolation.py  exit=0  PASS=73 FAIL=0  2s
+
+RESULT  verify_r1_14_account_ai.py  exit=0  PASS=31 FAIL=0  2s
+
+RESULT  verify_r1_15_backup_tables.py  exit=0  PASS=32 FAIL=0  2s
+
+RESULT  verify_r1_16_check_to_mistake.py  exit=0  PASS=33 FAIL=0  1s
+
+RESULT  verify_answers_150.py  exit=0  PASS=60 FAIL=0  1s
+
+RESULT  verify_followup_180.py  exit=0  PASS=126 FAIL=0  2s
+
+RESULT  verify_review_160.py  exit=1  PASS=134 FAIL=1  4s
+        FAIL> FAIL 1.8.0 版本号 1.8.1
+
+RESULT  verify_tutor_170.py  exit=0  PASS=98 FAIL=0  2s
+
+RESULT  verify_ai_146.py  exit=0  PASS=0 FAIL=0  5s
+
+RESULT  verify_core_150.py  exit=0  PASS=18 FAIL=0  1s
+
+RESULT  verify_r1_18_desktop_service.py  exit=0  PASS=36 FAIL=0  0s
+
+finished 2026-11-25T20:25:33.8092236+08:00
+
+各套件 合计 行（取自各套件自身输出）：
+  verify_ai_146                              合计 195 项，通过 195 项，失败 0 项  退出码：0
+  verify_answer_check_150                    合计 172 项，通过 172，失败 0（另：未验证 0 项）  退出码：0
+  verify_answer_check_ui                     合计 238 项，通过 238，失败 0（另：未验证 0 项；已知缺口 0 项，见上面「未通过（缺口）」行）  退出码：0
+  verify_answers_150                         合计 60 项，通过 60，失败 0  退出码：0
+  verify_core_150                            合计 18 项，通过 18，失败 0  退出码：0
+  verify_followup_180                        合计 126 项，通过 126，失败 0  退出码：0
+  verify_r1_05_06_manual_followup            合计 76 项，通过 76，失败 0（另：未验证 0 项）  退出码：0
+  verify_r1_07_isolation                     合计 73 项，通过 73，失败 0  退出码：0
+  verify_r1_14_account_ai                    合计 31 项，通过 31，失败 0  退出码：0
+  verify_r1_15_backup_tables                 合计 32 项，通过 32，失败 0  退出码：0
+  verify_r1_16_check_to_mistake              合计 33 项，通过 33，失败 0  退出码：0
+  verify_r1_18_desktop_service               合计 36 项，通过 36，失败 0  退出码：0
+  verify_review_160                          合计 135 项，通过 134，失败 1  退出码：1
+  verify_tutor_170                           合计 98 项，通过 98，失败 0  退出码：0

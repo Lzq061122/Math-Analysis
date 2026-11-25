@@ -1,9 +1,9 @@
-时间：2026-11-25T20:04:49+08:00
-命令：python.exe tests\verify_r1_07_isolation.py
-目录：E:\Agent\小挑
+时间：2026-11-25T20:25:13+08:00
+命令：python.exe C:\Users\Public\t7-verify\repo\tests\verify_r1_07_isolation.py
+目录：C:\Users\Public\t7-verify\repo
 环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
 
-本地模拟模型服务（回环桩）：http://127.0.0.1:57422
+本地模拟模型服务（回环桩）：http://127.0.0.1:58595
 外部模型服务地址（不可达）：https://ai.invalid.example/v1
 PASS  准备数据：作答导入预览可用
 PASS  准备数据：作答导入落库可用
@@ -13,7 +13,7 @@ PASS  正向对照：离线工具用途 + 本机回环地址真的发出了 1 �
 PASS  正向对照：请求落在本机回环桩上
 PASS  正向对照：桩返回被解析成结构化结果
 PASS  正向对照：拦截器记录了这次回环请求（不是 0，说明记录器有效）
-拦截日志（正向对照）：[{"url": "http://127.0.0.1:57422/v1/chat/completions", "loopback": true, "bytes": 154718}]
+拦截日志（正向对照）：[{"url": "http://127.0.0.1:58595/v1/chat/completions", "loopback": true, "bytes": 154718}]
 
 == 二、通道层：同一个 provider 拿个体数据也发不出去（用途判定） ==
 PASS  个体作业（无离线工具用途）在本机回环桩上也被拒绝

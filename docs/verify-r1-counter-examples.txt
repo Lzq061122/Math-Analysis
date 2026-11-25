@@ -1,0 +1,176 @@
+T7 R1 反例测试（22 条必覆盖反例 + 反向自证）
+时间：2026-11-25T20:48:01+0800
+目录：E:\Agent\小挑
+Python：3.14.7 (tags/v3.14.7:823f032, Aug  5 2026, 10:51:32) [MSC v.1944 64 bit (AMD64)]
+
+
+== 反例 1：合成演示证据不得污染真实作答（T7-01） ==
+PASS T7-01.1 真实作答没有预置候选
+PASS T7-01.2 错因来源不是 preset
+PASS T7-01.3 判据范围是真实作答
+PASS T7-01.4 演示候选编码一个字都没出现在真实作答详情里
+PASS T7-01.5 说明里没有「候选来自预置演示条目」
+
+== 反例 2：题干只是「归一化后相同」不得命中演示预置（T7-02） ==
+PASS T7-02.1 全角题干 + 与演示相同的步骤，仍然没有预置候选
+PASS T7-02.2 来源不是 preset（归一化只用于说明，不用于匹配）
+PASS T7-02.3 对照：演示记录本身（逐字相同）的预置仍然有效 —— 证明 2.1 不是环境坏
+
+== 反例 3：与演示批次撞名的真实批次不得被 reset 删（T7-03） ==
+PASS T7-03.1 演示数据载入成功
+PASS T7-03.2 撞批名的真实作答没被删
+PASS T7-03.3 批名+来源都撞、但没有 DEMO- 前缀的真实作答没被删
+PASS T7-03.4 reset 只删了演示记录
+PASS T7-03.5 演示作答全清空
+
+== 反例 4：seed 不得挂到真实学生（T7-04） ==
+PASS T7-04.1 演示作答一条都没挂真实学生
+PASS T7-04.2 演示作答挂的是带标记的合成学生
+PASS T7-04.3 reset 后合成学生没有残留空壳
+
+== 反例 5：演示数据不进队列与统计（T7-05） ==
+PASS T7-05.1 载入演示后「当前作业」仍是真实批次
+PASS T7-05.2 应交数不变
+PASS T7-05.3 待核对数不含演示作答
+PASS T7-05.4 统计块 expected 不被演示虚增
+PASS T7-05.5 演示批次的应交数只数真实行、不数演示行（真实 1 / 统计 1）
+PASS T7-05.6 reset 后真实统计回到原值
+
+== 反例 6：库级触发器删除后统计仍然干净（T7-06） ==
+PASS T7-06.1 库里没有演示批次归位触发器
+PASS T7-06.2 演示行留在真实批次里（不再被悄悄归位）
+PASS T7-06.3 统计仍不数它：expected 不变
+PASS T7-06.4 总览也不数它（与插入演示行之前逐项相等）
+
+== 反例 7：无候选时的人工判断与 cause_source 可区分（T7-07） ==
+PASS T7-07.1 无候选时老师能形成判断
+PASS T7-07.2 cause_source=teacher（与规则/预置可区分）
+PASS T7-07.3 verify_source=rule（规则定位与人工判断分列）
+PASS T7-07.4 库里的来源列与响应一致
+PASS T7-07.5 老师写的错步与规则错步分列存
+PASS T7-07.6 规则的错步仍然保留（没被覆盖）
+
+== 反例 8：forbidden（correct/缺测）提交 decided 必 400（T7-08） ==
+PASS T7-08.1 正确作答 + decided → 400 cause_not_applicable
+PASS T7-08.3 正确作答 被拒后一条都没写库
+PASS T7-08.2 缺测 + decided → 400 cause_not_applicable
+PASS T7-08.4 缺测 被拒后一条都没写库
+
+== 反例 9：out_of_scope 无依据提交 decided 必 400（T7-09） ==
+PASS T7-09.0 前提：这份确实是 out_of_scope
+PASS T7-09.1 没填依据 → 400 basis_required
+PASS T7-09.2 被拒后一条都没写库
+PASS T7-09.3 填了依据 → 200 且记成人工核验
+PASS T7-09.4 依据落库（不是只回显）
+PASS T7-09.5 first_bad 提交 decided 不强制依据（闸门没有过宽）
+
+== 反例 10：静默改写零容忍，非法请求必须 4xx 且不写库（T7-10） ==
+PASS T7-10.1 版本不匹配 → 409 version_conflict
+PASS T7-10.1 ── 被拒后没有写库
+PASS T7-10.2 progress 取值非法 → 400 bad_progress
+PASS T7-10.2 ── 被拒后没有写库
+PASS T7-10.3 decided 但没有原因说明 → 400 cause_required
+PASS T7-10.3 ── 被拒后没有写库
+PASS T7-10.4 撤回却同时提交原因 → 400 cause_state_mismatch
+PASS T7-10.4 ── 被拒后没有写库
+
+== 反例 11：保存响应的权威 11 项与再 GET / 库里一致（T7-11） ==
+PASS T7-11.0 保存成功
+PASS T7-11.1 11 项在保存响应里都齐备
+PASS T7-11.2 再 GET 详情逐项相等（第 1–10 项）
+PASS T7-11.2b 第 11 项（adjustments + receipt）确实在保存响应里
+PASS T7-11.2c 回执的状态行与 judgement 两条轴一致
+PASS T7-11.3 库里的两条轴与响应一致
+PASS T7-11.4 库里的说明/依据与响应一致
+PASS T7-11.5 追问原话落库且详情里 recorded=true
+
+== 反例 12：progress 可回退，撤回留 invalidated_*（T7-12） ==
+PASS T7-12.1 撤回成功
+PASS T7-12.2 撤回行 answer_version 置空
+PASS T7-12.3 撤回行 progress=pending
+PASS T7-12.4 invalidated_* 三列都写了
+PASS T7-12.5 行本身与历史都保留（没删行）
+PASS T7-12.6 详情回到待核对
+PASS T7-12.7 撤回后这份回到待核对队列
+PASS T7-12.8 撤回后再撤回 → 400 nothing_to_retract
+
+== 反例 13：A→B→A 不堆重复结论（T7-13） ==
+PASS T7-13.1 同一 (answer_id, answer_version) 只有一条当前结论
+PASS T7-13.2 改判历史留在 cause_history 里（旧结论没丢）
+PASS T7-13.3 当前结论是最后一次提交的那个
+
+== 反例 14：未完成但各行等价，不得判 correct（T7-14） ==
+PASS T7-14.1 status=missing_steps
+PASS T7-14.2 completion.state=unfinished
+PASS T7-14.3 步骤完整性认定「有过程」
+PASS T7-14.4 人工处理状态是「需要补充步骤」
+PASS T7-14.5 对照：真正解完的才判 correct
+
+== 反例 15：追问按错步类型生成，移项题不得问括号（T7-15） ==
+PASS T7-15.1 移项题 kind=rule:term_move
+PASS T7-15.2 移项题的问句问的是「符号/移项」，不是括号
+PASS T7-15.3 问句逐字引用了本条原文两行
+PASS T7-15.4 展开括号题 kind=rule:bracket_expand
+PASS T7-15.5 括号题才问括号
+
+== 反例 16：无错步/缺测时追问 available=false（T7-16） ==
+PASS T7-16.1 正确作答 的追问不可用且问句为空
+PASS T7-16.3 正确作答 的说明写清「暂无」
+PASS T7-16.2 缺测 的追问不可用且问句为空
+PASS T7-16.4 缺测 的说明写清「暂无」
+
+== 反例 17：追问证据更新后旧确认失效（T7-17） ==
+PASS T7-17.1 追问记录成功
+PASS T7-17.2 补录后旧追问标 answer_updated
+PASS T7-17.3 补录回执里 invalidated_followups>=1
+PASS T7-17.4 原话没被删（只是失效）
+PASS T7-17.5 撤回结论后旧追问标 conclusion_retracted
+PASS T7-17.6 结论变了之后旧追问标 evidence_changed
+PASS T7-17.7 三种失效原因都出现过（answer_updated / conclusion_retracted / evidence_changed）
+
+== 反例 18：单条补录校验（T7-18） ==
+PASS T7-18.1 版本冲突 → 409 version_conflict
+PASS T7-18.2 身份字段不可改 → 400
+PASS T7-18.2b 前提：先存一条当前结论（待判断）
+PASS T7-18.3 合法补录 200 且标 reanalysed
+PASS T7-18.4 补录后旧结论 stale（回到待核对）
+PASS T7-18.5 补录后版本变了
+PASS T7-18.6 补录的这份回到待核对队列
+PASS T7-18.7 合成演示作答现在允许校正，回执写明预置已失效
+PASS T7-18.8 校正后预置候选确实失效（退回规则定位）
+PASS T7-18.9 reset + 重新载入后预置恢复有效（可重复演示）
+
+== 反例 19：多班级多批次隔离（T7-19） ==
+PASS T7-19.1 另一个班的同名记录能独立保存
+PASS T7-19.2 保存另一个班不影响本班统计
+PASS T7-19.3 另一个班的总览只数自己
+PASS T7-19.4 记录页按班级隔离
+PASS T7-19.5 批次筛选没有串班
+
+== 反例 20：个体作答不得触发外部模型请求（T7-20） ==
+PASS T7-20.1 网页端不提供外发能力（ai_egress_available=false）
+PASS T7-20.2 个体 AI 默认关闭
+PASS T7-20.3 分析入口不组装真实外发（provider 是模拟）
+PASS T7-20.4 没有产生任何外发审计记录
+
+== 反例 21：1.7.x 旧库迁移不再抛 MigrationError（T7-21） ==
+PASS T7-21.1 升级不再抛异常（基线是 MigrationError: no such table: answer_followups）
+PASS T7-21.2 升级前留了一致性备份
+PASS T7-21.3 旧数据一条不丢
+PASS T7-21.4 两张新表都建好了
+
+== 反例 22：回执与响应/库不得出现「请求值 vs 响应值」矛盾（T7-22） ==
+PASS T7-22.1 响应回执里的原因文字与请求一致（不是旧值）
+PASS T7-22.2 回执三行不出现占位空值
+PASS T7-22.3 回执里没有把请求值原样当结果显示（来源是服务端判定）
+PASS T7-22.4 记录页那一行的原因文字与保存响应一致
+PASS T7-22.5 记录页那一行的来源标签与响应一致
+
+== 第 23 组：反向自证 —— 变异体必须让本套件的关键断言变假（T7-M） ==
+PASS T7-M.统计过滤 变异锚点在 stats.py 里恰好出现 1 次（改一处只影响一处）
+PASS T7-M.统计过滤 摘掉「demo_source = check_state.DEMO_SOURCE」后同一批断言确实变红（断言不恒真）
+PASS T7-M.依据闸门 变异锚点在 answer_check.py 里恰好出现 1 次（改一处只影响一处）
+PASS T7-M.依据闸门 摘掉「if not basis:」后同一批断言确实变红（断言不恒真）
+
+合计 122 项，通过 122，失败 0
+退出码：0

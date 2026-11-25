@@ -1,9 +1,9 @@
 数智伴学｜R1-T15（B1）备份恢复：answer_checks / answer_followups 随备份走
-时间：2026-11-25T20:10:45+08:00
-命令：python.exe tests\verify_r1_15_backup_tables.py
-目录：E:\Agent\小挑
+时间：2026-11-25T20:25:17+08:00
+命令：python.exe C:\Users\Public\t7-verify\repo\tests\verify_r1_15_backup_tables.py
+目录：C:\Users\Public\t7-verify\repo
 环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
-临时库：E:\Agent\小挑\tests\.tmp-r1-15
+临时库：C:\Users\Public\t7-verify\repo\tests\.tmp-r1-15
 网络：无（纯本地 SQLite 与 zip）
 恢复前 counts：{"ai_egress_audit": 2, "answer_checks": 4, "answer_followups": 3, "answer_reviews": 2, "answers": 4, "classes": 2, "followup_updates": 0, "followups": 0, "mistakes": 2, "students": 3, "tutor_advice": 0}
 
