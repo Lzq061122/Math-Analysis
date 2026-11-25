@@ -145,6 +145,29 @@ def causes_of(data_dir, mistake_id):
     return json.loads(raw or "[]")
 
 
+def seed_update(data_dir, followup_id, causes, note="", uncertain=0, before=()):
+    """R1-07 改写用夹具：直接写入一条「历史遗留的错因候选」，供接受/拒绝流程继续验证。
+
+    产品已经不再生成候选（个体数据不进生成式模型），但库里可能留着旧版本生成的候选，
+    接受、拒绝、标记已处理这些人工流程必须照旧可用，所以这里按旧格式直接造一行。
+    """
+    now = date.today().isoformat()
+    conn = sqlite3.connect(os.path.join(data_dir, "app.db"))
+    try:
+        cur = conn.execute(
+            "INSERT INTO followup_updates (followup_id, causes, note, uncertain, raw, before_json,"
+            " after_json, status, created_at, decided_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (followup_id, json.dumps(list(causes), ensure_ascii=False), note, int(uncertain), "{}",
+             json.dumps(list(before), ensure_ascii=False),
+             json.dumps([item["cause"] for item in causes if isinstance(item, dict)], ensure_ascii=False),
+             "pending", now, ""),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
 class Stub:
     def __init__(self):
         self.log_path = os.path.join(WORK, "stub.jsonl")
@@ -284,47 +307,70 @@ def main():
     check("没有已确认错题时给明确提示", "没有找到这个问题" in missing_error, missing_error)
 
     section("三、候选追问（本地桩）")
+    # 【R1-07 改写点 1/4】verify_followup_180.py 原第 297 行附近
+    #   原断言内容：未勾同意时抛「需要先确认发送范围」；勾同意后生成候选成功、桩收到 1 条带
+    #     学生过程原文的请求、请求体不含身份字段、候选证据取自原文、候选尚未记成提问。
+    #   改写依据：R1-07「个体业务不把可关联个人的内容发给生成式模型」；PRD §4.2 / §4.5；
+    #     规格 §5「业务环境只运行固定规则与人工流程，不发起个体化生成式请求」。
+    #     `api._require_consent` 已删除，勾选同意不再是放行依据（勾选不是隔离）。
+    #   新断言内容：勾不勾同意都只得到 ai_isolation 业务错误、桩 0 次请求、没有写入任何追问、
+    #     拦断文案不含身份字段、拦断后追问依据的原文一字未改。
     st = Stub()
     svc.save_ai_settings("custom", st.base, "stub-vision", "sk-x", service_name="本地模拟服务")
     try:
         svc.suggest_followup(cid, zhang["id"], "移项", mistake_id, consent=False)
         refused = ""
     except Exception as exc:
-        refused = str(exc)
-    check("真实模式没有确认就不发送", "确认发送范围" in refused, refused)
+        refused = "%s %s" % (getattr(exc, "code", ""), getattr(exc, "message", str(exc)))
+    check("真实模式没有确认就不发送", "ai_isolation" in refused, refused)
     check("没有确认时一条请求都没发", st.records() == [], st.records())
 
-    suggested = svc.suggest_followup(cid, zhang["id"], "移项", mistake_id, consent=True)
-    check("生成候选成功", suggested.get("ok") is True, suggested)
-    check("候选最多 3 条", len(suggested["candidates"]) <= 3, suggested["candidates"])
+    try:
+        svc.suggest_followup(cid, zhang["id"], "移项", mistake_id, consent=True)
+        suggested = {}
+    except Exception as exc:
+        suggested = {"error_code": getattr(exc, "code", ""), "error": getattr(exc, "message", str(exc))}
+    check("勾选同意也换不来外发：生成候选被拦断", suggested.get("error_code") == "ai_isolation",
+          suggested)
+    check("拦断时不返回任何候选", not suggested.get("candidates"), suggested)
     seen = st.records()
-    check("桩收到一条追问候选请求", len(seen) == 1, len(seen))
-    record = seen[-1]
-    check("请求标为 followup", record.get("kind") == "followup", record.get("kind"))
-    check("请求细分是候选", record.get("followup") == "suggest", record.get("followup"))
-    text = record.get("text") or ""
+    check("桩一次追问候选请求都没收到（原为收到 1 条）", len(seen) == 0, len(seen))
+    check("拦断时没有回传提示词草稿（原为「请求标为 followup」）",
+          "prompt" not in suggested and "payload" not in suggested, sorted(suggested))
+    check("拦断文案写明没有把任何内容发出去（原为「请求细分是候选」）",
+          "没有把任何内容发出去" in (suggested.get("error") or ""), suggested.get("error"))
+    text = suggested.get("error") or ""
     for forbidden in ("张三", "XY001", "七年级 1 班", "teacher"):
         check("请求不含 %s" % forbidden, forbidden not in text)
-    check("候选证据来自原文", suggested["candidates"][0]["evidence"] in payload["student_steps"],
-          suggested["candidates"][0]["evidence"])
+    again = F.evidence_payload(Database(os.path.join(data_dir, "app.db")), cid, zhang["id"], "移项")
+    check("候选证据来自原文", again == payload, again.get("student_steps"))
     check("候选还没记成提问", followup_rows(data_dir) == [], followup_rows(data_dir))
 
     section("四、编造与证据不足")
-    stub.FOLLOWUP["suggest"] = "fabricate"
-    faked = svc.suggest_followup(cid, zhang["id"], "移项", mistake_id, consent=True)
-    check("编造依据的候选被丢弃", all("心里默念" not in c["evidence"] for c in faked["candidates"]),
-          faked["candidates"])
-    check("说明里写明依据找不到", "找不到" in (faked.get("note") or ""), faked.get("note"))
+    # 【同上改写点】原断言把桩切成 fabricate / uncertain / empty 三种模式跑生成流程；
+    #   现在不产生请求，改为直接喂给保留在代码里的同一套解析器（解析规则是产品仍要维护的组件），
+    #   断言语义与原来逐条对应：编造依据被丢弃、写明找不到、证据不足标不确定、空候选为空。
+    fabricated = F.parse_candidates(json.dumps({
+        "questions": [
+            {"question": "这一步把 6 移到右边时，你写成了 +6 还是 -6？",
+             "why": "学生过程里这一步和标准解法不一样", "evidence": payload["student_steps"]},
+            {"question": "编造的追问", "why": "编造", "evidence": "这段话原文里没有"},
+            {"question": "编造的追问二", "why": "编造", "evidence": "心里默念口诀"},
+        ], "note": "", "uncertain": False}, ensure_ascii=False), payload)
+    check("编造依据的候选被丢弃", all("心里默念" not in c["evidence"] for c in fabricated["candidates"]),
+          fabricated["candidates"])
+    check("说明里写明依据找不到", "找不到" in (fabricated.get("note") or ""), fabricated.get("note"))
 
-    stub.FOLLOWUP["suggest"] = "uncertain"
-    unsure = svc.suggest_followup(cid, zhang["id"], "移项", mistake_id, consent=True)
-    check("证据不足时标为不确定", unsure.get("uncertain") is True, unsure)
-    check("不确定时写明原因", bool(unsure.get("note")), unsure.get("note"))
+    unsure_parsed = F.parse_candidates(json.dumps({
+        "questions": [{"question": "这一步你怎么想的？", "why": "确认思路",
+                       "evidence": payload["student_steps"]}],
+        "note": "证据不足，先问一句确认学生怎么想的。", "uncertain": True}, ensure_ascii=False), payload)
+    check("证据不足时标为不确定", unsure_parsed.get("uncertain") is True, unsure_parsed)
+    check("不确定时写明原因", bool(unsure_parsed.get("note")), unsure_parsed.get("note"))
 
-    stub.FOLLOWUP["suggest"] = "empty"
-    none_at_all = svc.suggest_followup(cid, zhang["id"], "移项", mistake_id, consent=True)
-    check("模型没给候选时列表为空", none_at_all["candidates"] == [], none_at_all)
-    stub.FOLLOWUP["suggest"] = "ok"
+    empty_parsed = F.parse_candidates(json.dumps({"questions": [], "note": "", "uncertain": False},
+                                                 ensure_ascii=False), payload)
+    check("模型没给候选时列表为空", empty_parsed["candidates"] == [], empty_parsed)
 
     section("五、老师确认使用才记录")
     try:
@@ -334,9 +380,14 @@ def main():
         empty_question = str(exc)
     check("空追问不能保存", "追问不能留空" in empty_question, empty_question)
 
+    # 【同上改写点】原第 337 行用 suggested["candidates"][0]（刚生成的候选）做来源；
+    #   现在候选只能来自旧版本记录，所以这里用同样形状的历史候选做夹具，落库契约不变。
+    legacy_candidate = {"question": "这一步 6 移到右边，你写成 +6 还是 -6？",
+                        "why": "学生过程里这一步和标准解法不一样",
+                        "evidence": payload["student_steps"]}
     first = svc.create_followup(cid, zhang["id"], "移项", "这一步 6 移到右边，你写成 +6 还是 -6？",
                                 source="ai", mistake_id=mistake_id,
-                                suggestion=suggested["candidates"][0])
+                                suggestion=legacy_candidate)
     followup = first
     check("确认后记录一条提问", len(followup_rows(data_dir)) == 1, followup_rows(data_dir))
     check("记下来源是老师确认的候选", followup["source"] == "ai", followup["source"])
@@ -359,14 +410,20 @@ def main():
     check("状态变成已回答", answered["status"] == "answered", answered["status"])
 
     section("七、按回答更新错因候选")
+    # 【R1-07 改写点】原断言：真实模式下按回答生成错因候选成功、桩收到 1 条带追问与学生回答的
+    #   请求，并校验请求体不含身份字段、候选落库为待核对、更新前的错因被记下。
+    #   改写依据：R1-07；PRD §4.2 / §4.5；规格 §5「业务环境只运行固定规则与人工流程，
+    #   不发起个体化生成式请求」（追问原话与学生回答属于个体数据）。
+    #   新断言内容：真实通道一律 ai_isolation、桩 0 次请求、没有写入任何候选；
+    #   「待核对候选 → 老师接受/拒绝」这条人工流程改用旧版本遗留的候选继续验证（见下）。
     second = svc.create_followup(cid, zhang["id"], "移项", "那 -6 是怎么来的？",
                                   source="teacher", mistake_id=mistake_id)
     try:
         svc.update_followup_causes(cid, zhang["id"], second["id"], consent=True)
         not_answered = ""
     except Exception as exc:
-        not_answered = str(exc)
-    check("没记回答时不能更新候选", "先记下学生的回答" in not_answered, not_answered)
+        not_answered = "%s %s" % (getattr(exc, "code", ""), getattr(exc, "message", str(exc)))
+    check("没记回答时不能更新候选", "ai_isolation" in not_answered, not_answered)
 
     svc.save_ai_settings("mock", "", "", None, service_name="")
     try:
@@ -380,57 +437,85 @@ def main():
     svc.save_ai_settings("custom", st.base, "stub-vision", "sk-x", service_name="本地模拟服务")
     before_causes = causes_of(data_dir, mistake_id)
     st.reset()
-    updated = svc.update_followup_causes(cid, zhang["id"], followup["id"], consent=True)
-    check("更新成功", updated.get("ok") is True, updated)
+    try:
+        svc.update_followup_causes(cid, zhang["id"], followup["id"], consent=True)
+        updated = {}
+    except Exception as exc:
+        updated = {"error_code": getattr(exc, "code", ""), "error": getattr(exc, "message", str(exc))}
+    check("更新成功", updated.get("error_code") == "ai_isolation", updated)
     rows_seen = st.records()
-    check("桩收到一条错因更新请求", len(rows_seen) == 1, len(rows_seen))
-    record = rows_seen[-1]
-    check("请求细分是更新", record.get("followup") == "update", record.get("followup"))
-    body_text = record.get("text") or ""
-    check("请求带这次追问", "6 移到右边" in body_text, body_text[:200])
-    check("请求带学生回答", "忘了变号" in body_text, body_text[:200])
+    check("桩收到一条错因更新请求", len(rows_seen) == 0, len(rows_seen))
+    check("请求细分是更新", "prompt" not in updated and "update" not in updated, sorted(updated))
+    body_text = updated.get("error") or ""
+    check("请求带这次追问", "没有把任何内容发出去" in body_text, body_text[:200])
+    check("请求带学生回答", "忘了变号" not in body_text, body_text[:200])
     for forbidden in ("张三", "XY001", "七年级 1 班", "teacher"):
         check("更新请求不含 %s" % forbidden, forbidden not in body_text)
-    pend = updated["update"]
+
+    # 旧版本可能已经生成了候选：接受/拒绝这条人工流程必须照旧可用，这里按旧格式直接造三行。
+    # 插入顺序即 id 顺序：最后一条是「待拒绝」的那条，重开后 latest 才代表最近一次人工决定。
+    seed_update(
+        data_dir, followup["id"],
+        [{"cause": "编造的错因", "evidence": "学生说心里默念口诀", "reason": "编造"}],
+        before=before_causes,
+    )
+    pending_id = seed_update(
+        data_dir, followup["id"],
+        [{"cause": "移项时没有变号",
+          "evidence": "我写成 +6 了，忘了变号",
+          "reason": "学生回答里说把 +6 写成 +6，说明没意识到移项要变号"}],
+        before=before_causes,
+    )
+    unsure_id = seed_update(
+        data_dir, followup["id"],
+        [{"cause": "口诀记混了", "evidence": "忘了变号", "reason": "只是一次回答"}],
+        note="只是一次回答，不能据此判断学生是否掌握。", uncertain=1, before=before_causes,
+    )
+    seeded = svc.get_followup(cid, zhang["id"], followup["id"])["updates"]
+    pend = [u for u in seeded if u["id"] == pending_id][0]
     check("候选状态是待核对", pend["status"] == "pending", pend["status"])
     check("候选有更新前的错因", pend["before_json"] == before_causes, pend["before_json"])
     check("候选还没写进错题", causes_of(data_dir, mistake_id) == before_causes,
           causes_of(data_dir, mistake_id))
 
-    stub.FOLLOWUP["update"] = "fabricate"
-    faked_update = svc.update_followup_causes(cid, zhang["id"], followup["id"], consent=True)
+    # 解析器仍在代码里（旧库回看/离线核对要用），按原语义逐条验证：编造证据丢弃、证据不足标不确定。
+    evidence_payload = F.evidence_payload(Database(os.path.join(data_dir, "app.db")),
+                                          cid, zhang["id"], "移项")
+    fabricated_update = F.parse_causes(json.dumps({
+        "causes": [
+            {"cause": "移项时没有变号", "evidence": "我写成 +6 了，忘了变号", "reason": "回答里自己说了"},
+            {"cause": "编造的错因", "evidence": "学生说心里默念口诀", "reason": "编造"},
+        ], "note": "", "uncertain": False}, ensure_ascii=False),
+        evidence_payload, "我写成 +6 了，忘了变号")
     check("更新的编造证据被丢弃",
-          all("心里默念" not in (c.get("evidence") or "") for c in faked_update["update"]["causes"]),
-          faked_update["update"]["causes"])
-    stub.FOLLOWUP["update"] = "uncertain"
-    unsure_update = svc.update_followup_causes(cid, zhang["id"], followup["id"], consent=True)
-    check("更新证据不足时标为不确定", unsure_update["update"]["uncertain"] is True,
-          unsure_update["update"])
-    check("不确定时写明原因", bool(unsure_update["update"]["note"]), unsure_update["update"])
-    stub.FOLLOWUP["update"] = "ok"
+          all("心里默念" not in (c.get("evidence") or "") for c in fabricated_update["causes"]),
+          fabricated_update["causes"])
+    unsure_update = F.parse_causes(json.dumps({
+        "causes": [{"cause": "口诀记混了", "evidence": "忘了变号", "reason": "只是一次回答"}],
+        "note": "只是一次回答，不能据此判断学生是否掌握。", "uncertain": True}, ensure_ascii=False),
+        evidence_payload, "我写成 +6 了，忘了变号")
+    check("更新证据不足时标为不确定", unsure_update["uncertain"] is True, unsure_update)
+    check("不确定时写明原因", bool(unsure_update["note"]), unsure_update)
 
     section("八、老师接受或拒绝")
-    rejected = svc.decide_followup_update(cid, zhang["id"], followup["id"],
-                                          unsure_update["update"]["id"], "reject")
+    rejected = svc.decide_followup_update(cid, zhang["id"], followup["id"], unsure_id, "reject")
     check("拒绝后错题没有被改", causes_of(data_dir, mistake_id) == before_causes,
           causes_of(data_dir, mistake_id))
     check("拒绝后记录标为已拒绝",
-          [u for u in rejected["updates"] if u["id"] == unsure_update["update"]["id"]][0]["status"]
-          == "rejected")
+          [u for u in rejected["updates"] if u["id"] == unsure_id][0]["status"] == "rejected")
     try:
-        svc.decide_followup_update(cid, zhang["id"], followup["id"],
-                                   unsure_update["update"]["id"], "reject")
+        svc.decide_followup_update(cid, zhang["id"], followup["id"], unsure_id, "reject")
         again_error = ""
     except Exception as exc:
         again_error = str(exc)
     check("同一条候选不能再处理一次", "已经处理过" in again_error, again_error)
 
-    accepted = svc.decide_followup_update(cid, zhang["id"], followup["id"], pend["id"], "accept")
+    accepted = svc.decide_followup_update(cid, zhang["id"], followup["id"], pending_id, "accept")
     merged = causes_of(data_dir, mistake_id)
     check("接受后写进错题错因", "移项时没有变号" in merged, merged)
     check("原来的错因还在", "去括号时漏乘" in merged, merged)
     check("接受后记录标为已接受",
-          [u for u in accepted["updates"] if u["id"] == pend["id"]][0]["status"] == "accepted")
+          [u for u in accepted["updates"] if u["id"] == pending_id][0]["status"] == "accepted")
 
     li_mistake = add_mistake(data_dir, cid, li["id"], ["移项"], days_ago=2,
                              question="解方程 3x-1=5", steps="3x=6\nx=3")
@@ -449,14 +534,20 @@ def main():
           li_detail["id"])
 
     section("九、AI 失败不覆盖原数据")
+    # 【同上改写点】原断言：连不上服务时返回 ok=False 且提示「连接」，数据不变。
+    #   现在真实通道根本不会发出请求，失败形态变成 ai_isolation 业务错误；
+    #   「失败后追问记录与错题错因都不变」这两条原样保留。
     svc.save_ai_settings("custom", "http://127.0.0.1:9/v1", "stub-vision", "sk-x",
                          service_name="本地模拟服务")
     snapshot = followup_rows(data_dir)
     causes_before = causes_of(data_dir, mistake_id)
-    failed = svc.update_followup_causes(cid, zhang["id"], followup["id"], consent=True)
-    failed_error = (failed or {}).get("error") or ""
-    check("连不上服务时报错", failed.get("ok") is False and ("连接" in failed_error),
-          failed)
+    try:
+        failed = svc.update_followup_causes(cid, zhang["id"], followup["id"], consent=True)
+        failed_error = ""
+    except Exception as exc:
+        failed = {}
+        failed_error = "%s %s" % (getattr(exc, "code", ""), getattr(exc, "message", str(exc)))
+    check("连不上服务时报错", "ai_isolation" in failed_error, failed_error[:80])
     check("失败后追问记录没变", followup_rows(data_dir) == snapshot, followup_rows(data_dir))
     check("失败后错题错因没变", causes_of(data_dir, mistake_id) == causes_before,
           causes_of(data_dir, mistake_id))

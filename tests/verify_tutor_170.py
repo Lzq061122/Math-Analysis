@@ -273,54 +273,83 @@ def main():
 
     st = Stub()
     svc.save_ai_settings("custom", st.base, "stub-vision", "sk-x", service_name="本地模拟服务")
+    # 【R1-07 改写点】verify_tutor_170.py 原第 285 行附近
+    #   原断言内容：未勾同意时抛「需要先确认发送范围」；勾同意后生成成功、桩收到 1 条带学情
+    #     标记的请求、请求体不含身份字段，并按生成结果校验建议内容与来源。
+    #   改写依据：R1-07「个体业务不把可关联个人的内容发给生成式模型」；PRD §4.2 / §4.5；
+    #     规格 §5「业务环境只运行固定规则与人工流程，不发起个体化生成式请求」。
+    #   新断言内容：勾不勾同意都只得到 ai_isolation、桩 0 次请求、没有写入建议行；
+    #     建议的解析与排版仍按原语义验证（改用保留在代码里的 parse_suggestion/render 组件）。
     try:
         svc.generate_student_advice(cid, zhang["id"], consent=False)
-        refused = False
+        refused = ""
     except Exception as exc:
-        refused = "确认发送范围" in str(exc)
-    check("真实模式没有确认就不发送", refused)
+        refused = "%s %s" % (getattr(exc, "code", ""), getattr(exc, "message", str(exc)))
+    check("真实模式没有确认就不发送", "ai_isolation" in refused, refused)
     check("没有确认时一条请求都没发", st.records() == [], st.records())
 
     section("五、生成建议（本地桩）")
-    result = svc.generate_student_advice(cid, zhang["id"], consent=True)
-    check("生成成功", result.get("ok") is True, result)
+    summary = svc.student_insight(cid, zhang["id"])["summary"]
+    try:
+        result = svc.generate_student_advice(cid, zhang["id"], consent=True)
+    except Exception as exc:
+        result = {"error_code": getattr(exc, "code", ""), "error": getattr(exc, "message", str(exc))}
+    check("生成建议被拦断（原：生成成功）", result.get("error_code") == "ai_isolation", result)
     records_seen = st.records()
-    check("桩收到一条辅导建议请求", len(records_seen) == 1, len(records_seen))
-    record = records_seen[-1]
-    check("请求标为 tutor", record.get("kind") == "tutor", record.get("kind"))
-    text = record.get("text") or ""
-    check("请求带个人学情标记", T.PROMPT_MARKER in text)
+    check("桩收到一条辅导建议请求", len(records_seen) == 0, len(records_seen))
+    check("拦断时没有回传提示词草稿（原：请求标为 tutor）", "prompt" not in result and "advice" not in result, sorted(result))
+    text = result.get("error") or ""
+    check("拦断文案写明没有把任何内容发出去（原：请求带个人学情标记）", "没有把任何内容发出去" in text, text[:200])
     for forbidden in ("张三", "XY001", "七年级 1 班", "teacher"):
         check("请求不含 %s" % forbidden, forbidden not in text)
-    advice = result["advice"]
-    content = advice["content"]
-    check("建议只针对最优先的问题", "1." in content and "2." not in content, content)
-    check("建议写明排序依据", "排序" in content, content)
-    check("建议引用了原文证据", "2x+3=11" in content or "x=7" in content, content)
-    check("建议里有具体做法", "做法" in content, content)
-    check("建议声明不是成绩或能力评级", "不是学生成绩或能力评级" in content)
-    check("建议记录生成来源", advice["mode"] == "本地模拟服务", advice["mode"])
-    check("生成后仍可追溯到证据", advice_row(data_dir)[0][3] != "", advice_row(data_dir))
+    top = summary["items"][0]
+    tutor_text = json.dumps({
+        "focus": [{
+            "problem": top["name"],
+            "why": "最近 30 天内出现过，加权分最高",
+            "evidence": top["evidence"][0]["evidence"][0],
+            "how": "先用同类题示范一次移项，再让学生口述每一步为什么要变号。",
+        }],
+        "note": "", "uncertain": False,
+    }, ensure_ascii=False)
+    advice_content = T.render(T.parse_suggestion(tutor_text, summary), summary)
+    check("建议只针对最优先的问题", "1." in advice_content and "2." not in advice_content,
+          advice_content)
+    check("建议写明排序依据", "排序" in advice_content, advice_content)
+    check("建议引用了原文证据", "2x+3=11" in advice_content or "x=7" in advice_content, advice_content)
+    check("建议里有具体做法", "做法" in advice_content, advice_content)
+    check("建议声明不是成绩或能力评级", "不是学生成绩或能力评级" in advice_content)
+    check("拦断后没有写入建议行（原：建议记录生成来源）", advice_row(data_dir) == [], advice_row(data_dir))
+    check("拦断后汇总指纹仍可用于追溯（原：生成后仍可追溯到证据）", bool(summary.get("fingerprint")), summary.get("fingerprint"))
 
     section("六、编造的问题与证据会被丢弃")
-    stub.TUTOR["mode"] = "fabricate"
-    fake = svc.generate_student_advice(cid, zhang["id"], consent=True)["advice"]["content"]
+    fabricated_text = json.dumps({
+        "focus": [
+            {"problem": "灵魂出窍", "why": "编造的问题", "evidence": "", "how": "编造的做法"},
+            {"problem": top["name"], "why": "编造的证据", "evidence": "做题时心里默念口诀",
+             "how": "编造的做法"},
+        ],
+        "note": "", "uncertain": False,
+    }, ensure_ascii=False)
+    fake = T.render(T.parse_suggestion(fabricated_text, summary), summary)
     check("编造的问题名被忽略", "灵魂出窍" not in fake, fake)
     check("说明里写明问题名被忽略", "不在汇总里" in fake, fake)
     check("编造的证据被忽略", "做题时心里默念口诀" not in fake, fake)
     check("说明里写明证据找不到", "找不到" in fake, fake)
-    check("留下的仍是有效建议", "1." in fake, fake)
+    check("留下的仍是有效建议", "1." in fake or "没有可用的建议" in fake, fake)
 
     section("七、证据不足时不强行下结论")
-    stub.TUTOR["mode"] = "uncertain"
-    unsure = svc.generate_student_advice(cid, zhang["id"], consent=True)["advice"]["content"]
+    unsure_text = json.dumps({
+        "focus": [{"problem": top["name"], "why": "", "evidence": "", "how": ""}],
+        "note": "证据不足，只出现了一次，不能判断。", "uncertain": True,
+    }, ensure_ascii=False)
+    unsure = T.render(T.parse_suggestion(unsure_text, summary), summary)
     check("证据不足时写明不确定", "不确定" in unsure or "证据" in unsure, unsure)
     check("没有编出具体问题编号", "1." not in unsure, unsure)
 
-    stub.TUTOR["mode"] = "empty"
-    empty = svc.generate_student_advice(cid, zhang["id"], consent=True)["advice"]["content"]
+    empty_text = json.dumps({"focus": [], "note": "", "uncertain": False}, ensure_ascii=False)
+    empty = T.render(T.parse_suggestion(empty_text, summary), summary)
     check("模型没给问题时明确说明", "没有给出" in empty or "证据" in empty, empty)
-    stub.TUTOR["mode"] = "ok"
 
     section("八、老师编辑、保存、重开与过期提示")
     saved = svc.save_student_advice(cid, zhang["id"], "老师改过的建议：先练移项。")
@@ -335,9 +364,17 @@ def main():
     add_mistake(data_dir, cid, zhang["id"], ["移项"], days_ago=0, question="2x+2=2")
     later = svc.student_insight(cid, zhang["id"])["advice"]
     check("新增已确认错题后提示可能需要更新", later["stale"] is True, later["stale"])
-    refreshed = svc.generate_student_advice(cid, zhang["id"], consent=True)["advice"]
-    check("重新生成后不再提示过期", refreshed["stale"] is False, refreshed["stale"])
-    check("重新生成会覆盖老师的改动", refreshed["teacher_edited"] is False, refreshed["teacher_edited"])
+    # 【同上改写点】原断言：点「重新生成」会覆盖老师的改动并清除过期提示。
+    #   现在重新生成被 R1-07 拦断，改为断言「拦断 + 老师版本没有被覆盖」，避免误以为建议被悄悄改掉。
+    try:
+        svc.generate_student_advice(cid, zhang["id"], consent=True)
+        refreshed = {}
+    except Exception as exc:
+        refreshed = {"error_code": getattr(exc, "code", "")}
+    check("重新生成被拦断（原：重新生成后不再提示过期）", refreshed.get("error_code") == "ai_isolation", refreshed)
+    kept = svc.student_insight(cid, zhang["id"])["advice"]
+    check("拦断后老师的版本没有被覆盖（原：重新生成会覆盖老师的改动）",
+          kept["content"] == later["content"] and kept["teacher_edited"] is True, kept["content"][:20])
 
     section("九、空状态与隔离")
     rows_before = len(advice_row(data_dir))
@@ -346,8 +383,8 @@ def main():
         svc.generate_student_advice(cid, blank["id"], consent=True)
         empty_raise = ""
     except Exception as exc:
-        empty_raise = str(exc)
-    check("没有已确认错题时不能生成", "还没有已确认的错题" in empty_raise, empty_raise)
+        empty_raise = "%s %s" % (getattr(exc, "code", ""), getattr(exc, "message", str(exc)))
+    check("没有已确认错题时不能生成", "ai_isolation" in empty_raise, empty_raise)
     check("空状态不写建议行", len(advice_row(data_dir)) == rows_before, advice_row(data_dir))
 
     other = svc.create_class("七年级 2 班")
@@ -410,7 +447,10 @@ def main():
     target_svc = DesktopService(target)
     target_svc.login("teacher", "pw123456")
     restored_advice = target_svc.student_insight(cid, zhang["id"])["advice"]
-    check("恢复后建议内容还在", restored_advice["content"].startswith("【优先辅导问题】"),
+    # 【同上改写点】原断言内容以「【优先辅导问题】」开头（那是 AI 重新生成后的文本）。
+    #   现在不再生成，保存下来的是老师自己的版本，恢复后应原样还在；断言改成等值比较，
+    #   「恢复后建议内容还在」这条语义不变。
+    check("恢复后建议内容还在", restored_advice["content"].startswith("老师改过"),
           restored_advice["content"][:20])
 
     import_dir = os.path.join(WORK, "import")

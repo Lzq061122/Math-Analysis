@@ -252,36 +252,54 @@ def main():
           missing_review["uncertain"] is True and not missing_review["causes"], missing_review)
 
     section("四、真实通道（本地桩）")
+    # 【R1-07 改写点】verify_review_160.py 原第 257 行附近
+    #   原断言内容：真实模式下 analyse 成功、桩收到 1 次带「作答分析」标记的请求、请求体不含
+    #     身份字段，并校验模型给的两条候选错因与证据；随后校验「未确认就不发送」。
+    #   改写依据：R1-07；PRD §4.2 / §4.5；规格 §5「业务环境只运行固定规则与人工流程，
+    #     不发起个体化生成式请求」（题目、标准解法、学生步骤都是可关联个人的内容）。
+    #   新断言内容：真实通道一律 ai_isolation、桩 0 次请求、没有写入建议记录；
+    #     候选解析的三条语义（接受 2 条、每条带证据、信息不足标不确定）改用保留在代码里的
+    #     parse_suggestion 组件直接验证，覆盖不缩水。
     svc.save_ai_settings("real", st.base, "stub-vision", "sk-test")
     before = len(st.records())
-    asked = svc.analyse_answer(cid, first["id"], consent=True)
-    check("真实模式返回成功", asked.get("ok") is True, asked)
+    reviews_before = review_count(data_dir)
+    try:
+        asked = svc.analyse_answer(cid, first["id"], consent=True)
+    except Exception as exc:
+        asked = {"ok": False, "error_code": getattr(exc, "code", ""),
+                 "error": getattr(exc, "message", str(exc))}
+    check("真实模式返回被拦断（原：真实模式返回成功）", asked.get("error_code") == "ai_isolation", asked)
     records = st.records()[before:]
-    check("只发了一次请求", len(records) == 1, len(records))
-    record = records[0] if records else {}
-    check("请求带作答分析标记", stub.REVIEW_MARKER in (record.get("text") or ""), record.get("text", "")[:80])
+    check("一次请求都没发（原：只发了一次请求）", len(records) == 0, len(records))
+    forbidden_text = asked.get("error") or ""
+    check("拦断文案写明没有把任何内容发出去（原：请求带作答分析标记）",
+          "没有把任何内容发出去" in forbidden_text, forbidden_text[:80])
     for forbidden in ("张三", "XY001", "七年级 1 班", "teacher"):
-        check("请求不含 %s" % forbidden, forbidden not in (record.get("text") or ""))
-    review = asked["review"]
-    check("建议标为待核对", review["status"] == "pending", review["status"])
-    check("桩返回两条错因都被接受", len(review["causes"]) == 2, review["causes"])
-    check("建议带证据", all(c["evidence"] for c in review["causes"]), review["causes"])
+        check("请求不含 %s" % forbidden, forbidden not in forbidden_text)
+    check("拦断没有写入建议记录（原：建议标为待核对）", review_count(data_dir) == reviews_before,
+          (review_count(data_dir), reviews_before))
+    ok_parsed = R.parse_suggestion(json.dumps(stub.REVIEW_RESULT, ensure_ascii=False),
+                                  first["student_steps"])
+    check("桩返回两条错因都被接受", len(ok_parsed["causes"]) == 2, ok_parsed["causes"])
+    check("建议带证据", all(c["evidence"] for c in ok_parsed["causes"]), ok_parsed["causes"])
 
-    stub.REVIEW["mode"] = "uncertain"
-    before = len(st.records())
-    uncertain = svc.analyse_answer(cid, first["id"], consent=True)["review"]
-    check("模型说信息不足时如实展示", uncertain["uncertain"] is True and not uncertain["causes"], uncertain)
-    stub.REVIEW["mode"] = "ok"
+    uncertain_parsed = R.parse_suggestion(json.dumps(stub.REVIEW_UNCERTAIN, ensure_ascii=False),
+                                          first["student_steps"])
+    check("模型说信息不足时如实展示",
+          uncertain_parsed["uncertain"] is True and not uncertain_parsed["causes"], uncertain_parsed)
 
     try:
         svc.analyse_answer(cid, first["id"], consent=False)
-        no_consent = False
+        no_consent = ""
     except Exception as exc:
-        no_consent = "确认发送范围" in str(exc)
-    check("真实模式没有确认就不发送", no_consent)
+        no_consent = getattr(exc, "code", "")
+    check("真实模式没有确认就不发送", no_consent == "ai_isolation", no_consent)
 
     section("五、老师修改、确认、拒绝")
-    pending = svc.analyse_answer(cid, first["id"], consent=True)["review"]
+    # 【同上改写点】原第 284 行用「真实通道刚生成的那条建议」做后续流程的夹具。
+    #   真实通道已被 R1-07 拦断，待核对建议只能来自本机模拟（第三节已建）或历史数据；
+    #   老师改错因 → 确认成错题 → 拒绝 这条人工流程本身一字未改。
+    pending = mock
     edited = [{"cause": "去括号漏乘 6", "evidence": "3x-2=2x+5", "reasoning": "老师改过"}]
     saved = svc.update_answer_review(cid, pending["id"], edited, "老师备注")
     check("修改保存到这条建议", saved["causes"] == edited, saved["causes"])
@@ -310,7 +328,7 @@ def main():
     conn.close()
     check("重复确认没有多建错题", count == 1, count)
 
-    second = svc.analyse_answer(cid, missing["id"], consent=True)["review"]
+    second = missing_review   # 【同上改写点】原为真实通道新生成的一条；改用第三节模拟模式已建的那条
     rejected = svc.reject_answer_review(cid, second["id"])
     check("拒绝后状态为已拒绝", rejected["status"] == "rejected", rejected["status"])
     conn = sqlite3.connect(os.path.join(data_dir, "app.db"))
@@ -375,6 +393,9 @@ def main():
           len(joined) == 1 and joined[0][0] == "confirmed" and joined[0][2] == "A1", joined)
 
     section("九、五类作答场景（本地桩按场景返回）")
+    # 【同上改写点】原流程：把作答发出去，由桩按场景返回，再看产品解析结果。
+    #   现在个体作答不允许外发，场景响应改为直接喂给保留的解析组件（parse_suggestion），
+    #   下面 17 条断言的名字与语义全部不变：只看解析后的错因、证据、不确定标记。
     svc.save_ai_settings("real", st.base, "stub-vision", "sk-test")
     scenes = [
         ("S1", "2(x+3)=10", "2x+6=10；2x=4；x=2", "2(x+3)=10\n2x+6=10\n2x=4\nx=2"),
@@ -392,10 +413,19 @@ def main():
     scene_items = {item["record_key"]: item for item in svc.answer_reviews(cid, "场景")["items"]}
     check("场景作答已导入", len(scene_items) == 6, sorted(scene_items))
 
+    # 【R1-07 改写用夹具】真实通道已停用，待核对建议改由本机模拟建立（不联网）。
+    #   后面的失败、截断、重开三段仍验证「这些人工记录不会被 AI 路径改动」，语义与原来一致。
+    svc.save_ai_settings("mock", "", "")
+    for _key in ("S2", "S3"):
+        svc.analyse_answer(cid, scene_items[_key]["id"], consent=True)
+    svc.save_ai_settings("real", st.base, "stub-vision", "sk-test")
+
     def analyse_scene(key, case):
+        """组件级：把桩的场景响应直接交给解析器，不发起任何网络请求。"""
         stub.REVIEW["mode"] = "case"
         stub.REVIEW["case"] = case
-        return svc.analyse_answer(cid, scene_items[key]["id"], consent=True)["review"]
+        return R.parse_suggestion(json.dumps(stub.review_payload(), ensure_ascii=False),
+                                 scene_steps[key])
 
     right = analyse_scene("S1", "correct")
     check("正确步骤：不给错因", right["causes"] == [], right["causes"])
@@ -427,18 +457,28 @@ def main():
     check("丢弃证据后标为不确定", faked["uncertain"] is True, faked["uncertain"])
 
     section("十、服务失败与主动重试")
+    # 【同上改写点】原断言：服务返回 400 / 截断 / 超时时 analyse 返回失败并保留可读原因，
+    #   重试需要老师再确认，确认后重试成功且结果仍待核对。
+    #   现在个体作答不会被发出去，失败形态统一是 ai_isolation；
+    #   「不新增记录、原建议与原作答不变、不静默改用模拟」这几条原样保留（并改成更强的前后对比）。
     target = scene_items["S2"]["id"]
     before = {item["record_key"]: item for item in svc.answer_reviews(cid, "场景")["items"]}
     before_count = review_count(data_dir)
+    conn = sqlite3.connect(os.path.join(data_dir, "app.db"))
+    providers_before = [item[0] for item in conn.execute(
+        "SELECT provider FROM answer_reviews WHERE answer_id=?", (target,))]
+    conn.close()
     try:
         stub.FAIL["mode"] = "400"
         try:
             failed = svc.analyse_answer(cid, target, consent=True)
         except Exception as exc:  # 失败也可能以异常形式抛出，两种都算失败
-            failed = {"ok": False, "error": str(exc)}
+            failed = {"ok": False, "error": getattr(exc, "message", str(exc)),
+                      "error_code": getattr(exc, "code", "")}
     finally:
         stub.FAIL["mode"] = "ok"
-    check("服务失败时返回失败", failed.get("ok") is False, failed)
+    check("服务失败时返回失败",
+          failed.get("ok") is False and failed.get("error_code") == "ai_isolation", failed)
     check("失败时给出可读原因", bool(failed.get("error")), failed)
     check("失败后没有新增建议记录", review_count(data_dir) == before_count,
           (review_count(data_dir), before_count))
@@ -449,20 +489,28 @@ def main():
     providers = [item[0] for item in conn.execute(
         "SELECT provider FROM answer_reviews WHERE answer_id=?", (target,))]
     conn.close()
-    check("失败没有静默改用模拟分析", "模拟分析" not in providers, providers)
+    check("失败没有静默改用模拟分析", providers == providers_before, providers)
 
     try:
         svc.analyse_answer(cid, target, consent=False)
-        retry_no_consent = False
+        retry_no_consent = ""
     except Exception as exc:
-        retry_no_consent = "确认发送范围" in str(exc)
-    check("重试仍需老师确认发送范围", retry_no_consent)
+        retry_no_consent = getattr(exc, "code", "")
+    check("重试仍然被拦断（原：重试仍需老师确认发送范围）", retry_no_consent == "ai_isolation", retry_no_consent)
 
     stub.REVIEW["mode"] = "case"
     stub.REVIEW["case"] = "sign"
-    retried = svc.analyse_answer(cid, target, consent=True)
-    check("老师确认后重试成功", retried.get("ok") is True, retried.get("error"))
-    check("重试结果仍是待核对", retried["review"]["status"] == "pending", retried["review"]["status"])
+    try:
+        retried = svc.analyse_answer(cid, target, consent=True)
+        retried_error = ""
+    except Exception as exc:
+        retried = {}
+        retried_error = getattr(exc, "code", "")
+    check("老师确认后重试仍被拦断（原：老师确认后重试成功）", retried_error == "ai_isolation", retried_error)
+    after_retry = {item["record_key"]: item for item in svc.answer_reviews(cid, "场景")["items"]}["S2"]
+    check("重试不改动原有待核对建议（原：重试结果仍是待核对）", after_retry["review_id"] == before["S2"]["review_id"]
+          and after_retry["review_status"] == "pending",
+          (after_retry["review_id"], after_retry["review_status"]))
 
     section("十一、关闭重开后状态与关联")
     reopened_service = DesktopService(data_dir)
@@ -494,10 +542,15 @@ def main():
     check("图片请求（Messages）带 max_tokens 32000",
           provider("messages").build_request(job).get("max_tokens") == 32000,
           provider("messages").build_request(job).get("max_tokens"))
-    provider("chat").chat_text("【作答分析】文字请求", "系统提示")
+    # 【同上改写点】下面这些是「通道组件」的测试：R1-07 之后业务路径不再发请求，
+    #   组件本身仍保留给离线工具用途（本机回环），所以必须显式带上 purpose=offline_tool，
+    #   并且目标仍是本机桩。业务侧没有任何调用点（入口层已拦断，见第四节）。
+    provider("chat").chat_text("【作答分析】文字请求", "系统提示",
+                               purpose=vision.PURPOSE_OFFLINE_TOOL)
     check("文字请求（Chat Completions）带 max_tokens 32000",
           st.records()[-1].get("max_tokens") == 32000, st.records()[-1].get("max_tokens"))
-    provider("messages").chat_text("【作答分析】文字请求", "系统提示")
+    provider("messages").chat_text("【作答分析】文字请求", "系统提示",
+                                   purpose=vision.PURPOSE_OFFLINE_TOOL)
     check("文字请求（Messages）带 max_tokens 32000",
           st.records()[-1].get("max_tokens") == 32000, st.records()[-1].get("max_tokens"))
 
@@ -506,7 +559,14 @@ def main():
     trunc_before = review_count(data_dir)
     try:
         stub.FAIL["mode"] = "length"
-        truncated = svc.analyse_answer(cid, trunc_target, consent=True)
+        # 【同上改写点】原为 svc.analyse_answer（业务外发）；改用离线工具通道拿同一份截断错误，
+        #   下面 6 条断言（截断文案、作答未被改动、建议条数不变）全部保留。
+        try:
+            provider("chat").chat_text("【作答分析】文字请求", "系统提示",
+                                       purpose=vision.PURPOSE_OFFLINE_TOOL)
+            truncated = {"ok": True}
+        except vision.AnalysisError as exc:
+            truncated = {"ok": False, "error": exc.message}
     finally:
         stub.FAIL["mode"] = "ok"
     check("finish_reason=length 时按失败返回", truncated.get("ok") is False, truncated)
@@ -524,7 +584,8 @@ def main():
 
     try:
         stub.FAIL["mode"] = "maxtokens"
-        provider("messages").chat_text("【作答分析】文字请求", "系统提示")
+        provider("messages").chat_text("【作答分析】文字请求", "系统提示",
+                                       purpose=vision.PURPOSE_OFFLINE_TOOL)
         message_truncated = ""
     except vision.AnalysisError as exc:
         message_truncated = exc.message
@@ -534,7 +595,13 @@ def main():
 
     try:
         stub.FAIL["mode"] = "400"
-        rejected = svc.analyse_answer(cid, scene_items["S4"]["id"], consent=True)
+        # 【同上改写点】原为 svc.analyse_answer；改用离线工具通道验证同一套 HTTP 错误映射。
+        try:
+            provider("chat").chat_text("【作答分析】文字请求", "系统提示",
+                                       purpose=vision.PURPOSE_OFFLINE_TOOL)
+            rejected = {"ok": True}
+        except vision.AnalysisError as exc:
+            rejected = {"ok": False, "error": exc.message}
     finally:
         stub.FAIL["mode"] = "ok"
     check("服务拒绝时返回失败", rejected.get("ok") is False, rejected)
@@ -545,7 +612,8 @@ def main():
     try:
         stub.FAIL["mode"] = "slow"
         try:
-            provider("chat", timeout=0.3).chat_text("【作答分析】x", "sys")
+            provider("chat", timeout=0.3).chat_text("【作答分析】x", "sys",
+                                                    purpose=vision.PURPOSE_OFFLINE_TOOL)
             timeout_error = ""
         except vision.AnalysisError as exc:
             timeout_error = exc.message
@@ -555,7 +623,7 @@ def main():
 
     try:
         stub.FAIL["mode"] = "garbage"
-        provider("chat").chat_text("【作答分析】x", "sys")
+        provider("chat").chat_text("【作答分析】x", "sys", purpose=vision.PURPOSE_OFFLINE_TOOL)
         garbage_error = ""
     except vision.AnalysisError as exc:
         garbage_error = exc.message
@@ -564,7 +632,8 @@ def main():
     check("返回不是 JSON 时明确提示", "不是有效的 JSON" in garbage_error, garbage_error)
 
     try:
-        provider("chat", timeout=2, base="http://127.0.0.1:1/v1").chat_text("【作答分析】x", "sys")
+        provider("chat", timeout=2, base="http://127.0.0.1:1/v1").chat_text(
+            "【作答分析】x", "sys", purpose=vision.PURPOSE_OFFLINE_TOOL)
         net_error = ""
     except vision.AnalysisError as exc:
         net_error = exc.message
@@ -572,12 +641,21 @@ def main():
 
     stub.REVIEW["mode"] = "case"
     stub.REVIEW["case"] = "skipped"
-    recovered = svc.analyse_answer(cid, trunc_target, consent=True)
-    check("失败后主动重试可以拿到结果", recovered.get("ok") is True, recovered.get("error"))
-    check("重试结果仍是待核对", (recovered.get("review") or {}).get("status") == "pending",
-          (recovered.get("review") or {}).get("status"))
-    check("重试结果带证据",
-          bool((recovered.get("review") or {}).get("causes")), (recovered.get("review") or {}).get("causes"))
+    # 【同上改写点】原为 svc.analyse_answer 重试成功；现在重试只发生在离线工具通道上，
+    #   「拿到的结果仍待核对、带证据、同一条作答只留一条待核对建议」三条语义保持不变。
+    scene_row = {item["record_key"]: item for item in svc.answer_reviews(cid, "场景")["items"]}["S3"]
+    retry_text, _retry_usage = provider("chat").chat_text(
+        R.build_prompt(scene_row), "系统提示", purpose=vision.PURPOSE_OFFLINE_TOOL)
+    recovered = R.parse_suggestion(retry_text, scene_row["student_steps"])
+    check("失败后主动重试可以拿到结果", bool(recovered.get("causes") or recovered.get("note")),
+          recovered)
+    after_retry_s3 = {item["record_key"]: item
+                      for item in svc.answer_reviews(cid, "场景")["items"]}["S3"]
+    check("重试结果仍是待核对",
+          after_retry_s3["review_id"] == snap["S3"]["review_id"]
+          and after_retry_s3["review_status"] == "pending",
+          (after_retry_s3["review_id"], after_retry_s3["review_status"]))
+    check("重试结果带证据", bool(recovered.get("causes")), recovered.get("causes"))
     conn = sqlite3.connect(os.path.join(data_dir, "app.db"))
     rows = conn.execute("SELECT COUNT(*) FROM answer_reviews WHERE answer_id=? AND status='pending'",
                         (trunc_target,)).fetchone()[0]

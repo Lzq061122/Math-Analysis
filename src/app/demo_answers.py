@@ -3,8 +3,22 @@
 为什么单独一个模块：
 - 演示不能现场选文件、配模型或等网络。这里的数据是写死的合成数据，
   整份文件只读常量、只写数据库，不发起任何外部调用，也不打开任何文件。
-- 合成作答与真实导入作答必须能干净分开：`answers.source` 统一写成「合成演示」，
-  重置时只按这个来源删，真实导入的作答一条都不动，并用 kept.imported_answers 给数字。
+
+数据边界（R1-01）——「隔离」必须四条同时成立，少一条都只是换了个标签：
+
+1. **身份**：合成作答 `answers.source` 固定写「合成演示」，`record_key` 固定带 `DEMO-` 前缀。
+   注意 `answers.source` 来自 CSV 的「来源批次」列，真实数据也可能写进这五个字，
+   所以它只算第一道条件，真正的身份还要靠 `record_key` 一起判（`is_demo_record_key`）。
+2. **批次**：合成作答只落在 `DEMO_BATCH`，一个真实导入不可能自然取到的名字；
+   真实作业的应交 / 待核对 / 原题错误数里因此永远不含演示数据。
+3. **学生**：合成作答只挂带 `STUDENT_NOTE` 标记的合成学生，绝不占用真实名单里的学生
+   —— 演示学生的原话不能安到真学生头上。
+4. **预置数据**（预置定位 / 预置候选错因 / 预置问句）：只有 `source + record_key + 题干 +
+   学生步骤 + 版本（answers.fingerprint）` 五项与当前演示内容逐项相符，才认这份预置；
+   演示内容或版本一改，旧作答的预置立刻失效，退回规则定位、空候选与「原因待判断」。
+
+`reset()` 的删除口径与上面同源：`source='合成演示'` **且** `record_key` 带 `DEMO-` 前缀
+**且** 批次是 `DEMO_BATCH`，三条同时满足才删 —— 真实作答把批名写成演示批名也不会被误删。
 
 数学内容直接复用《数智伴学_Agent开发规格.md》§7 的案例 A（值得追问）、
 案例 B（证据足够、无需追问）、案例 C（只有最终答案），另加一份正确作答作对照：
@@ -15,23 +29,40 @@
 真正的规则定位在 `equation_steps.py`（B2 范围）。
 """
 
+import hashlib
+import json
 from copy import deepcopy
 
 from .answers import fingerprint as _fingerprint
-from .db import now_iso
-
-# 合成作答的来源标记。界面据此显示「合成演示数据」，重置据此只删自己。
-DEMO_SOURCE = "合成演示"
-
-# 演示统一挂在一个作业批次下，便于「课前总览」按作业统计待核对数。
-DEMO_BATCH = "9月第2次作业"
+# 存储级标识只有一份：来源标记 / 演示批次 / record_key 前缀都定义在 db.py，
+# 因为库级触发器要用同一份字面量。这里只做再导出，绝不另写一行字符串。
+from .db import DEMO_BATCH, DEMO_RECORD_PREFIX, DEMO_SOURCE, now_iso
 
 # 若班级里没有学生，seed 会补建这几个合成学生；note 用这段标记，
 # 重置时只清理「带标记且已经没有任何记录」的学生，绝不碰真实名单。
 STUDENT_NOTE = "合成演示数据 · 可重置"
 
-# 预置候选来源说明：本轮不接已审错因库（那是 B2），所以要说清候选是哪来的。
-CAUSES_NOTE = "候选来自预置演示条目；已审错因库检索属于 B2，本轮未做。"
+# 候选与证据的适用范围标记：只对「五项全匹配」的合成演示作答成立。
+SCOPE_SYNTHETIC = "synthetic_demo"
+SCOPE_REAL = "real_answer"
+
+# 预置候选来源说明：只有演示记录才会看到这句，本轮不接已审错因库（那是 B2）。
+CAUSES_NOTE = (
+    "候选来自本条合成演示作答的预置条目（与演示内容同源，演示内容改动后自动失效）；"
+    "已审错因库检索属于 B2，本轮未做。"
+)
+
+# 真实作答的说明：不许再说「候选来自预置演示条目」，也不许把演示证据搬过来。
+REAL_CAUSES_NOTE = (
+    "本条真实作答没有候选错因：已审错因库尚未接入（B2），系统不会把演示预置条目套到真实作答上；"
+    "可以按课堂观察人工判断，或保留「原因待判断」。"
+)
+
+# 演示作答但内容/版本已经和当前演示数据不一致：预置失效，要说清是哪种「没有候选」。
+STALE_CAUSES_NOTE = (
+    "这条合成演示作答的内容已与当前演示数据不一致，预置候选已失效；"
+    "需要重演请先「重置合成数据」再「载入合成演示数据」，或按规则定位人工判断。"
+)
 
 # 预置定位结果的固定免责说明，和契约 §2 第 9 条一致的句式。
 REASON_NOTE = "这里只记录观察到的不等价，不推断学生为什么这样写。"
@@ -51,19 +82,31 @@ STUDENTS = (
 )
 
 
-def _cand(code, label, support, rebut, pending, selected=False):
+def _cand(code, label, support, rebut, pending, selected=False, evidence=()):
+    """一条预置候选：`label` 是通用错因描述，`evidence` 只放**本条作答原文切片**。
+
+    R1-01 第 3 条：通用错因描述与当前作答证据必须分开放。以前调用方拿到的
+    `support` 里混着演示学生原话和演示作答的写法，真实作答撞上同一道题干时，
+    这些描述会被当成本条作答的证据显示出去。现在：
+    - `label` / `support` / `rebut` / `pending`：通用错因描述与支持/冲突/仍需信息，随预置条目走；
+    - `evidence` + `evidence_scope`：本条作答原文里的逐字切片（`verify_candidate_evidence`
+      保证它确实是该条 `student_steps` 的子串），换一份作答就不可能成立。
+    """
     return {
         "code": code,
         "label": label,
         "support": list(support),
         "rebut": list(rebut),
         "pending": list(pending),
+        "evidence": list(evidence),
+        "evidence_scope": "本条作答原文",
         "selected": bool(selected),
     }
 
 
 # 预置候选：按题目文本（归一化后）取，最多 3 条，每条都要有支持、反驳、待补三类信息。
 # 只有案例 A 的这道题带着完整的三类证据；其它题目本轮不给候选，界面显示「原因待判断」。
+# 重要：这张表**只对「五项全匹配」的演示记录生效**（见 match_answer），不要直接按题干取用。
 PRESET_CAUSES = {
     "3(x-2)=12": [
         _cand(
@@ -80,6 +123,7 @@ PRESET_CAUSES = {
                 "还没有学生独立重做 2(y−4) 或完整口述去括号规则的记录。",
             ],
             selected=True,
+            evidence=("3x-2=12",),
         ),
         _cand(
             "E-DIST-02",
@@ -94,6 +138,7 @@ PRESET_CAUSES = {
             [
                 "需要 2(y−4)、(y−4)×2 之类的独立作答或口述作为依据。",
             ],
+            evidence=("3x-2=12",),
         ),
         _cand(
             "E-WRITE-01",
@@ -107,6 +152,7 @@ PRESET_CAUSES = {
             [
                 "还没有本人确认是否抄错的记录。",
             ],
+            evidence=("3x-2=12",),
         ),
     ],
     "5x-3=2x+6": [
@@ -123,6 +169,7 @@ PRESET_CAUSES = {
                 "证据足够时可当场问一句确认；本轮不追问也允许保留待判断。",
             ],
             selected=True,
+            evidence=("5x-2x=6-3",),
         ),
     ],
 }
@@ -152,8 +199,101 @@ def normalize_question(text):
 
 
 def preset_causes(question_text):
-    """按题目取预置候选；匹配不到返回空列表（界面显示「原因待判断」）。"""
+    """按题目取预置候选；匹配不到返回空列表（界面显示「原因待判断」）。
+
+    ⚠ 这个函数**只按题干匹配，不做身份校验**：同一道课本通用题干，真实作答也写得出来。
+    调用方必须先用 `match_answer(answer)` 确认「这份作答就是当前演示内容里的那条记录」，
+    再取预置候选；否则就是 R1-01 那个缺陷（真实作答拿到演示学生的原话当证据）。
+    `answer_check.candidates_for` 走的就是「先过闸、再取候选」这个顺序。
+    """
     return [dict(item) for item in PRESET_CAUSES.get(normalize_question(question_text), [])]
+
+
+# --------------------------------------------------------------------------
+# 身份闸门：预置数据（定位 / 候选 / 问句）只对「这一条演示记录」生效
+# --------------------------------------------------------------------------
+def is_demo_batch(batch):
+    """批次名是不是演示批次（真实作业只认非演示批次）。"""
+    return (batch or "") == DEMO_BATCH
+
+
+def is_demo_record_key(record_key):
+    """record_key 是不是演示写入的那一套（`DEMO-` 前缀）。"""
+    return (record_key or "").startswith(DEMO_RECORD_PREFIX)
+
+
+def answer_row(record):
+    """演示记录 → `answers` 表的字段口径。
+
+    seed 写库与版本校验共用这一份，避免「写库一套、校验另一套」，那会让指纹永远对不上。
+    """
+    return {
+        "question_no": record["question_no"],
+        "question_text": record["question_text"],
+        "unit": record.get("unit") or QUESTION_UNIT,
+        "standard_solution": record["standard_solution"],
+        "student_steps": record["student_steps"],
+        "occurred_on": record["occurred_on"],
+        "missing": int(record.get("missing") or 0),
+        "missing_reason": record.get("missing_reason") or "",
+    }
+
+
+def record_fingerprint(record, student_id):
+    """演示记录的版本指纹，与 `answers.fingerprint` 同一算法（含学生 id，所以必须给 id）。"""
+    return _fingerprint(answer_row(record), int(student_id))
+
+
+def preset_version():
+    """当前演示内容的版本指纹（12 位）——演示内容一改，这个值就变，可用于自检与文档。"""
+    blob = json.dumps([answer_row(item) for item in ANSWERS], ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
+
+
+def match_answer(answer):
+    """单一闸门：`source + record_key + 题干 + 学生步骤 + 版本` 五项全等才认这条演示记录。
+
+    少任何一项都会让「旧演示结果」冒充「当前作答」：
+    - 只看题干 → 课本通用题干全都会撞（R1-01 的实测）；
+    - 只看 source → CSV 的来源列能写这五个字；
+    - 不看版本 → 演示内容改过之后，旧库里的演示作答仍会拿到新预置。
+
+    返回该条演示记录（dict）；不匹配返回 None，调用方必须退回规则定位、空候选与
+    「原因待判断」，不得自行猜一个理由。
+    """
+    if not isinstance(answer, dict):
+        return None
+    if (answer.get("source") or "") != DEMO_SOURCE:
+        return None
+    key = answer.get("record_key") or ""
+    if not is_demo_record_key(key):
+        return None
+    record = {item["record_key"]: item for item in build()["answers"]}.get(key)
+    if record is None:
+        return None
+    if (record.get("question_text") or "") != (answer.get("question_text") or ""):
+        return None
+    if (record.get("student_steps") or "") != (answer.get("student_steps") or ""):
+        return None
+    try:
+        student_id = int(answer.get("student_id"))
+    except (TypeError, ValueError):
+        return None
+    if record_fingerprint(record, student_id) != (answer.get("fingerprint") or ""):
+        return None
+    return record
+
+
+def causes_note_for(answer):
+    """候选来源说明分三种：演示记录 / 演示内容已改（预置失效）/ 真实作答。
+
+    R1-01 第 2 条：真实作答不许再看到「候选来自预置演示条目」这类话。
+    """
+    if match_answer(answer) is not None:
+        return CAUSES_NOTE
+    if (answer or {}).get("source") == DEMO_SOURCE:
+        return STALE_CAUSES_NOTE
+    return REAL_CAUSES_NOTE
 
 
 def _locate_correct(lines):
@@ -345,10 +485,15 @@ def build():
     """纯数据：不碰数据库、不读文件。返回 {"students": [...], "answers": [...]}。
 
     answers 里每条都带 `locate`（契约 §2 的键名，source 固定 preset）、
-    `candidates`（预置候选，最多 3 条）、`followup`（预置问句与预置学生原话）。
+    `candidates`（预置候选，最多 3 条）、`followup`（预置问句与预置学生原话）、
+    `batch`（固定 `DEMO_BATCH`）与 `source`（固定「合成演示」）。
+
+    这份数据**只能经 `match_answer()` 的车**交给界面：`candidates_for`/`_locate` 都先过闸，
+    真实作答拿不到这里的任何一条。
 
     预置 locate **不许和规则引擎说两套话**：同一道题由 `equation_steps.locate`
     重算必须逐字段相同，由 `assert_preset_matches_rules()` 守住（见该函数说明）。
+    候选里的 `evidence` 必须是本条作答原文切片，由 `verify_candidate_evidence()` 守住。
     """
     students = [dict(item) for item in STUDENTS]
     answers = []
@@ -419,6 +564,55 @@ def verify_preset_matches_rules():
     return problems
 
 
+def verify_candidate_evidence():
+    """防污染不变式：每条候选的 `evidence` 必须是**该条作答自己原文**里的逐字切片。
+
+    为什么需要它：R1-01 的污染不是「值写错」，而是「证据属于别人的作答」——
+    演示学生甲的原话被显示在真实作答上。这条不变式把证据钉死在同一条 `student_steps` 上：
+    谁把别的作答的原话、或者凭空编的句子写进 `evidence`，这里立刻报差异。
+
+    返回问题列表（空列表 = 全部成立）；每项带 record_key、field、preset、rule 四个键，
+    与 `verify_preset_matches_rules` 同形，便于一起打印。
+    """
+    problems = []
+    for record in build()["answers"]:
+        steps = record.get("student_steps") or ""
+        for candidate in record.get("candidates") or ():
+            evidence = candidate.get("evidence") or ()
+            if not evidence:
+                problems.append({
+                    "record_key": record["record_key"],
+                    "field": "evidence[%s]" % candidate.get("code", ""),
+                    "preset": list(evidence),
+                    "rule": "至少一条本条作答原文切片",
+                })
+                continue
+            for text in evidence:
+                if text not in steps:
+                    problems.append({
+                        "record_key": record["record_key"],
+                        "field": "evidence[%s]" % candidate.get("code", ""),
+                        "preset": text,
+                        "rule": "不在本条 student_steps 里",
+                    })
+    return problems
+
+
+def assert_candidate_evidence():
+    """不变式的断言版本：证据不属于本条作答就抛 AssertionError。"""
+    problems = verify_candidate_evidence()
+    if problems:
+        lines = [
+            "  %s 的 %s：证据 %r ≠ %r"
+            % (item["record_key"], item["field"], item["preset"], item["rule"])
+            for item in problems
+        ]
+        raise AssertionError(
+            "预置候选的证据不属于本条作答（共 %d 处）：\n%s" % (len(problems), "\n".join(lines))
+        )
+    return True
+
+
 def assert_preset_matches_rules():
     """不变式的断言版本：不一致就抛 AssertionError，并把每一处差异打出来。
 
@@ -455,10 +649,16 @@ def catalog():
                 "first_bad_text": record["locate"]["first_bad_text"],
                 "hint_text": record["locate"]["hint_text"],
                 "candidate_codes": [item["code"] for item in record["candidates"]],
+                "candidate_evidence": [
+                    text for item in record["candidates"] for text in (item.get("evidence") or ())
+                ],
+                "evidence_scope": "本条作答原文",
                 "followup_question": record["followup"]["question"],
                 "preset_answer_text": record["followup"]["preset_answer_text"],
                 "expects": record["expects"],
                 "source_label": DEMO_SOURCE,
+                "batch": record["batch"],
+                "scope": SCOPE_SYNTHETIC,
             }
         )
     return rows
@@ -472,21 +672,23 @@ def _table_exists(conn, name):
 
 
 def _resolve_students(db, class_id, student_ids, needed, now):
-    """挑学生：优先用调用方给的 id（backend 已经配好名单），否则用班级现有学生；
-    班级里一个学生都没有时才补建合成学生。返回 (按顺序可用的 id 列表, 新建的学生)。"""
-    if student_ids:
-        picked = [int(value) for value in student_ids]
-        if picked:
-            return picked, []
+    """挑学生：**只挑/只建合成学生**，班级真实名单里的学生一个都不占用。
+
+    为什么不再复用现有学生（R1-01 缺陷 3）：合成作答带着演示学生的原话、预置候选与
+    「值得追问」的演示结论，挂到真实学生名下等于把这个学生的名字安在别人的作答上——
+    队列里会显示「林一诺」却讲着学生甲的话，导出与统计也会算到他头上。
+    `student_ids` 只为兼容旧调用签名保留：真实名单的 id 一律忽略（它本来就传不进来，
+    接口层 `api_check_demo_seed` 不传这个参数）；确有需要时由本函数补建带
+    `STUDENT_NOTE` 标记的合成学生，重置时按同一标记清理。
+    返回 (按顺序可用的 id 列表, 新建的学生)。
+    """
     rows = db.query(
-        "SELECT id FROM students WHERE class_id=? AND active=1 ORDER BY id", (class_id,)
+        "SELECT id FROM students WHERE class_id=? AND note=? ORDER BY id",
+        (class_id, STUDENT_NOTE),
     )
     picked = [row["id"] for row in rows]
-    if not picked:
-        rows = db.query("SELECT id FROM students WHERE class_id=? ORDER BY id", (class_id,))
-        picked = [row["id"] for row in rows]
     created = []
-    index = 0
+    index = len(picked)
     while len(picked) < needed:
         student = STUDENTS[index % len(STUDENTS)]
         cur = db.conn.execute(
@@ -503,10 +705,18 @@ def _resolve_students(db, class_id, student_ids, needed, now):
 def seed(db, uploads, class_id, student_ids=None):
     """写入合成作答（幂等）。
 
-    判重口径：同一班级里 `record_key` + `source` 相同就视为已经写入，直接跳过。
+    判重口径：同一班级里 `record_key` 相同就视为已经写入，直接跳过。
     因此老师在演示页连点两次「载入合成数据」，作答行数不会增加。
     如果同一个 `record_key` 已被真实导入占用（source 不是「合成演示」），绝不覆盖，
     只记为 skipped_conflict —— 演示数据没有资格动真实记录。
+
+    写入时四件事同时做到（R1-01）：
+    - `source='合成演示'` 且 `record_key` 带 `DEMO-` 前缀（身份）；
+    - `batch=DEMO_BATCH`（批次隔离，真实作业永远统计不到）；
+    - `student_id` 指向带 `STUDENT_NOTE` 标记的合成学生（不占用真实学生）；
+    - `fingerprint` 用 `answer_row()` 同一份口径算（版本闸门才对得上）。
+    所以「改了演示内容」之后旧作答会因版本不符而失去预置（见 `match_answer`），
+    要重演请先 `reset()` 再 `seed()`。
 
     `uploads` 只为与接口契约签名一致而保留：合成作答不带图片，本函数不写任何文件。
     """
@@ -535,16 +745,7 @@ def seed(db, uploads, class_id, student_ids=None):
                     skipped_conflict += 1
                 continue
             student_id = picked[index % len(picked)]
-            row = {
-                "question_no": record["question_no"],
-                "question_text": record["question_text"],
-                "unit": record["unit"],
-                "standard_solution": record["standard_solution"],
-                "student_steps": record["student_steps"],
-                "occurred_on": record["occurred_on"],
-                "missing": record["missing"],
-                "missing_reason": record["missing_reason"],
-            }
+            row = answer_row(record)
             cur = conn.execute(
                 "INSERT INTO answers(class_id, student_id, record_key, batch, student_name,"
                 " student_code, question_no, question_text, unit, standard_solution,"
@@ -585,7 +786,10 @@ def seed(db, uploads, class_id, student_ids=None):
     return {
         "ok": True,
         "class_id": class_id,
+        "source": DEMO_SOURCE,
         "batch": DEMO_BATCH,
+        "scope": SCOPE_SYNTHETIC,
+        "preset_version": preset_version(),
         "seeded": {
             "answers": len(inserted),
             "synthetic": True,
@@ -608,7 +812,13 @@ def _delete_for_answers(conn, table, column, ids):
 
 
 def reset(db, uploads, class_id):
-    """只删 `source='合成演示'` 的作答及挂在它们身上的核对/追问/候选记录。
+    """只删「合成演示 + `DEMO-` 前缀 + 演示批次」三条同时成立的作答及其核对/追问记录。
+
+    R1-01 缺陷 2 的教训：只看 `source='合成演示'` 会误删真实作答——`answers.source`
+    直接取自 CSV 的「来源批次」列（`answers.py`），真实导入把批名写成「合成演示」
+    就会在重置时被删掉（实测 deleted.answers=1）。现在三条同时满足才删：
+    1) `source='合成演示'`；2) `record_key` 带 `DEMO-` 前缀；3) `batch=DEMO_BATCH`。
+    真实作答把批名撞成演示批名、或来源列写了「合成演示」，都删不到它。
 
     真实导入的作答一条都不动；`kept.imported_answers` 用数字把这件事说清楚。
     没有这一步，老师做完演示再想用自己的班级，就得手工挑数据删。
@@ -616,7 +826,9 @@ def reset(db, uploads, class_id):
     ids = [
         row["id"]
         for row in db.query(
-            "SELECT id FROM answers WHERE class_id=? AND source=?", (class_id, DEMO_SOURCE)
+            "SELECT id FROM answers WHERE class_id=? AND source=? AND batch=?"
+            " AND record_key LIKE ?",
+            (class_id, DEMO_SOURCE, DEMO_BATCH, DEMO_RECORD_PREFIX + "%"),
         )
     ]
     deleted_checks = deleted_followups = deleted_reviews = 0

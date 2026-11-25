@@ -1,13 +1,13 @@
 数智伴学｜作答核对网页：浏览器端到端（Edge headless + CDP，1366×768）
-时间：2026-11-25T18:19:42+08:00
+时间：2026-11-25T18:23:31+08:00
 命令：python.exe tests\verify_answer_check_ui.py
 目录：E:\Agent\小挑
 环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
-被测文件 src/web/app.js sha256=BBE645D730A6 mtime=2026-11-24 15:26:30 size=125832
-被测文件 src/web/styles.css sha256=7967232F428F mtime=2026-11-24 15:26:43 size=16761
-被测文件 src/app/equation_steps.py sha256=7F547418762B mtime=2026-11-24 15:24:04 size=17379
-被测文件 src/app/demo_answers.py sha256=17525F89B107 mtime=2026-11-24 14:38:45 size=26275
-被测文件 src/app/answer_check.py sha256=F97F1A5DDCE3 mtime=2026-11-24 13:57:24 size=26918
+被测文件 src/web/app.js sha256=1003A5F9039A mtime=2026-11-25 18:20:18 size=140752
+被测文件 src/web/styles.css sha256=9D1454513298 mtime=2026-11-25 18:20:18 size=17331
+被测文件 src/app/equation_steps.py sha256=11D90941D317 mtime=2026-11-25 18:20:18 size=36183
+被测文件 src/app/demo_answers.py sha256=E9B96DDC2F50 mtime=2026-11-25 18:20:18 size=37655
+被测文件 src/app/answer_check.py sha256=B51C777452C3 mtime=2026-11-25 18:20:18 size=106009
 服务：http://127.0.0.1:8899（数据目录 E:\Agent\小挑\tests\.tmp-e2e-web）
 截图目录：E:\Agent\小挑\docs\screenshots
 PASS 13.0 服务在 127.0.0.1:8899 上启动（演示数据已种）
@@ -55,8 +55,9 @@ PASS 13.3.2 主按钮逐字「保存错步，原因待判断」
 PASS 13.3.3 两个轴各一个标签：待核对 / 原因待判断
 PASS 13.3.4 两条轴是分开的两个元素（不是一句话）
 
-== 13.4 A4：当面追问——默认问句逐字；「暂时跳过」不发请求、不跳页、不保存 ==
-PASS 13.4.1 默认问句逐字「可以这样问学生：你当时是怎么展开这个括号的？」
+== 13.4 A4：当面追问——问句按本条作答给出（R1-06 改写）；「暂时跳过」不发请求、不跳页、不保存 ==
+PASS 13.4.1 卡片问句逐字等于服务端按本条作答给出的建议问句（来源：本条预置记录）
+PASS 13.4.1b 问句随本题错步变化（移项题另一句、不含「括号」）；正确作答不自动给追问
 PASS 13.4.2 追问卡只有「记录学生回答」「暂时跳过」两个动作
 跳过前后请求：总请求 10 → 10；新增请求 []
 PASS 13.4.3 点「暂时跳过」没有发出任何请求（网络面板为空）
@@ -68,7 +69,7 @@ PASS 13.4.8 跳过之后没有追问记录
 
 == 13.5 A5（a）：主按钮保存 → cause_state=undecided 且 progress=checked；回执与下一份 ==
 PASS 13.5.1 保存后同屏出现回执（没有跳页）
-PASS 13.5.2 回执逐字「已保存到：初二(3)班 · 9月第2次作业」
+PASS 13.5.2 回执逐字「已保存到：初二(3)班 · 【合成演示】不计入真实作业」
 PASS 13.5.3 回执里两条轴分开显示：已核对 / 原因待判断
 PASS 13.5.4 回执写明「两轴状态：已核对 · 原因待判断」
 PASS 13.5.5 跳过提问时回执说明未记录学生回答
@@ -107,11 +108,13 @@ PASS 13.8.1 「教师已判断」筛选下有 2 条记录
 PASS 13.8.2 记录列表 2 行
 PASS 13.8.3 列表只显示改判后的新原因
 PASS 13.8.4 列表里的「观察到的错步」与详情一致
-PASS 13.8.0 先把「只有答案」那份存成待判断（准备待判断记录）
-PASS 13.8.5 「原因待判断」筛选能找回跳过/待判断的那几份
+PASS 13.8.0 先把「首处错步」那份存成待判断（准备待判断记录）
+PASS 13.8.0b 「只有答案」那份保存后记「无需判断」(not_applicable)
+PASS 13.8.5 「原因待判断」筛选能找回待判断的那一份
+PASS 13.8.6 「无需判断」筛选能找回拒答/无需归因的那几份（不再混进待判断）
 
 == 13.9 A6：1366×768 首屏可见错步与主动作、无横向滚动、只有一个主按钮 ==
-A6 视口测量：{"scrollWidth": 1351, "bodyScrollWidth": 1351, "innerWidth": 1366, "innerHeight": 768, "bad": {"top": 544.703125, "bottom": 606.703125, "width": 587.5}, "primary": {"top": 715, "bottom": 757, "width": 225, "height": 42}, "bar": {"top": 671.203125, "bottom": 768, "position": "sticky"}, "primaryCount": 1}
+A6 视口测量：{"scrollWidth": 1351, "bodyScrollWidth": 1351, "innerWidth": 1366, "innerHeight": 768, "bad": {"top": 544.703125, "bottom": 606.703125, "width": 587.5}, "primary": {"top": 715, "bottom": 757, "width": 180, "height": 42}, "bar": {"top": 671.203125, "bottom": 768, "position": "sticky"}, "primaryCount": 1}
 PASS 13.9.1 视口就是 1366×768
 PASS 13.9.2 document.documentElement.scrollWidth <= 1366（无横向滚动）
 PASS 13.9.3 错步在首屏可见（top>=0 且 bottom<=768）
@@ -120,10 +123,10 @@ PASS 13.9.5 操作栏是文档流内的 sticky（不是 fixed 浮层）
 PASS 13.9.6 每屏只有一个 .btn.primary
 PASS 13.9.9 截图前回到首屏（scrollY=0，画面就是第一屏）
 PASS 13.9.9b 1366×768 首屏截图已保存且尺寸正确
-A6 遮挡检查：{"lastBottom": 637.21875, "barTop": 653.21875, "scrollY": 1072, "hit": {"insideLastCard": true, "tag": "H3", "x": 143.5, "y": 259.703125}}
+A6 遮挡检查：{"lastBottom": 637.328125, "barTop": 653.328125, "scrollY": 1088, "hit": {"insideLastCard": true, "tag": "H3", "x": 143.5, "y": 321.296875}}
 PASS 13.9.7 滚到底部后操作栏没有压住最后一张卡片（lastBottom <= barTop）
 PASS 13.9.8 末张卡片里的元素仍能被 elementFromPoint 命中
-A6 追问按钮命中检查：{"buttons": [{"text": "记录学生回答", "y": 453, "ok": true}, {"text": "暂时跳过", "y": 453, "ok": true}], "vh": 768}
+A6 追问按钮命中检查：{"buttons": [{"text": "记录学生回答", "y": 599, "ok": true}, {"text": "暂时跳过", "y": 599, "ok": true}], "vh": 768}
 PASS 13.9.8b 滚到底部后「记录学生回答」「暂时跳过」都仍可点（没有被操作栏压住）
 
 == 13.11 首屏两态：no_answers / all_checked 各一张截图 ==
@@ -162,13 +165,21 @@ PASS 13.10.7 失败时库里没有写入这条 check
 PASS 13.10.8 失败留页截图已保存且尺寸正确
 PASS 13.10.9 解除拦截后重试保存成功（说明失败来自 mock）
 
+== 13.14 R1-02 无候选也能人工判断：入口可见 → 保存 → 来源标「教师填写」 ==
+PASS 13.14.1 真实作答没有候选时，人工填写入口默认展开且有「保存人工判断」
+PASS 13.14.2 人工判断回执：教师已判断 + 来源「教师填写」
+PASS 13.14.3 库里落的是 cause_state=decided / cause_source=teacher 且只有一条当前结论
+PASS 13.14.4 人工判断截图已保存且尺寸正确
+
 == 15. T11 聚焦复验：A7 演示入口 / A6 四态与回执首屏 / 提交唯一 / toast / 记录列 / A1 空状态与用词 ==
 PASS 15.1 A7 总览页有「合成演示数据」卡，写明不需要选文件/配模型/等网络
 PASS 15.2 A7 卡上写明「只影响合成数据，真实导入的作答不受影响」
 PASS 15.3 A7 卡上有「载入合成演示数据」「重置合成数据」两个可见按钮
 PASS 15.4 A7 点「载入合成演示数据」→ 页面显示 seeded 数字（新增 4 份）
 PASS 15.5 A7 载入后库里确实多出 4 份合成作答（1 → 5）
-PASS 15.6 A7 载入后总览立即刷新：待核对作答 4 份 + 主按钮「查看待核对作答」
+PASS 15.6 A7 载入后「当前作业」仍是真实作业（演示批次不抢占当前作业）
+PASS 15.6a A7 作业表里单独列出演示批次（4/0/4 那一行）
+PASS 15.6b A7 演示批次页：待核对作答 4 份 + 主按钮「查看待核对作答」
 PASS 15.7 A7 载入截图已保存且尺寸正确
 PASS 15.8 提交动作唯一化：底部操作栏只有一个提交按钮
 PASS 15.9「采纳选中原因并保存」在候选区、可点、不是 primary
@@ -179,13 +190,13 @@ PASS 15.13 toast 不跨页：回执页不再出现「已跳过提问，未记录
 A6 回执态测量：{"text": "查看下一份", "top": 715, "bottom": 757, "vh": 768, "scrollY": 0, "overflowX": -15, "primary": 1}
 PASS 15.14 A6 回执态「查看下一份」在 1366×768 首屏可见（top<768）
 PASS 15.15 A6 回执态无横向滚动且 .btn.primary=1
-A6 回执态遮挡检查：{"lastBottom": 644, "barTop": 660, "selector": ".receipt > .card:last-of-type", "scrollY": 313, "hit": {"inside": true, "tag": "P"}}
+A6 回执态遮挡检查：{"lastBottom": 644, "barTop": 660, "selector": ".receipt > .card:last-of-type", "scrollY": 378, "hit": {"inside": true, "tag": "P"}}
 PASS 15.15b 【sticky 遮挡·回执】滚到底后最后一张卡片 bottom <= 操作栏 top
 PASS 15.15c 【sticky 遮挡·回执】最后一张卡片里的元素仍能 elementFromPoint 命中
 PASS 15.16 A6 回执首屏截图已保存且尺寸正确
 PASS 15.17 采纳仍落 cause_state=decided 且 cause_code 有值（一次真实保存）
 PASS 15.18 采纳回执显示「教师已判断」
-R-04 decided 态按钮：{"primary": "保存错步（沿用已判断原因）", "buttons": ["保存错步（沿用已判断原因）"], "judgeButtons": ["改为原因待判断"]}
+R-04 decided 态按钮：{"primary": "保存错步（沿用已判断原因）", "buttons": ["保存错步（沿用已判断原因）"], "judgeButtons": ["改为原因待判断", "撤回本次结论（回到待核对）"]}
 PASS 15.18b R-04 decided 态主按钮文案为「保存错步（沿用已判断原因）」
 PASS 15.18d0 R-04「改为原因待判断」是「教师判断」卡里的次级动作（不在底部主操作栏）
 PASS 15.18c R-04 decided 态点主按钮仍 decided 且 cause_code 不变
@@ -203,7 +214,7 @@ PASS 15.26 A7 重置没有动真实导入作答的判断（check 仍在）
 PASS 15.27 A7 重置截图已保存且尺寸正确
 A6 态测量 详情：{"label": "详情", "overflowX": -15, "scrollWidth": 1351, "innerWidth": 1366, "primary": 1}
 PASS 15.28 A6 详情态无横向滚动且 .btn.primary=1
-A6 详情态遮挡检查：{"lastBottom": 637, "barTop": 653, "selector": ".check-body .card:last-of-type", "scrollY": 1480, "hit": {"inside": true, "tag": "H3"}}
+A6 详情态遮挡检查：{"lastBottom": 638, "barTop": 654, "selector": ".check-body .card:last-of-type", "scrollY": 1808, "hit": {"inside": true, "tag": "H3"}}
 PASS 15.28b 【sticky 遮挡·详情】滚到底后最后一张卡片 bottom <= 操作栏 top
 PASS 15.28c 【sticky 遮挡·详情】最后一张卡片里的元素仍能 elementFromPoint 命中
 PASS 15.29 造一个空班级用于 A1 空状态取证（测试夹具，不是产品路径）
@@ -215,7 +226,7 @@ A6 态测量 no_answers：{"label": "no_answers", "overflowX": 0, "scrollWidth":
 PASS 15.33 A6 空状态无横向滚动且 .btn.primary=1
 PASS 15.34 A1 空状态截图已保存且尺寸正确
 PASS 15.35 A1(b) 班级卡用「待确认错题 / 已确认错题」，不再出现孤立的「待核对」
-A1(b) 取证：hero='待核对作答 4 份\n当前作业：9月第2次作业\n去括号：是规则没掌握，还是这次漏写？\n\n下一份待核对作答：学生戊 · 第 1 题。待核对数与「查看待核对作答」用同' 表头=['作业', '应交', '已核对', '待核对作答', ''] 班级卡=['0学生0待确认错题0已确认错题', '6学生4待确认错题9已确认错题', '1学生0待确认错题0已确认错题']
+A1(b) 取证：hero='待核对作答 4 份\n当前作业：【合成演示】不计入真实作业\n去括号：是规则没掌握，还是这次漏写？\n\n下一份待核对作答：学生甲 · 第 1 题。待核对数与「查看待核' 表头=['作业', '应交', '已核对', '待核对作答', ''] 班级卡=['0学生0待确认错题0已确认错题', '10学生4待确认错题9已确认错题', '1学生0待确认错题0已确认错题']
 PASS 15.36 A1(b) 作答核对页用「待核对作答」，不再出现班级卡那一侧的错题口径词
 PASS 15.37 A1(b) 两处用词不同且各自可解释（错题 vs 作答）
 
@@ -236,6 +247,15 @@ PASS 13.12.3 旧 tab mistakes 正常渲染（关键词 全部/已确认 都在�
 PASS 13.12.4 旧 tab stats 正常渲染（关键词 统计 都在，console 无未捕获异常）
 PASS 13.12.5 旧 tab advice 正常渲染（关键词 建议 都在，console 无未捕获异常）
 
-合计 175 项，通过 175，失败 0（另：未验证 0 项；已知缺口 0 项，见上面「未通过（缺口）」行）
-截图清单：ui-a1-all-checked-1366x768.png, ui-a1-empty-primary-1366x768.png, ui-a1-no-answers-1366x768.png, ui-a2-missing-steps-1366x768.png, ui-a5-adopt-receipt-1366x768.png, ui-a5-receipt-1366x768.png, ui-a6-first-bad-1366x768.png, ui-a6-long-answer-expanded-1366x768.png, ui-a6-receipt-first-screen-1366x768.png, ui-a7-demo-reset-1366x768.png, ui-a7-demo-seeded-1366x768.png, ui-fix-empty.png, ui-fix-receipt.png, ui-save-failed-500-1366x768.png, walkthrough-0-classlist.png, walkthrough-1.png, walkthrough-2.png, walkthrough-3.png, walkthrough-4.png
+== 13.16 T11 依据必填：out_of_scope 页提示必填，first_bad 页保持可选 ==
+PASS 13.16.0 造一个取证班级（测试夹具，不是产品路径）
+PASS 13.16.0b 造数自检：这份作答 applicability=optional（规则判不了）
+PASS 13.16.1 out_of_scope 页：「判断依据」标签写明必填 + 有一句解释提示
+PASS 13.16.2 提示不改变布局约束（1366 宽无横向滚动）
+PASS 13.16.3 同一页对应的保存真的被拒（400 basis_required，提示不是装饰）
+PASS 13.16.4 记成「无需判断」后不再要求依据（提示消失，标签回到可选）
+PASS 13.16.5 first_bad 页不显示必填（A5 快路径保持可选）
+
+合计 191 项，通过 191，失败 0（另：未验证 0 项；已知缺口 0 项，见上面「未通过（缺口）」行）
+截图清单：ui-a1-all-checked-1366x768.png, ui-a1-empty-primary-1366x768.png, ui-a1-no-answers-1366x768.png, ui-a2-missing-steps-1366x768.png, ui-a5-adopt-receipt-1366x768.png, ui-a5-receipt-1366x768.png, ui-a6-first-bad-1366x768.png, ui-a6-long-answer-expanded-1366x768.png, ui-a6-receipt-first-screen-1366x768.png, ui-a7-demo-reset-1366x768.png, ui-a7-demo-seeded-1366x768.png, ui-fix-empty.png, ui-fix-receipt.png, ui-r1-02-manual-cause-1366x768.png, ui-save-failed-500-1366x768.png, walkthrough-0-classlist.png, walkthrough-1.png, walkthrough-2.png, walkthrough-3.png, walkthrough-4.png
 退出码：0

@@ -1,0 +1,102 @@
+数智伴学｜R1-05 人工核对路径 + R1-06 追问记录与证据更新机制（源码级验收）
+时间：2026-11-25T18:24:05+08:00
+命令：python.exe tests\verify_r1_05_06_manual_followup.py
+目录：E:\Agent\小挑
+环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
+临时库：E:\Agent\小挑\tests\.tmp-r1-05-06
+网络：只用 127.0.0.1 随机端口环回，无任何外部请求
+被测文件 src/app/answer_check.py sha256=B51C777452C3 size=106009
+被测文件 src/app/db.py sha256=2B4ECCD31A0C size=55257
+被测文件 src/app/api.py sha256=33D2F34A202E size=86129
+被测文件 src/web/app.js sha256=1003A5F9039A size=140752
+
+== 1. R1-05：out_of_scope 有人工核对出路（记录数学错误 + 核验依据 + 留痕，不再永久卡死） ==
+PASS 1.1 规则判不了这份作答：locate.status=out_of_scope（source 只记 rule/none，不冒充预置）
+PASS 1.2 可判可不判：applicability=optional（不再一律禁止人工判断）
+PASS 1.3 没有错步就没有追问：followup.available=false 且文案「暂无适用追问」
+PASS 1.4 人工记录错步但没有依据 → 400 basis_required，一条都不写
+PASS 1.5 有人工错步 + 依据 → 200，进度轴=已核对、原因轴=无需判断
+PASS 1.6 证据来源标成「教师人工核验」：verify_source=manual + 中文标签
+PASS 1.7 人工结果与规则结果**分开存**：teacher_error_text 逐字保留，locate_status 仍是 out_of_scope
+PASS 1.8 人工核验留痕：记了谁、什么时候
+PASS 1.9 核验依据落在 basis_note（不是教师备注）
+PASS 1.10 统计能收口：undecided_cause=0、not_applicable_cause=1（不再永久挂账）
+PASS 1.11 统计能辨认人工核验：counts.manual_verified=1
+PASS 1.12 记录可按核验来源筛：verify_source=manual 只列人工核验那份
+PASS 1.13 记录按核验来源筛：verify_source=rule 查不到人工核验那份（不是同一口径）
+PASS 1.14 非法核验来源取值 → 400 bad_verify_source（不静默当 all）
+PASS 1.15 再保存时没填错步/依据 → 上一次的人工核验文字与依据都保留
+PASS 1.16 out_of_scope 可人工改判为「教师已判断」，来源=教师填写、证据来源=人工核验
+
+== 2. R1-05：单条补录/校正原始作答（指纹变化 → 旧结论 stale → 按新内容重新分析） ==
+PASS 2.1 起点：只写了结果 → locate.status=missing_steps、暂无适用追问（提示先补录）
+PASS 2.2 补录前先保存一次结论（进度轴已核对、原因轴无需判断）
+PASS 2.3 补录必须带 expected_version：缺失 → 409 version_conflict，一个字不改
+PASS 2.4 被拒绝的补录没有改动作答内容
+PASS 2.5 内容没变 → 400 nothing_to_update（不白建一个版本）
+PASS 2.6 去掉缺测但步骤是空的 → 400 bad_missing（不静默替老师决定）
+PASS 2.6b 被拒绝的缺测改动没有落库（这份仍是缺测）
+PASS 2.7 日期格式不对 → 400 bad_date，一个字不改
+PASS 2.8 补录成功 → 200、指纹变化、reanalysed=true、changed_fields 含 student_steps
+PASS 2.9 补录后立刻按新内容重新分析：locate 变成 correct（这份其实解得对）
+PASS 2.10 旧结论变成旧版本：judgement.stale=true、progress 回到待核对
+PASS 2.11 旧 check 行留在库里（不删行、历史可追溯）
+PASS 2.12 stale_conclusions 如实报数（1 条旧结论失效）
+PASS 2.13 补录后这份回到待核对队列（应交 1、已核对 0、待核对 1）
+PASS 2.14 详情与补录响应同源：版本、步骤、locate 都取新内容
+PASS 2.15 补录后的新版本没有任何当前结论（judgement.progress=pending、saved_at 为空）
+PASS 2.16 合成演示作答 → 409 demo_readonly（不破坏五项全匹配的预置基线）
+PASS 2.17 演示作答内容一个字没改
+PASS 2.18 不存在的作答 → 404 not_found
+PASS 2.19 跨班级补录 → 404（班级归属校验，不能改别人班的作答）
+
+== 3. R1-06：问句由本条错步决定（移项不再问展开括号；无依据明确暂无） ==
+PASS 3.1 移项错步：问句按本条两行生成（source_detail=rule:term_move）
+PASS 3.2 移项错步**不再问展开括号**：问句里没有「括号」，主角是移项的那一项 +7
+PASS 3.3 移项问句逐字引用本条作答的原文两行（可从学生原文核对）
+PASS 3.4 反向自证：旧实现那句写死常量不会被选出来（问句 ≠ 去括号常量）
+PASS 3.5 括号错步：问句问的就是展开括号，且括号片段逐字取自题干
+PASS 3.6 两种错步拿到的是两句不同的问句（不是同一句套给所有作答）
+PASS 3.7 正确作答不自动产生追问：available=false、question 为空、文案含「暂无适用追问」
+PASS 3.8 缺测不自动产生追问：available=false + 「暂无适用追问」
+PASS 3.9 没有可追问的错步时，保存也不会凭空写一条追问（跳过不产生空记录）
+PASS 3.10 合成演示案例 B（移项）：问句是预置那条且不含「括号」，来源 preset/demo_record
+PASS 3.11 合成演示对照（正确作答）：不自动给问句，但把预置那句告诉老师
+
+== 4. R1-06：追问来源三值（preset / teacher / library）的写入规则逐条可验 ==
+PASS 4.1 逐字用系统建议问句 → source=preset，且 source_detail 记下是哪类错步生成的
+PASS 4.2 追问挂当前作答版本 + 本次结论（可追溯「对哪一版、哪一次判断」）
+PASS 4.3 回执/详情同源：followup.source_label=预置问句、recorded=true、原话逐字
+PASS 4.4 改过建议问句（哪怕只改几个字）→ source=teacher
+PASS 4.5 线下自拟问句（与本题无关的套话也允许，但来源记 teacher）→ source=teacher
+PASS 4.6 逐字命中已审资源库问句 → source=library、source_detail=library:Q-7
+PASS 4.7 反向自证：同一份作答注入库前后建议问句不同（library 分支不是死代码）
+PASS 4.8 去掉假库后建议问句回到「按本条错步生成」（库没被写死进实现）
+PASS 4.9 有回答但没填问句 → 400 followup_question_required（不写一条没有问题的原话）
+PASS 4.10 跳过提问（请求里没有 followup）→ 一行都不写
+PASS 4.11 回答全是空白 → 也不写空记录
+PASS 4.12 追问留历史：详情能看到这条作答的全部追问（含问句、来源、版本）
+
+== 5. R1-06：关键追问证据一改，旧的「已记录学生回答」立即失效并标待复核 ==
+PASS 5.1 先记录一次追问：recorded=true、needs_review=false
+PASS 5.2 追问行存了证据快照（错步 / 原因 / 版本），不是只存一句话
+PASS 5.3 观察到的错步一改 → 旧追问被标记失效（invalidated_reason 以 evidence_changed 开头）
+PASS 5.4 详情/回执不再是「已记录」：recorded=false、needs_review=true
+PASS 5.5 复核说明讲清了为什么失效（提到错步变化，不是一句空话）
+PASS 5.6 原话没有删：历史里仍能读到这条学生原话
+PASS 5.7 在新证据下重新确认同一句问句与原话 → 不新增行（刷新同一条）
+PASS 5.8 刷新后重新算「已记录」：invalidated 清空、recorded=true、快照换成新证据
+PASS 5.9 撤回结论 → 追问同时失效（conclusion_retracted），不再冒充当前证据
+PASS 5.10 补录内容（新版本）→ 旧版本上的追问按 answer_updated 失效
+PASS 5.11 补录后详情提示「旧版本上的回答不再对应当前作答，需要重新确认」
+
+== 6. 断言非恒真：把实现反向改错后，第 3/5 组那条断言必须不再成立 ==
+PASS 6.1 变异体1（写死去括号问句）→ 3.2/3.6 那两条断言不再成立
+PASS 6.2 对照：原实现上同一条断言成立（移项题问句不含「括号」）
+PASS 6.3 变异体2（删掉失效判定）→ 5.3 的断言不再成立：旧确认没有被标记失效
+PASS 6.4 对照：原实现上同样的操作确实让它失效（evidence_changed）
+PASS 6.5 变异体3（人工核验记成规则定位）→ 1.6 的 verify_source=manual 不再成立
+PASS 6.6 对照：原实现上同一操作确实记成 manual（同一断言成立）
+
+合计 76 项，通过 76，失败 0（另：未验证 0 项）
+退出码：0

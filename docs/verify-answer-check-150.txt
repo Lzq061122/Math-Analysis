@@ -1,17 +1,17 @@
 数智伴学｜作答核对与追问（第一轮 A1–A7）源码级验收
-时间：2026-11-25T18:19:26+08:00
+时间：2026-11-25T18:23:15+08:00
 命令：python.exe tests\verify_answer_check_150.py
 目录：E:\Agent\小挑
 环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
 临时库：E:\Agent\小挑\tests\.tmp-answer-check
 网络：只用 127.0.0.1 随机端口环回，无任何外部请求
-被测文件 src/web/app.js sha256=BBE645D730A6 mtime=2026-11-24 15:26:30 size=125832
-被测文件 src/web/styles.css sha256=7967232F428F mtime=2026-11-24 15:26:43 size=16761
-被测文件 src/app/equation_steps.py sha256=7F547418762B mtime=2026-11-24 15:24:04 size=17379
-被测文件 src/app/demo_answers.py sha256=17525F89B107 mtime=2026-11-24 14:38:45 size=26275
-被测文件 src/app/answer_check.py sha256=F97F1A5DDCE3 mtime=2026-11-24 13:57:24 size=26918
+被测文件 src/web/app.js sha256=1003A5F9039A mtime=2026-11-25 18:20:18 size=140752
+被测文件 src/web/styles.css sha256=9D1454513298 mtime=2026-11-25 18:20:18 size=17331
+被测文件 src/app/equation_steps.py sha256=11D90941D317 mtime=2026-11-25 18:20:18 size=36183
+被测文件 src/app/demo_answers.py sha256=E9B96DDC2F50 mtime=2026-11-25 18:20:18 size=37655
+被测文件 src/app/answer_check.py sha256=B51C777452C3 mtime=2026-11-25 18:20:18 size=106009
 被测文件 src/app/stats.py sha256=7844D2A7363D mtime=2026-11-24 13:49:11 size=11174
-被测文件 src/app/api.py sha256=E5D7532F0CD8 mtime=2026-11-24 13:50:02 size=84010
+被测文件 src/app/api.py sha256=33D2F34A202E mtime=2026-11-25 18:20:18 size=86129
 
 == 1. 确定位：5 种 status（correct / first_bad / missing_steps / missing / out_of_scope）+ 正确作答不标错 + 只有答案不猜行 ==
 PASS 1.1 案例A status=first_bad
@@ -57,11 +57,11 @@ PASS 2.8 详情标合成演示数据
 PASS 2.9 候选唯一来源：接口 candidates == demo_answers.preset_causes(同题)
 PASS 2.10 候选不超过 3 条且每条带 支持/削弱/待补
 PASS 2.11 causes_source=preset 且 causes_note 说明本轮未接已审错因库
-PASS 2.12 案例A 默认问句用预置那条
+PASS 2.12 演示案例A 的问句来自五项全匹配的预置记录（不是按题干猜出来的）
 PASS 2.13 真实导入作答 locate.source=rule（不得出现 preset）
 PASS 2.14 真实导入与预置同题同步骤：定位四项一致（说明预置没被冒充）
 PASS 2.15 真实导入 data_source=imported / 真实导入
-PASS 2.16 真实导入仍拿同一份预置候选（候选是预置库、定位是规则，二者分离）
+PASS 2.16 R1-01：真实导入没有预置候选、说明不冒充演示、证据只取本条作答原文
 PASS 2.17 demo_answers 不可用时 candidates_for 退化为 []、不抛异常、说明用兜底句
 
 == 3. 确定性：同进程两次一致 + 跨进程一致 ==
@@ -89,8 +89,8 @@ PASS 5.6 已保存那份退出队列但仍按原位置显示第 2/3（不是第 
 PASS 5.7 再保存第 1 份：next 指向第 3 份
 PASS 5.8 保存最后一份：next_answer_id=null 且 is_last=true、remaining=0
 PASS 5.9 全部保存后 state=all_checked、pending=0、next=null
-PASS 5.10 保存后退出队列，但 check/records 仍能找回三条
-PASS 5.11 records 里每条 progress=checked、cause_state=undecided
+PASS 5.10 保存后退出队列，但 check/records（cause_state=all）仍能找回三条
+PASS 5.11 records 里每条 progress=checked；两份「原因待判断」+ 一份「无需判断」
 PASS 5.12 cause_state=all 也给出同样三条
 
 == 6. 改判：旧原因进 cause_history，当前结论只显示新原因；decided 必须带编码与说明 ==
@@ -103,14 +103,15 @@ PASS 6.6 记录列表里也只显示新原因
 PASS 6.7 decided 但缺 cause_code/label → 400 cause_required 且不写库
 
 == 7. 缺测/正确/只有答案：点保存不产生错题、不计 original_errors、cause_state 强制回 undecided ==
-PASS 7.1 正确/只有答案/缺测 三份都能保存处理进度，但原因被强制回 undecided
+PASS 7.1 正确/只有答案/缺测 三份都能保存处理进度，原因轴记「无需判断」(not_applicable)
+PASS 7.1b 同一份提交「教师已判断」→ 400 cause_not_applicable（不静默改写、不写库）
 PASS 7.2 真的错步那份保存成功
 说明（R-10）：7.3 属不变量（核对链路不写 mistakes）；该口径的证据由 7.4 / 7.7 承担。
 PASS 7.3 点保存没有生成任何错题（mistakes 表仍为 0；不变量，证据见 7.4/7.7）
 PASS 7.4 original_errors 只数错步那一份（=1），缺测与正确不计入
-PASS 7.5 cause_decided=0：三份被强制待判断，只有错步那份手动保存也是 undecided
+PASS 7.5 cause_decided=0：三份记「无需判断」，错步那份没判原因
 PASS 7.6 checked=4 / pending=0 / missing=1
-PASS 7.7 四行 check 的 cause_state 全是 undecided，locate_status 各自如实
+PASS 7.7 四行 check：三份「无需判断」+ 错步那份「待判断」，locate_status 各自如实
 
 == 8. 版本失效：改 student_steps + 更新 fingerprint 模拟重导 → 旧 check 退出队列与统计、stale=true、回待核对 ==
 PASS 8.1 重导前：checked=1 / pending=1
@@ -150,18 +151,31 @@ PASS 11.7 同一问句同一原话重复保存不重复插入（§3.7 第 5 条�
 PASS 11.8 老师自己写的问句 → source=teacher
 PASS 11.9 详情 followup.recorded=true 且回显最新原话
 
-== 12. 断言非恒真：把实现反向改错后，同一断言必须失败（4 个变异体） ==
+== 11b. T11 依据必填：out_of_scope 改判必须有依据；first_bad 不强制；forbidden 仍拒 ==
+PASS 11b.0 造数自检：这份作答 applicability=optional（规则判不了）
+PASS 11b.1 out_of_scope + decided + 无依据 → 400 basis_required
+PASS 11b.2 这一次一条都不写（answer_checks 行数不变）
+PASS 11b.3 out_of_scope + decided + 有依据 → 200，落库依据并记人工核验
+PASS 11b.4 first_bad + decided + 无依据 → 仍 200（A5 快路径不被卡）
+PASS 11b.5 forbidden（正确作答）+ decided → 仍 400 cause_not_applicable（回归）
+PASS 11b.6 out_of_scope 默认保存 → 200 且记「无需判断」（新闸门不误伤收口）
+
+== 12. 断言非恒真：把实现反向改错后，同一断言必须失败（5 个变异体） ==
 PASS 12.1 变异体1 补丁命中唯一位置
 PASS 12.2 变异体1 让 hint_text 变空 → 第 1.3/2.4 条断言不再成立
 PASS 12.3 对照：真实实现 hint_text 非空（同一断言在原实现上成立）
 PASS 12.4 变异体2 补丁命中唯一位置
 PASS 12.5 变异体2 让案例A 变成 correct → 第 1.1/1.2/2.2 条断言不再成立
 PASS 12.6 变异体3 补丁命中唯一位置
-PASS 12.7 变异体3 让「正确/只有答案/缺测强制待判断」失效 → 第 7.1 条断言不再成立
-PASS 12.8 对照：真实实现三种情形都强制待判断
+PASS 12.7 变异体3 让「无可归因错步 → 无需判断」判定失效 → 第 7.1 条断言不再成立
+PASS 12.8 对照：真实实现对正确/只有答案/缺测/缺测都判为「有/无可归因」如实现所声明
 PASS 12.9 变异体4 补丁命中唯一位置
 PASS 12.10 变异体4 让「已核对数」恒 0 → 队列待核对数/状态断言不再成立
 PASS 12.11 对照：真实实现在同一份库上是 [0, 3, all_checked]（已全部核对）
+PASS 12.12 变异体5（依据闸门）补丁命中唯一位置
+PASS 12.13 变异体5 摘掉依据闸门后同一调用不再报错 → 第 11b.1 条断言不再成立
+PASS 12.14 对照：真实实现在同一调用上抛 basis_required（400）
+PASS 12.15 变异体5 在接口层也不再拦（同一请求从 400 变 200 ok/not_applicable）
 
 == 13. 防漂移不变式：demo_answers 预置 locate 与 equation_steps.locate 逐字段相等 ==
 PASS 13.1 demo build() 里带 locate 的作答都被复核到（至少 4 份）
@@ -179,11 +193,11 @@ PASS 15.6 reset 不动真实作答的判断（check 仍在、详情仍显示已�
 == 14. 三条既有回归线（如实记录，含已知失败） ==
 回归 verify_answers_150.py：退出码 0，用时 1.0s，合计 60 项，通过 60，失败 0
 PASS 14.1 verify_answers_150.py 合计 60 项、通过 60、失败 0（无失败）
-回归 verify_followup_180.py：退出码 0，用时 3.7s，合计 126 项，通过 126，失败 0
+回归 verify_followup_180.py：退出码 0，用时 1.5s，合计 126 项，通过 126，失败 0
 PASS 14.2 verify_followup_180.py 合计 126 项、通过 126、失败 0（无失败）
-回归 verify_review_160.py：退出码 1，用时 3.8s，合计 135 项，通过 134，失败 1
+回归 verify_review_160.py：退出码 1，用时 3.6s，合计 135 项，通过 134，失败 1
 PASS 14.3 verify_review_160.py 合计 135 项、通过 134、失败 1（已知失败：FAIL 1.8.0 版本号 1.8.1）
 PASS 14.4 verify_review_160.py 的唯一失败是已知的历史版本号断言
 
-合计 137 项，通过 137，失败 0（另：未验证 0 项）
+合计 149 项，通过 149，失败 0（另：未验证 0 项）
 退出码：0

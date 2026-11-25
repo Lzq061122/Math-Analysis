@@ -1734,7 +1734,9 @@ async function waitForRestart() {
 /* 并在 docs/web界面自测.md 记一条，不在前端自己发明后端字段。            */
 /* ------------------------------------------------------------------ */
 
-const CHECK_ASK_FALLBACK = '你当时是怎么展开这个括号的？';
+// R1-06：不再有「写死的去括号问句」兜底。问句一律取服务端 followup.suggestion（按本条错步生成），
+// 没有依据时服务端给 available=false + 「暂无适用追问」，这里只照着显示，不自己编一句。
+const CHECK_ASK_UNAVAILABLE = '暂无适用追问';
 const CHECK_PRESET_NOTE = '预置演示 · 不代表已实现通用定位';
 const CHECK_QUEUE_NOTE = '保存后这份作答退出待核对队列，但仍可在「查看核对记录」里按「原因待判断」找回。';
 const CHECK_LONG_LINES = 10;
@@ -1752,15 +1754,33 @@ function checkDraft(answerId) {
 }
 
 // A3：处理进度与原因判断是两条轴，各占一个标签；中间那句分隔串只是给人看的。
+// 原因轴三态（R1-02）：待判断 / 教师已判断 / 无需判断。文案一律以服务端 label 为准，
+// 本地兜底只为「字段缺失」时不至于显示空白。
 function checkAxisChips(judgement) {
   const j = judgement || {};
   const progressLabel = j.progress_label || (j.progress === 'checked' ? '已核对' : '待核对');
-  const causeLabel = j.cause_label || (j.cause_state === 'decided' ? '教师已判断' : '原因待判断');
+  const fallbackCause = j.cause_state === 'decided'
+    ? '教师已判断'
+    : (j.cause_state === 'not_applicable' ? '无需判断' : '原因待判断');
+  const causeLabel = j.cause_label || fallbackCause;
   return h('div', { class: 'axis-row' },
     h('span', { class: 'axis-chip progress' + (j.progress === 'checked' ? ' on' : '') }, progressLabel),
     h('span', { class: 'axis-sep' }, ' · '),
-    h('span', { class: 'axis-chip cause' + (j.cause_state === 'decided' ? ' on' : '') }, causeLabel),
+    h('span', {
+      class: 'axis-chip cause'
+        + (j.cause_state === 'decided' ? ' on' : '')
+        + (j.cause_state === 'not_applicable' ? ' na' : ''),
+    }, causeLabel),
   );
+}
+
+// 错因来源说人话（R1-02「区分人工填写与候选采纳」）：none / preset / teacher / legacy。
+// 人工判断允许只填说明不填编码，所以判据是「有没有结论」而不是「有没有编码」。
+function checkCauseSourceText(judgement) {
+  const j = judgement || {};
+  const label = j.cause_source_label || '';
+  if ((j.cause_code || j.cause_label_text) && label) return '错因来源：' + label;
+  return '';
 }
 
 function checkEvidenceList(title, items) {
@@ -1818,16 +1838,35 @@ function checkLineRow(line, index, loc, isBad) {
 }
 
 // 定位状态说人话：不判错的时候必须讲清「为什么不标错」。
-function checkLocateNotice(loc) {
+// R1-04 移交的文案分句：missing_steps 现在至少分三句——没有过程 / 只写了结论行 /
+// 有过程但没解完（steps.kind + completion.state）。服务端已经给出 `notice` 时以它为准
+// （单一事实来源），这里的本地分支只作兜底，字段缺失一律 .get 语义（undefined 安全）。
+function checkLocateNotice(loc, notice) {
   const status = loc.status || '';
   if (status === 'first_bad') return null;
+  const serverNotice = String(notice || '').trim();
+  if (serverNotice) {
+    const kindClass = status === 'correct' ? 'info' : 'warn';
+    return h('div', { class: 'banner ' + kindClass }, serverNotice);
+  }
   if (status === 'correct') {
     return h('div', { class: 'banner info' }, '全程等价：从题干到学生最后一行都没有发现不等价，不标错步。');
   }
   if (status === 'missing_steps') {
-    return h('div', { class: 'banner warn' },
-      '缺少步骤：学生只写了结论行，无法定位具体错在哪一行，系统不猜。',
-      loc.manual_note ? ' ' + loc.manual_note : '');
+    const steps = loc.steps || {};
+    const completion = loc.completion || {};
+    const kind = steps.kind || 'empty';
+    let sentence = '缺少步骤：这份没有可核对的过程，系统不猜错在哪一行。';
+    if (kind === 'answer_only') {
+      sentence = '缺少步骤：学生只写了结论行，无法定位具体错在哪一行，系统不猜。';
+    } else if (kind === 'unparsable' || kind === 'unchecked') {
+      sentence = '缺少步骤：写出的过程没能解析成可核对的式子，系统不猜错在哪一行。';
+    } else if (completion.state === 'unfinished') {
+      sentence = '解题未完成：有过程但最后一行还不是结果，系统不猜错在哪一行。';
+    } else if (kind === 'empty') {
+      sentence = '缺少步骤：这份的步骤栏里没有可核对的过程，系统不猜错在哪一行。';
+    }
+    return h('div', { class: 'banner warn' }, sentence, loc.manual_note ? ' ' + loc.manual_note : '');
   }
   if (status === 'missing') {
     return h('div', { class: 'banner warn' },
@@ -1968,7 +2007,8 @@ async function renderCheckOverview(classData, query) {
   const demoCard = h('div', { class: 'card demo-card' },
     h('h3', {}, '合成演示数据'),
     h('p', { class: 'small muted' },
-      '演示不需要选文件、配模型或等网络：载入后回到上方「查看待核对作答」即可开始。'),
+      '演示不需要选文件、配模型或等网络：载入后到上方作业表点「合成演示」那一行即可开始'
+      + '（演示批次单独成一个作业，不会顶替当前的真实作业）。'),
     demoNotice ? h('div', { class: 'banner info' }, demoNotice) : null,
     h('div', { class: 'check-actions', style: 'margin-top:8px' },
       seedBtn, resetBtn, h('span', { class: 'tiny muted' }, '只影响合成数据，真实导入的作答不受影响')),
@@ -2063,7 +2103,11 @@ async function renderCheckAnswer(classData, answerId) {
   const candidates = Array.isArray(data.candidates) ? data.candidates : [];
   const draft = checkDraft(answerId);
   const batch = answer.batch || queue.batch || '';
-  const questionText = followup.question || CHECK_ASK_FALLBACK;
+  // R1-06：建议问句与「有没有依据」都以服务端为准（followup.suggestion 由后端按本条错步生成）。
+  const followSuggestion = followup.suggestion || {};
+  const askAvailable = followup.available === undefined
+    ? Boolean(followup.question) : followup.available === true;
+  const askQuestion = askAvailable ? (followup.question || followSuggestion.question || '') : '';
   const gateBad = (loc.status || '') === 'first_bad';
   const badIndex = loc.first_bad_index === null || loc.first_bad_index === undefined
     ? null : Number(loc.first_bad_index);
@@ -2119,7 +2163,7 @@ async function renderCheckAnswer(classData, answerId) {
     // 「首处不等价」只在错步行里出现一次；标题旁再放一枚会让人以为它在标记整段。
     h('h3', {}, '学生原文（逐行）'),
     lines.length ? linesBody : h('p', { class: 'small muted' }, '这份作答没有正文步骤。'),
-    checkLocateNotice(loc),
+    checkLocateNotice(loc, data.notice),
     gateBad ? checkContrast(loc) : null,
     gateBad && loc.reason_note ? h('p', { class: 'small muted', style: 'margin-top:8px' }, loc.reason_note) : null,
     loc.source === 'preset' ? h('div', { class: 'banner warn', style: 'margin-top:10px' }, CHECK_PRESET_NOTE) : null,
@@ -2141,7 +2185,10 @@ async function renderCheckAnswer(classData, answerId) {
     ),
     h('p', { class: 'tiny muted' }, gateBad
       ? '只记录观察到的不等价，不推断学生为什么这样写。'
-      : '本次定位没有给出错步行，可以留空，或手动写下你观察到的步骤。'),
+      // R1-05：规则判不了的作答（超出核验范围 / 缺步骤）也有人工核验出路——
+      // 自己写下观察到的错误步骤 + 判断依据，服务端按「人工核验」单独留痕，不冒充规则定位。
+      : '本次定位没有给出错步行：可以留空，也可以手动写下你观察到的错误步骤；'
+        + '手写错步算「人工核验」，需要同时在「教师判断」卡里填判断依据。'),
   );
 
   const selected = { code: draft.causeCode !== undefined ? draft.causeCode : (judgement.cause_code || '') };
@@ -2190,18 +2237,66 @@ async function renderCheckAnswer(classData, answerId) {
         '选中上面一条候选后，可直接采纳并保存（原因记为「教师已判断」）；不采纳就点底部「保存错步，原因待判断」。'))
     : null;
 
+  // R1-02：没有候选也要能完成判断——人工填写原因编码与说明，来源记 teacher（与采纳候选可区分）。
+  const manualCode = h('input', {
+    type: 'text', class: 'manual-code', placeholder: '原因编码（可留空）',
+    value: draft.manualCode !== undefined ? draft.manualCode : (judgement.cause_code || ''),
+  });
+  manualCode.addEventListener('input', () => { draft.manualCode = manualCode.value; });
+  const manualLabel = h('input', {
+    type: 'text', class: 'manual-label', placeholder: '原因说明（必填，例如「移项没变号」）',
+    value: draft.manualLabel !== undefined ? draft.manualLabel : (judgement.cause_label_text || ''),
+  });
+  manualLabel.addEventListener('input', () => {
+    draft.manualLabel = manualLabel.value;
+    if (manualBtn) manualBtn.disabled = !String(manualLabel.value || '').trim();
+  });
+  const manualBtn = h('button', {
+    class: 'btn',
+    disabled: !String(manualLabel.value || '').trim(),
+    onclick: () => saveManual(),
+  }, '保存人工判断');
+  const manualWrap = h('details', { class: 'manual-cause', open: !causeRows.length },
+    h('summary', {}, '没有合适候选？人工填写原因（来源记为「教师填写」）'),
+    h('div', { class: 'manual-row' }, manualCode, manualLabel),
+    h('div', { class: 'check-actions', style: 'margin-top:6px' }, manualBtn),
+    h('p', { class: 'tiny muted' },
+      '人工判断与采纳候选都能完成「教师已判断」，但来源不同（教师填写 / 采纳候选），'
+      + '记录里可以区分。判断依据请填上方「教师判断」卡里的「判断依据」。'),
+  );
+
   const causeBlock = h('div', { class: 'card' },
     h('h3', {}, '可能原因'),
     causeRows.length
       ? h('div', { class: 'cause-list' }, causeRows)
       : h('p', { class: 'small muted' }, data.causes_note || '尚无已审错因库可用，保留待判断。'),
     adoptRow,
+    manualWrap,
     data.causes_note ? h('p', { class: 'tiny muted' }, data.causes_note) : null,
   );
-
-  const noteArea = h('textarea', { rows: 2, placeholder: '可选：记一句判断理由，例如「让他重做一道 5(y-3)」' });
+  const noteArea = h('textarea', { rows: 2, placeholder: '可选：记一句备注，例如「让他重做一道 5(y-3)」' });
   noteArea.value = draft.note !== undefined ? draft.note : (judgement.teacher_note || '');
   noteArea.addEventListener('input', () => { draft.note = noteArea.value; });
+
+  // R1-02：判断依据与备注分列——依据进 basis_note（谁凭什么这么判），备注进 teacher_note。
+  // T11：规则判不了的作答（applicability=optional，如超出核验范围）人工改判原因时，
+  // 后端强制要求依据（400 basis_required）。这里只加一句必填提示，不改布局；
+  // 已经记成「无需判断」的不再提示（老师并没有形成原因判断）。
+  const basisRequired = (data.applicability || '') === 'optional'
+    && (judgement.cause_state || '') !== 'not_applicable';
+  const basisArea = h('textarea', {
+    rows: 2,
+    placeholder: basisRequired
+      ? '必填：本题规则判不了，写清你凭哪条证据判的原因（例如「作业本原图第 2 行写的是 2x>2，他抄成 x<1」）'
+      : '可选：这次判断的依据，例如「第 2 行把 −6 写成 −2，课堂口述也这么说」',
+  });
+  basisArea.value = draft.basis !== undefined ? draft.basis : (judgement.basis_note || '');
+  basisArea.addEventListener('input', () => { draft.basis = basisArea.value; });
+  const basisHint = basisRequired
+    ? h('p', { class: 'tiny muted basis-hint' },
+      '本题超出规则核验范围：要判原因就必须写判断依据，否则保存会被拒绝（basis_required）；'
+      + '确认无需判断就直接点主按钮，系统会记成「无需判断」，不要求依据。')
+    : null;
 
   const errorBox = h('div', { class: 'banner danger', style: 'margin:0 0 6px' }, '');
   errorBox.hidden = true;
@@ -2212,7 +2307,8 @@ async function renderCheckAnswer(classData, answerId) {
   // R-04（契约 §4.2）：这份作答已经存过「教师已判断」的原因时，主按钮不能再写「原因待判断」——
   // 那会让按钮说谎。改按状态换文案，并补一条「改为原因待判断」的次级路径，
   // 让 A5 要求的「保留待判断」在改判之后仍然可达。
-  const decidedCause = judgement.cause_state === 'decided' && !!judgement.cause_code;
+  // R1-02：人工判断允许只填说明不填编码，所以这里按状态判断，不再要求 code 非空。
+  const decidedCause = judgement.cause_state === 'decided';
   const SAVE_LABEL_PENDING = '保存错步，原因待判断';
   const SAVE_LABEL_DECIDED = '保存错步（沿用已判断原因）';
   const saveLabel = () => (decidedCause ? SAVE_LABEL_DECIDED : SAVE_LABEL_PENDING);
@@ -2221,23 +2317,52 @@ async function renderCheckAnswer(classData, answerId) {
   const resetCauseBtn = decidedCause
     ? h('button', { class: 'btn sm', onclick: () => save(null, { undecided: true }) }, '改为原因待判断')
     : null;
+  // R1-02「修改或撤回」：撤回=把当前版本的结论作废，本份回到待核对队列（历史留痕，不删行）。
+  const canRetract = judgement.progress === 'checked';
+  const retractBtn = canRetract
+    ? h('button', { class: 'btn sm', onclick: () => save(null, { retract: true }) },
+      '撤回本次结论（回到待核对）')
+    : null;
+  const retractedLine = judgement.retracted && judgement.retracted.at
+    ? h('p', { class: 'tiny muted' },
+      '上一次结论已于 ' + fmtDateTime(judgement.retracted.at) + ' 撤回'
+      + (judgement.retracted.reason ? '：' + judgement.retracted.reason : '')
+      + '。结论已作废，本份回到待核对队列。')
+    : null;
 
   const judgeBlock = h('div', { class: 'card judge-card' },
     h('h3', {}, '教师判断'),
     judgement.stale
       ? h('div', { class: 'banner warn', style: 'margin-top:8px' }, '作答已更新，旧判断不再作为当前结论。')
       : null,
+    retractedLine,
     decidedCause
       ? h('div', { class: 'judge-current' },
         h('p', { style: 'margin:0' }, '当前原因：', h('b', {}, judgement.cause_label_text || judgement.cause_code || '')),
+        checkCauseSourceText(judgement)
+          ? h('p', { class: 'tiny muted', style: 'margin:4px 0 0' }, checkCauseSourceText(judgement))
+          : null,
         h('div', { class: 'check-actions', style: 'margin-top:8px' }, resetCauseBtn),
         h('p', { class: 'tiny muted' },
           '主按钮沿用这条原因；点「改为原因待判断」会把旧原因记入改判历史，原因回到待判断。'))
       : null,
     h('label', { class: 'field', style: 'margin-top:8px' },
+      h('span', { class: 'lab' }, basisRequired
+        ? '判断依据（本题规则判不了：人工改判原因时必填）'
+        : '判断依据（可选，与备注分开记录）'),
+      basisArea,
+      basisHint,
+    ),
+    h('label', { class: 'field', style: 'margin-top:8px' },
       h('span', { class: 'lab' }, '教师备注（可选，随这次保存一起记录）'),
       noteArea,
     ),
+    retractBtn
+      ? h('div', { class: 'check-actions', style: 'margin-top:8px' }, retractBtn)
+      : null,
+    retractBtn
+      ? h('p', { class: 'tiny muted' }, '撤回不会删除记录：旧结论进历史，本份回到「待核对」，可以重新核对。')
+      : null,
     h('p', { class: 'tiny muted' }, CHECK_QUEUE_NOTE),
   );
   syncAdopt();
@@ -2258,8 +2383,15 @@ async function renderCheckAnswer(classData, answerId) {
     ),
   );
 
-  /* ---- A4：当面追问 ---- */
+  /* ---- A4：当面追问（R1-05/R1-06）---- */
   let skipped = draft.skipped === true;
+  // R1-06：问句可以改——线下提问就写老师自己实际问的那一句，服务端按「是否逐字等于本条建议
+  // 问句」判来源（preset / teacher / library），前端不再自己编问句、也不再用写死的常量兜底。
+  const askInput = h('input', { type: 'text', class: 'ask-input' });
+  askInput.value = draft.askQuestion !== undefined ? draft.askQuestion : askQuestion;
+  askInput.addEventListener('input', () => { draft.askQuestion = askInput.value; });
+  const askNow = () => String(askInput.value || '').trim();
+
   const followArea = h('textarea', { rows: 2, placeholder: '逐字记下学生原话，例如：2 只要乘 y 就好了。' });
   followArea.value = draft.followup !== undefined
     ? draft.followup
@@ -2296,7 +2428,7 @@ async function renderCheckAnswer(classData, answerId) {
   const skipBtn = h('button', {
     class: 'btn ghost',
     onclick: () => {
-      // 本地状态而已：不 fetch、不动 hash、不写库（A4）。
+      // 本地状态而已：不 fetch、不动 hash、不写库（A4）；跳过不产生任何追问记录。
       skipped = true;
       draft.skipped = true;
       draft.followup = '';
@@ -2308,17 +2440,54 @@ async function renderCheckAnswer(classData, answerId) {
     },
   }, '暂时跳过');
 
+  // R1-06 第 5 条：证据变了（改了错步/原因，或作答被补录校正），上一次的原话不再算已确认。
+  const reviewBanner = followup.needs_review
+    ? h('div', { class: 'banner warn', style: 'margin:8px 0' },
+      h('b', {}, '上一次记录的学生回答已不再是当前证据'),
+      h('p', { class: 'tiny', style: 'margin:4px 0 0' },
+        followup.review_note || '这条追问依据的错步或原因已经变了，请重新确认。'))
+    : null;
+
   const recordedLine = followup.recorded
     ? h('div', { class: 'quote-box' },
-      h('div', { class: 'rec-no' }, '上次记录的学生原话'),
+      h('div', { class: 'rec-no' },
+        '上次记录的学生原话'
+        + (followup.source_label ? '（问句来源：' + followup.source_label + '）' : '')),
       h('p', { class: 'quote' }, followup.answer_text || '（原话为空）'))
     : null;
 
+  // 失效的历史原话仍然要看得到（「留历史」），但明确标成已失效、不是当前证据。
+  const historyNodes = (followup.history || [])
+    .filter((item) => item.answer_text && !item.current_version)
+    .slice(0, 3)
+    .map((item) => h('div', { class: 'quote-box' },
+      h('div', { class: 'rec-no' },
+        '旧版本记录（' + (item.invalidated_reason || '已失效') + '）'),
+      h('p', { class: 'quote' },
+        (item.question ? '问：' + item.question + '；' : '') + '学生原话：「' + item.answer_text + '」')));
+
+  const askLine = askAvailable
+    ? h('p', { class: 'ask-line' }, '可以这样问学生：', h('b', {}, askQuestion))
+    : h('p', { class: 'ask-line' },
+      h('b', {}, CHECK_ASK_UNAVAILABLE),
+      h('span', { class: 'tiny muted' },
+        ' ' + (followSuggestion.note || followup.note || '这一份没有可追问的错步。')));
+
+  const askField = h('label', { class: 'field', style: 'margin-top:8px' },
+    h('span', { class: 'lab' }, askAvailable
+      ? '要问的那一句（可改；改了就算教师自拟）'
+      : '线下提问：写下你实际问的那一句（选了「记录学生回答」就必须填）'),
+    askInput,
+  );
+
   const askCard = h('div', { class: 'card check-ask' },
     h('h3', {}, '当面追问'),
-    h('p', { class: 'ask-line' }, '可以这样问学生：', h('b', {}, questionText)),
-    h('p', { class: 'tiny muted' }, '跳过不等于学生拒答；没有新增依据时，原因仍然待判断。'),
+    askLine,
+    askField,
+    reviewBanner,
     recordedLine,
+    historyNodes.length ? h('div', {}, historyNodes) : null,
+    h('p', { class: 'tiny muted' }, '跳过不等于学生拒答；没有新增依据时，原因仍然待判断。'),
     h('div', { class: 'check-actions' }, recordBtn, skipBtn),
     skipLine,
     followWrap,
@@ -2329,6 +2498,7 @@ async function renderCheckAnswer(classData, answerId) {
     saveBtn.disabled = busy;
     adoptBtn.disabled = busy || !candidates.some((item) => (item.code || '') === selected.code);
     if (resetCauseBtn) resetCauseBtn.disabled = busy;
+    if (retractBtn) retractBtn.disabled = busy;
     // 忙完要回到本状态该有的文案，别把「沿用已判断原因」洗成「原因待判断」。
     saveBtn.textContent = busy ? '保存中…' : saveLabel();
   }
@@ -2351,24 +2521,43 @@ async function renderCheckAnswer(classData, answerId) {
     }
   }
 
-  // adoptCandidate：采纳候选原因（改判）；options.undecided：显式回到「原因待判断」。
+  // 人工填写原因：没有候选也能完成判断（R1-02），来源固定标 teacher。
+  async function saveManual() {
+    const label = String(manualLabel.value || '').trim();
+    if (!label) return;
+    await save(null, { manual: true });
+  }
+
+  // adoptCandidate：采纳候选原因（改判）；options.undecided：显式回到「原因待判断」；
+  // options.retract：撤回本次结论（progress=pending，服务端把当前版本结论作废）；
+  // options.manual：人工填写原因（cause_source=teacher）。
   async function save(adoptCandidate, options) {
     errorBox.hidden = true;
     refreshRow.hidden = true;
     const forceUndecided = !!(options && options.undecided);
+    const retract = !!(options && options.retract);
+    const manual = !!(options && options.manual);
     const followed = skipped ? '' : String(followArea.value || '').trim();
     let causeState = 'undecided';
     let causeCode = '';
     let causeLabel = '';
+    let causeSource = '';
     if (forceUndecided) {
-      // 契约 §4.2：旧原因由后端推进 cause_history，请求体不再带 cause_code/cause_label。
+      // 契约 §4.3：旧原因由后端推进 cause_history，请求体不再带 cause_code/cause_label。
       causeState = 'undecided';
+    } else if (manual) {
+      causeState = 'decided';
+      causeCode = String(manualCode.value || '').trim();
+      causeLabel = String(manualLabel.value || '').trim();
+      causeSource = 'teacher';
     } else if (adoptCandidate) {
       causeState = 'decided';
       causeCode = adoptCandidate.code || '';
       causeLabel = adoptCandidate.label || '';
+      causeSource = 'preset';
     } else if (decidedCause) {
       // 已经是「教师已判断」的：主按钮沿用原结论，不要在顺手保存时被打回待判断。
+      // 来源让服务端自己判（编码仍在候选里就是 preset，否则 teacher），这里不硬塞。
       causeState = 'decided';
       causeCode = judgement.cause_code || '';
       causeLabel = judgement.cause_label_text || '';
@@ -2380,22 +2569,33 @@ async function renderCheckAnswer(classData, answerId) {
       cause_code: causeCode,
       cause_label: causeLabel,
       teacher_note: String(noteArea.value || '').trim(),
+      basis_note: String(basisArea.value || '').trim(),
       cause_state: causeState,
-      followup: { question: questionText, answer_text: followed },
+      followup: { question: askNow(), answer_text: followed },
     };
+    if (causeSource) payload.cause_source = causeSource;
+    if (retract) {
+      // 撤回只改进度轴：不提交任何原因字段，避免和后端的非法组合校验打架。
+      payload.progress = 'pending';
+      payload.change_reason = '老师在页面上撤回本次结论';
+      delete payload.cause_code;
+      delete payload.cause_label;
+      delete payload.cause_state;
+    }
+    // R1-06：没有适用问句时也可以记线下提问，但必须写下实际问的那一句——
+    // 本地先拦一次，别让老师等到服务端 400 才知道少了什么。
+    if (!retract && followed && !askNow()) {
+      errorBox.hidden = false;
+      errorBox.textContent = '要记录学生回答，请先在「当面追问」里填上你实际问的那一句'
+        + '（这份作答' + (askAvailable ? '' : '没有适用追问，') + '线下提问也可以）。本次没有保存。';
+      return;
+    }
     setBusy(true);
     try {
       const result = await api(base + '/answers/' + answerId + '/save', { method: 'POST', body: payload });
       state.ui.checkDrafts[String(answerId)] = {};
-      showReceipt(result || {}, {
-        followed,
-        chosenCause: adoptCandidate,
-        causeState,
-        causeLabel,
-        causeCode,
-        note: payload.teacher_note,
-        observed: payload.observed_step,
-      });
+      // R1-03：回执只读服务端返回的权威值（不再拿请求里的 causeState/causeLabel 渲染）。
+      showReceipt(result || {});
     } catch (err) {
       // A5：失败留在当前页，输入一个都不清。
       fillError(err);
@@ -2404,28 +2604,47 @@ async function renderCheckAnswer(classData, answerId) {
     }
   }
 
-  function showReceipt(result, ctx) {
+  // R1-03：回执**只读服务端响应**（result），不再用请求里的值兜底——
+  // 否则 out_of_scope 点「采纳」时会出现「回执说教师已判断、chips 说原因待判断」的自相矛盾。
+  function showReceipt(result) {
     const receipt = result.receipt || {};
-    const after = result.judgement || judgement;
+    const after = result.judgement || {};
     const afterQueue = result.queue || {};
+    const afterAnswer = result.answer || {};
+    const afterFollowup = result.followup || {};
+    const afterLocate = result.locate || {};
+    const retracted = result.action === 'retracted';
     const className = receipt.class_name || classData.name || '本班级';
     const assignmentName = receipt.assignment_name || batch || '本次作业';
     const nextAfter = afterQueue.next_answer_id === undefined || afterQueue.next_answer_id === null
       ? null : Number(afterQueue.next_answer_id);
     const isLast = afterQueue.is_last === true || nextAfter === null;
     const remaining = afterQueue.remaining === undefined ? null : checkNum(afterQueue.remaining);
-    const evidence = ctx.chosenCause || candidates.find((item) => (item.code || '') === ctx.causeCode) || candidates[0] || null;
+    const causeState = after.cause_state || 'undecided';
+    const causeLabelText = causeState === 'decided'
+      ? '教师已判断：' + (after.cause_label_text || after.cause_code || '（未命名原因）')
+      : (causeState === 'not_applicable'
+        ? '无需判断：本题没有可归因的错步（不计入已确认错因）'
+        : '原因待判断（不计入已确认错因）');
+    const observed = after.observed_step || afterLocate.first_bad_text || '';
+    const followed = afterFollowup.recorded ? (afterFollowup.answer_text || '') : '';
+    // 候选证据也用响应里的 candidates（保存响应带这一项），按响应里的 cause_source 判断是否已采纳。
+    const afterCandidates = Array.isArray(result.candidates) ? result.candidates : [];
+    const adopted = after.cause_source === 'preset';
+    const evidence = afterCandidates.find((item) => (item.code || '') === (after.cause_code || ''))
+      || (afterCandidates.length ? afterCandidates[0] : null);
 
-    const quoteNode = ctx.followed
+    const quoteNode = followed
       ? h('div', { class: 'quote-box' },
-        h('div', { class: 'rec-no' }, '问：' + questionText),
-        h('p', { class: 'quote' }, '学生原话：「' + ctx.followed + '」'))
-      : h('p', { class: 'small muted' }, '本次未记录学生回答（已跳过提问或未填写原话）；原因仍待判断。');
+        h('div', { class: 'rec-no' },
+          '问：' + (afterFollowup.question || askNow() || CHECK_ASK_UNAVAILABLE)),
+        h('p', { class: 'quote' }, '学生原话：「' + followed + '」'))
+      : h('p', { class: 'small muted' }, '本次未记录学生回答（已跳过提问或未填写原话）；原因仍在待判断。');
 
     const evidenceNode = evidence
       ? h('div', { class: 'evidence' },
-        h('div', { class: 'rec-no' }, (ctx.chosenCause ? '已采纳的候选：' : '未采纳的候选依据：')
-          + (evidence.label || evidence.code || '')),
+        h('div', { class: 'rec-no' },
+          (adopted ? '已采纳的候选：' : '未采纳的候选依据：') + (evidence.label || evidence.code || '')),
         checkEvidenceList('支持', evidence.support),
         checkEvidenceList('削弱', evidence.rebut),
         checkEvidenceList('待补', evidence.pending))
@@ -2437,8 +2656,13 @@ async function renderCheckAnswer(classData, answerId) {
 
     const receiptNode = h('div', { class: 'receipt' },
       h('div', { class: 'card receipt-hero' },
-        h('h2', {}, '已保存'),
-        h('p', { class: 'receipt-line' }, '已保存到：', h('b', {}, className), ' · ', h('b', {}, assignmentName)),
+        h('h2', {}, retracted ? '已撤回' : '已保存'),
+        h('p', { class: 'receipt-line' },
+          retracted ? '撤回后回到待核对：' : '已保存到：',
+          h('b', {}, className), ' · ', h('b', {}, assignmentName)),
+        h('p', { class: 'tiny muted' },
+          (afterAnswer.student_label || '学生') + ' · 第 ' + (afterAnswer.question_no || '—') + ' 题'
+          + ' · 记录编号 ' + (afterAnswer.record_key || '—')),
         receipt.status_line ? h('p', { class: 'small muted' }, '两轴状态：' + receipt.status_line) : null,
         checkAxisChips(after),
         receipt.saved_at ? h('p', { class: 'tiny muted' }, '保存时间：' + fmtDateTime(receipt.saved_at)) : null,
@@ -2447,24 +2671,35 @@ async function renderCheckAnswer(classData, answerId) {
         h('h3', {}, '这次判断根据什么'),
         h('div', { class: 'kv' },
           h('div', { class: 'k' }, '观察到的错步'),
-          h('p', { class: 'step-math' }, ctx.observed || '（未填写）')),
+          h('p', { class: 'step-math' }, observed || '（未填写）')),
+        // R1-05：人工核验与规则结果在回执里也分开说，别让老师以为都是规则给的。
+        after.verify_source === 'manual'
+          ? h('p', { class: 'small' }, '核验来源：教师人工核验'
+            + (after.teacher_error_text ? '（人工记录的错步：「' + after.teacher_error_text + '」）' : ''))
+          : (after.verify_source_label ? h('p', { class: 'small' }, '核验来源：' + after.verify_source_label) : null),
         quoteNode,
         evidenceNode,
         h('div', { class: 'kv', style: 'margin-top:10px' },
           h('div', { class: 'k' }, '教师判断'),
-          h('p', {}, ctx.causeState === 'decided'
-            ? '教师已判断：' + (ctx.causeLabel || '（未命名原因）')
-            : '原因待判断（不计入已确认错因）')),
-        ctx.note ? h('p', { class: 'small' }, '教师备注：' + ctx.note) : null,
+          h('p', {}, causeLabelText)),
+        checkCauseSourceText(after)
+          ? h('p', { class: 'small' }, checkCauseSourceText(after))
+          : null,
+        after.basis_note ? h('p', { class: 'small' }, '判断依据：' + after.basis_note) : null,
+        after.teacher_note ? h('p', { class: 'small' }, '教师备注：' + after.teacher_note) : null,
       ),
-      isLast
+      retracted
         ? h('div', { class: 'card' },
           h('div', { class: 'banner info' },
-            '本次作业的待核对作答已全部处理完。可以从「查看核对记录」找回原因待判断的记录，课堂上再补记学生原话。'))
-        : h('div', { class: 'card' },
-          h('p', { class: 'small', style: 'margin:0' }, remaining === null
-            ? '同一个队列里还有待核对的作答。'
-            : '这份已经保存，队列里还剩 ' + remaining + ' 份待核对（仍是本次作业）。')),
+            '本次结论已作废，本份回到「待核对」队列；旧结论与撤回理由留在历史里，可以重新核对。'))
+        : (isLast
+          ? h('div', { class: 'card' },
+            h('div', { class: 'banner info' },
+              '本次作业的待核对作答已全部处理完。可以从「查看核对记录」找回原因待判断的记录，课堂上再补记学生原话。'))
+          : h('div', { class: 'card' },
+            h('p', { class: 'small', style: 'margin:0' }, remaining === null
+              ? '同一个队列里还有待核对的作答。'
+              : '这份已经保存，队列里还剩 ' + remaining + ' 份待核对（仍是本次作业）。'))),
       // A6：回执页的主动作（查看下一份）必须在首屏；放进固定操作栏，保存完不用滚动就能接着做。
       h('div', { class: 'check-bar' },
         h('div', { class: 'check-bar-inner' },
@@ -2494,7 +2729,8 @@ async function renderCheckAnswer(classData, answerId) {
 
 /* ---------------- A5：记录找回 ---------------- */
 async function renderCheckRecords(classData, query) {
-  const allowed = ['undecided', 'decided', 'all'];
+  // R1-02 三态：原因待判断 / 教师已判断 / 无需判断（正确·缺测·缺少步骤收口到这里）。
+  const allowed = ['undecided', 'decided', 'not_applicable', 'all'];
   const causeState = allowed.indexOf(query.cause_state) >= 0 ? query.cause_state : 'undecided';
   const params = new URLSearchParams({ cause_state: causeState });
   if (query.batch) params.set('batch', query.batch);
@@ -2510,6 +2746,7 @@ async function renderCheckRecords(classData, query) {
   const filters = [
     ['undecided', '原因待判断'],
     ['decided', '教师已判断'],
+    ['not_applicable', '无需判断'],
     ['all', '全部'],
   ];
 
@@ -2542,8 +2779,13 @@ async function renderCheckRecords(classData, query) {
         h('td', { class: 'step-math sm' }, item.observed_step || '—'),
         h('td', {}, h('span', { class: 'axis-chip progress' + (item.progress === 'checked' ? ' on' : '') },
           item.progress === 'checked' ? '已核对' : '待核对')),
-        h('td', {}, h('span', { class: 'axis-chip cause' + (item.cause_state === 'decided' ? ' on' : '') },
-          item.cause_label_text || (item.cause_state === 'decided' ? '教师已判断' : '原因待判断'))),
+        h('td', {}, h('span', {
+          class: 'axis-chip cause' + (item.cause_state === 'decided' ? ' on' : '')
+            + (item.cause_state === 'not_applicable' ? ' na' : ''),
+        },
+        item.cause_label_text || item.cause_state_label
+          || (item.cause_state === 'decided' ? '教师已判断'
+            : (item.cause_state === 'not_applicable' ? '无需判断' : '原因待判断')))),
         h('td', { class: 'small muted hide-sm' }, fmtDateTime(item.saved_at)),
         // 行内动作要有按钮形态（走查发现 ⑪）：纯文字看不出能点。
         h('td', {}, h('button', {

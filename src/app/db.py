@@ -4,6 +4,7 @@
 字典序即时间序，便于按时间筛选。
 """
 
+import json
 import os
 import sqlite3
 import threading
@@ -13,10 +14,29 @@ from datetime import datetime
 
 SCHEMA_VERSION = "4"
 
+# ---- 合成演示作答的存储级标识（与 demo_answers 共用同一份常量，避免两处各写一个字符串）----
+# 三个一起构成「这条作答确实是演示写入的」的结构标记：
+#   source  = 固定来源标记（CSV 的「来源批次」列也能写这五个字，所以它只是第一道条件）
+#   record_key 以 DEMO- 开头（老师给真实作答编这种编号的可能性可以忽略）
+#   batch   = 演示专用批次名，真实导入不可能自然取到
+# 下面的触发器把「合成作答只能待在演示批次」变成库级不变量：
+# 任何绕过 seed 直接写进真实批次的演示行，会在写入后立即被归位到演示批次，
+# 于是「真实作业的应交 / 待核对 / 原题错误数」无论由哪段代码统计都不会被演示数据污染。
+# 代价（已知且可接受）：真实导入若**同时**把来源列写成「合成演示」、编号又以 DEMO- 开头，
+# 会被当成演示数据归位并被 reset 清掉；这两个条件要人为同时凑出来才会发生，
+# 而只撞其中一个（只有来源、或只有前缀、或只撞批名）都不会被删。
+DEMO_SOURCE = "合成演示"
+DEMO_BATCH = "【合成演示】不计入真实作业"
+DEMO_RECORD_PREFIX = "DEMO-"
+
 # 作答记录：老师用 CSV 批量导入的「一份作答」，与错题分开存。
 # 错题表带审核状态（pending/confirmed/returned），导入的作答还没有经过审核，
 # 混进去会把班级统计的待核对/已确认数量算错，也会把「缺测」和「AI 判定信息不足」混为一谈。
 # record_key 是老师给的稳定编号，同一个班级里唯一，用来识别重复导入。
+# source 是「这条作答从哪来」：CSV 的「来源批次」列写什么就是什么，**不可以用它单独判定真伪**
+# （真实数据也能写成「合成演示」）。合成演示作答另有两条结构标记：record_key 带 `DEMO-` 前缀、
+# batch 固定为 DEMO_BATCH；核对查询一律按 (batch, source) 双重收口，
+# 所以 idx_answers_source 存在的意义就是让这类「按来源收口」的查询不必全表扫描。
 ANSWERS_DDL = (
     """CREATE TABLE IF NOT EXISTS answers (
     id                INTEGER PRIMARY KEY,
@@ -43,7 +63,16 @@ ANSWERS_DDL = (
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_answers_class_record ON answers(class_id, record_key)",
     "CREATE INDEX IF NOT EXISTS idx_answers_student ON answers(student_id)",
     "CREATE INDEX IF NOT EXISTS idx_answers_batch ON answers(class_id, batch)",
+    "CREATE INDEX IF NOT EXISTS idx_answers_source ON answers(class_id, source)",
 )
+
+# T6：两个「演示批次归位」触发器（trg_answers_demo_batch_ins / _upd）已删除。
+# 理由（船长裁定）：它们是隐形行为——写入时悄悄改 batch，谁也说不清某一行为什么换了作业；
+# 而且它们是**唯一**防线时，绕过触发器（或旧库还没建触发器）统计就会被演示数据污染。
+# 现在改为显式口径：answer_check 的每条查询按 (batch, source) 收口，stats.answer_check_stats
+# 也显式 `AND a.source<>'合成演示'`；迁移期的一次性归位（ensure_answers_schema）保留，
+# 旧库里演示写入的行仍然会被挪回演示批次，但那是**一次可见的迁移**，不是每次写入都发生的魔法。
+# 旧库若已建过触发器，打开时由 Database._ensure_columns() 显式 DROP（见那里的注释）。
 
 # 作答审核：老师针对一条作答发起一次 AI 分析后留下的候选错因。
 # 建议本身不是错题；只有老师确认时才生成正式错题，并把 mistake_id 记回来。
@@ -137,6 +166,33 @@ FOLLOWUP_DDL = (
 # 两条轴分开存。answer_version 记住保存时的作答指纹，只有与 answers.fingerprint 相同才算当前结论；
 # 重导后旧记录自动退出队列与统计，不再写任何清理逻辑。
 # 与 answer_reviews 分开：后者是模型候选错因，这里是教师处理记录，两者不能混成一个状态。
+#
+# R1-02 / R1-03 增列（向后兼容：老库由 ensure_answer_check_schema 逐列 ALTER 补齐）：
+#   cause_source        错因来源：'' / none（未判断）/ preset（采纳候选）/ teacher（教师自填）/ legacy（历史行）
+#   basis_note          判断依据（与教师备注 teacher_note 分列；PRD §4.1「候选错因分别列出支持证据…
+#                       不编造步骤或强行选定原因」，教师要知道自己凭什么这么判）
+#   change_reason       最近一次改判/撤回的理由（改判理由与操作人、时间同列记录）
+#   completion_state    ④ 作答完成情况快照（unknown/unfinished/solved/wrong_result）
+#   failed_line_index   核验范围里的失败行（out_of_scope 时哪一行没法解析）
+#   verification_scope  核验范围（none/partial/full）
+#   manual_state        ⑤ 人工处理状态（none/referred/need_steps）
+#   manual_reason       ⑤ 的状态原因码（question_unparsable/step_unparsable/empty_steps/answer_only）
+#   locate_detail       ③④⑤+核验范围四组结构的 JSON 快照（历史可追溯，不受规则引擎改版影响）
+#   decided_by          做出「教师已判断」的操作人
+#   invalidated_at/_reason/_by
+#                       撤回（回到待核对）时记谁在什么时候因为什么撤回；撤回的行 answer_version 置空，
+#                       因此它自动退出队列/详情/记录/统计，但行本身与 cause_history 都留着。
+#
+# R1-05 增列（人工核验轴，与规则定位结果**分开存**；老库同样由 ensure_answer_check_schema 补列）：
+#   verify_source       这条结论的核验来源：'' / rule（规则定位）/ preset（合成演示预置定位）/
+#                       manual（规则判不了或规则给不出这个错步，由教师人工记录并给出依据）。
+#                       统计与记录按它就能区分「规则结果」与「人工核验」，不必去猜 observed_step 的来历。
+#   teacher_error_text  教师人工记录的数学错误（错误步骤原文/说明），与规则填的 observed_step 分列，
+#                       规则结果被覆盖时旧的规则观察仍可从 cause_history 里查到。
+#   teacher_verified_at / teacher_verified_by
+#                       谁在什么时候做了这次人工核验（留痕；没有人工核验时为空/NULL）。
+# 追问来源从两值扩到三值：preset（系统问句）/ teacher（教师自拟）/ library（已审资源库，R1-06 用）；
+# 细分来源写 answer_followups.source_detail（demo_record / rule:term_move / teacher / library:<id>）。
 ANSWER_CHECK_DDL = (
     """CREATE TABLE IF NOT EXISTS answer_checks (
     id             INTEGER PRIMARY KEY,
@@ -147,22 +203,43 @@ ANSWER_CHECK_DDL = (
     answer_version TEXT NOT NULL DEFAULT '',
     progress       TEXT NOT NULL DEFAULT 'checked',
     cause_state    TEXT NOT NULL DEFAULT 'undecided',
+    cause_source   TEXT NOT NULL DEFAULT '',
     observed_step  TEXT NOT NULL DEFAULT '',
     first_bad_index INTEGER,
     locate_status  TEXT NOT NULL DEFAULT '',
     locate_source  TEXT NOT NULL DEFAULT '',
     contrast_note  TEXT NOT NULL DEFAULT '',
+    completion_state TEXT NOT NULL DEFAULT '',
+    failed_line_index INTEGER,
+    verification_scope TEXT NOT NULL DEFAULT '',
+    manual_state   TEXT NOT NULL DEFAULT '',
+    manual_reason  TEXT NOT NULL DEFAULT '',
+    locate_detail  TEXT NOT NULL DEFAULT '{}',
     cause_code     TEXT NOT NULL DEFAULT '',
     cause_label    TEXT NOT NULL DEFAULT '',
     cause_history  TEXT NOT NULL DEFAULT '[]',
     teacher_note   TEXT NOT NULL DEFAULT '',
+    basis_note     TEXT NOT NULL DEFAULT '',
+    verify_source  TEXT NOT NULL DEFAULT '',
+    teacher_error_text TEXT NOT NULL DEFAULT '',
+    teacher_verified_at TEXT NOT NULL DEFAULT '',
+    teacher_verified_by INTEGER,
+    change_reason  TEXT NOT NULL DEFAULT '',
     created_by     INTEGER,
     created_at     TEXT NOT NULL,
     updated_at     TEXT NOT NULL,
-    decided_at     TEXT NOT NULL DEFAULT ''
+    decided_at     TEXT NOT NULL DEFAULT '',
+    decided_by     INTEGER,
+    invalidated_at TEXT NOT NULL DEFAULT '',
+    invalidated_reason TEXT NOT NULL DEFAULT '',
+    invalidated_by INTEGER
 )""",
     "CREATE INDEX IF NOT EXISTS idx_checks_answer ON answer_checks(answer_id)",
     "CREATE INDEX IF NOT EXISTS idx_checks_class  ON answer_checks(class_id, batch)",
+    # 同一份作答的同一个版本只能有一条当前结论：A→B→A 反复提交不许堆行（R1-03）。
+    # 用部分索引：撤回后的行 answer_version 置空（历史留痕），因此不受唯一约束限制。
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_checks_answer_version"
+    " ON answer_checks(answer_id, answer_version) WHERE answer_version <> ''",
     # 当面追问的原话记录挂在「作答 + 版本」上，不以已经生成错题为前提。
     """CREATE TABLE IF NOT EXISTS answer_followups (
     id          INTEGER PRIMARY KEY,
@@ -173,13 +250,48 @@ ANSWER_CHECK_DDL = (
     answer_version TEXT NOT NULL DEFAULT '',
     question    TEXT NOT NULL DEFAULT '',
     source      TEXT NOT NULL DEFAULT 'preset',
+    source_detail TEXT NOT NULL DEFAULT '',
     answer_text TEXT NOT NULL DEFAULT '',
     asked_at    TEXT NOT NULL DEFAULT '',
     answered_at TEXT NOT NULL DEFAULT '',
+    evidence_snapshot TEXT NOT NULL DEFAULT '{}',
+    invalidated_at TEXT NOT NULL DEFAULT '',
+    invalidated_reason TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 )""",
     "CREATE INDEX IF NOT EXISTS idx_answer_followups_answer ON answer_followups(answer_id)",
+)
+
+# 老库补列清单（顺序即执行顺序）：ensure_answer_check_schema 与 Database._ensure_columns 共用，
+# 两处若各写一份必然漂移，所以只留这一份。
+ANSWER_CHECK_COLUMNS = (
+    ("cause_source", "TEXT NOT NULL DEFAULT ''"),
+    ("basis_note", "TEXT NOT NULL DEFAULT ''"),
+    ("change_reason", "TEXT NOT NULL DEFAULT ''"),
+    ("completion_state", "TEXT NOT NULL DEFAULT ''"),
+    ("failed_line_index", "INTEGER"),
+    ("verification_scope", "TEXT NOT NULL DEFAULT ''"),
+    ("manual_state", "TEXT NOT NULL DEFAULT ''"),
+    ("manual_reason", "TEXT NOT NULL DEFAULT ''"),
+    ("locate_detail", "TEXT NOT NULL DEFAULT '{}'"),
+    ("decided_by", "INTEGER"),
+    ("invalidated_at", "TEXT NOT NULL DEFAULT ''"),
+    ("invalidated_reason", "TEXT NOT NULL DEFAULT ''"),
+    ("invalidated_by", "INTEGER"),
+    # R1-05 人工核验轴（与规则结果分列；老库补空列，历史行读作「未记录来源」）
+    ("verify_source", "TEXT NOT NULL DEFAULT ''"),
+    ("teacher_error_text", "TEXT NOT NULL DEFAULT ''"),
+    ("teacher_verified_at", "TEXT NOT NULL DEFAULT ''"),
+    ("teacher_verified_by", "INTEGER"),
+)
+
+ANSWER_FOLLOWUP_COLUMNS = (
+    ("source_detail", "TEXT NOT NULL DEFAULT ''"),
+    ("invalidated_at", "TEXT NOT NULL DEFAULT ''"),
+    ("invalidated_reason", "TEXT NOT NULL DEFAULT ''"),
+    # R1-06：记下这条追问是「拿哪份证据」问的；关键证据一改，旧确认据此失效。
+    ("evidence_snapshot", "TEXT NOT NULL DEFAULT '{}'"),
 )
 
 SCHEMA = """
@@ -431,13 +543,24 @@ ANSWER_INDEX_NAMES = (
     "idx_answers_class_record",
     "idx_answers_student",
     "idx_answers_batch",
+    "idx_answers_source",
     "idx_reviews_answer",
     "idx_reviews_answer_confirmed",
 )
 
+# 已废弃的库级触发器名：T6 起不再创建，旧库打开时由 Database._ensure_columns() 显式 DROP。
+RETIRED_TRIGGER_NAMES = (
+    "trg_answers_demo_batch_ins",
+    "trg_answers_demo_batch_upd",
+)
+
 
 def answers_schema_ready(db_file):
-    """只读判断已有库是否已有作答记录表、作答审核表、学生编号列和对应索引。"""
+    """只读判断已有库是否已有作答记录表、作答审核表、学生编号列与索引。
+
+    注意：**不再**要求那两个「演示批次归位」触发器（T6 已删除这套隐形行为）。
+    旧库里若还留着它们，结构仍算就绪；它们会被 Database 打开时清掉，不影响判定。
+    """
     uri = "file:%s?mode=ro" % db_file.replace("?", "%3f")
     conn = sqlite3.connect(uri, uri=True)
     try:
@@ -509,6 +632,13 @@ def ensure_answers_schema(db_file):
                 conn.execute("ALTER TABLE students ADD COLUMN code TEXT NOT NULL DEFAULT ''")
             for ddl in ANSWERS_DDL + REVIEWS_DDL:
                 conn.execute(ddl)
+            # 一次性归位：旧版本把演示作答写进了真实批次（DEMO_BATCH 曾与真实作业撞名），
+            # 这里把「确实由演示写入」的行挪回演示批次。判据用 record_key 前缀 + 来源标记，
+            # 老师的真实作答一条都不动（它没有 DEMO- 前缀）。
+            conn.execute(
+                "UPDATE answers SET batch=? WHERE source=? AND record_key LIKE ? AND batch<>?",
+                (DEMO_BATCH, DEMO_SOURCE, DEMO_RECORD_PREFIX + "%", DEMO_BATCH),
+            )
             _migration_fault("answers_commit")
             conn.execute("COMMIT")
         except Exception as exc:
@@ -730,32 +860,117 @@ ANSWER_CHECK_TABLES = ("answer_checks", "answer_followups")
 ANSWER_CHECK_INDEX_NAMES = (
     "idx_checks_answer",
     "idx_checks_class",
+    "idx_checks_answer_version",
     "idx_answer_followups_answer",
 )
+# 「结构就绪」= 表在、索引在、R1-02/03 的新列都在。少任何一列都按未升级处理，
+# 由 ensure_answer_check_schema 逐列 ALTER 补齐（老库行内容一条不改，只补空列）。
+ANSWER_CHECK_REQUIRED_COLUMNS = {
+    "answer_checks": [name for name, _ in ANSWER_CHECK_COLUMNS] + [
+        "progress", "cause_state", "answer_version", "cause_code", "cause_label",
+        "cause_history", "teacher_note", "locate_status", "locate_source",
+    ],
+    "answer_followups": [name for name, _ in ANSWER_FOLLOWUP_COLUMNS] + [
+        "source", "question", "answer_text", "answer_version",
+    ],
+}
+
+
+def _table_columns(conn, table):
+    return {row[1] for row in conn.execute("PRAGMA table_info(%s)" % table)}
 
 
 def answer_check_schema_ready(db_file):
-    """只读判断已有库是否已有作答核对表、追问原话表与对应索引。"""
+    """只读判断已有库是否已有作答核对表、追问原话表、索引与新列。"""
     uri = "file:%s?mode=ro" % db_file.replace("?", "%3f")
     conn = sqlite3.connect(uri, uri=True)
     try:
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         indexes = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+        if not all(name in tables for name in ANSWER_CHECK_TABLES):
+            return False
+        if not all(name in indexes for name in ANSWER_CHECK_INDEX_NAMES):
+            return False
+        for table, columns in ANSWER_CHECK_REQUIRED_COLUMNS.items():
+            existing = _table_columns(conn, table)
+            if any(name not in existing for name in columns):
+                return False
+        return True
     finally:
         conn.close()
-    return (
-        all(name in tables for name in ANSWER_CHECK_TABLES)
-        and all(name in indexes for name in ANSWER_CHECK_INDEX_NAMES)
-    )
+
+
+def _add_missing_columns(conn, table, columns):
+    """按清单补齐缺失列；已有的列跳过（SQLite 不支持 ADD COLUMN IF NOT EXISTS）。"""
+    existing = _table_columns(conn, table)
+    added = []
+    for name, ddl in columns:
+        if name in existing:
+            continue
+        conn.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, name, ddl))
+        added.append(name)
+    return added
+
+
+def _dedupe_answer_checks(conn):
+    """建唯一索引前先合并重复的 (answer_id, answer_version)：保留 id 最大的一条。
+
+    为什么要先合并：R1-00 §15.2 实测 A→B→A 会堆出多条同版本行（旧实现靠先查后写，
+    并发下不防重）。直接建唯一索引会因历史重复数据失败，所以迁移时保留最后一行，
+    把被合并行的结论并进 cause_history，保证「历史可追溯」而不是悄悄丢掉。
+    """
+    rows = conn.execute(
+        "SELECT answer_id, answer_version FROM answer_checks"
+        " WHERE answer_version <> '' GROUP BY answer_id, answer_version HAVING COUNT(*) > 1"
+    ).fetchall()
+    merged = 0
+    for answer_id, version in rows:
+        ids = [
+            row[0] for row in conn.execute(
+                "SELECT id FROM answer_checks WHERE answer_id=? AND answer_version=?"
+                " ORDER BY id", (answer_id, version))
+        ]
+        keep, drop = ids[-1], ids[:-1]
+        keep_row = conn.execute("SELECT * FROM answer_checks WHERE id=?", (keep,)).fetchone()
+        columns = [item[0] for item in conn.execute("SELECT * FROM answer_checks LIMIT 0").description]
+        record = dict(zip(columns, keep_row)) if keep_row else {}
+        history = []
+        try:
+            history = json.loads(record.get("cause_history") or "[]")
+        except (TypeError, ValueError):
+            history = []
+        for old_id in drop:
+            old_row = conn.execute("SELECT * FROM answer_checks WHERE id=?", (old_id,)).fetchone()
+            old = dict(zip(columns, old_row)) if old_row else {}
+            history.append({
+                "action": "merge_duplicate",
+                "merged_id": old_id,
+                "code": old.get("cause_code") or "",
+                "label": old.get("cause_label") or "",
+                "cause_state": old.get("cause_state") or "",
+                "note": old.get("teacher_note") or "",
+                "decided_at": old.get("decided_at") or old.get("updated_at") or "",
+            })
+            conn.execute("DELETE FROM answer_checks WHERE id=?", (old_id,))
+            merged += 1
+        conn.execute(
+            "UPDATE answer_checks SET cause_history=? WHERE id=?",
+            (json.dumps(history, ensure_ascii=False), keep),
+        )
+    return merged
 
 
 def ensure_answer_check_schema(db_file):
-    """给旧库补上作答核对与追问原话表；返回备份文件路径，本来就齐全时返回 None。
+    """给旧库补上作答核对与追问原话表、R1-02/03 新列与唯一索引；本来就齐全时返回 None。
 
-    与 ensure_followup_schema 同一套三段式：只读检查 → 一致性备份 → BEGIN IMMEDIATE 建表
-    → COMMIT → 复核。备份、开始事务、建表、提交任一环节失败都按真实数据状态抛
+    与 ensure_followup_schema 同一套三段式：只读检查 → 一致性备份 → BEGIN IMMEDIATE 建表/补列
+    /合并重复行/建唯一索引 → COMMIT → 复核。备份、开始事务、任何一步失败都按真实数据状态抛
     MigrationError，原库不动。测试注入点：MISTAKE_FAULT 含 answer_check_backup /
     answer_check_begin / answer_check_commit 时模拟对应环节故障。
+
+    如何禁用/回滚（T9 评审用）：本函数只做「建表 + ADD COLUMN + 合并重复行 + 建索引」，
+    不删任何表、不改任何列名与既有列的值；误伤回滚 = 用同目录下 `app.db.bak-<时间戳>-<随机>` 覆盖回去
+    （每次迁移前都会先做一致性备份），再按需删除 `idx_checks_answer_version` 索引即可恢复旧结构。
     """
     if answer_check_schema_ready(db_file):
         return None
@@ -801,8 +1016,22 @@ def ensure_answer_check_schema(db_file):
                 "原有数据没有改动。备份文件：%s" % (exc, backup_file)
             )
         try:
-            for ddl in ANSWER_CHECK_DDL:
-                conn.execute(ddl)
+            for ddl in ANSWER_CHECK_DDL[:3]:
+                conn.execute(ddl)                       # 两张表 + 两个普通索引
+            _add_missing_columns(conn, "answer_checks", ANSWER_CHECK_COLUMNS)
+            _add_missing_columns(conn, "answer_followups", ANSWER_FOLLOWUP_COLUMNS)
+            # 历史行没有来源记录：有结论的按历史行标注，避免读成「未判断」。
+            conn.execute(
+                "UPDATE answer_checks SET cause_source='legacy'"
+                " WHERE (cause_source IS NULL OR cause_source='') AND cause_code <> ''"
+            )
+            conn.execute(ANSWER_CHECK_DDL[4])           # 追问表
+            _dedupe_answer_checks(conn)
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_checks_answer_version"
+                " ON answer_checks(answer_id, answer_version) WHERE answer_version <> ''"
+            )
+            conn.execute(ANSWER_CHECK_DDL[5])
             _migration_fault("answer_check_commit")
             conn.execute("COMMIT")
         except Exception as exc:
@@ -868,6 +1097,15 @@ class Database:
         existing_students = {row[1] for row in self.conn.execute("PRAGMA table_info(students)")}
         if "code" not in existing_students:
             self.conn.execute("ALTER TABLE students ADD COLUMN code TEXT NOT NULL DEFAULT ''")
+        # 作答核对表的新列：server.py 启动时会走 ensure_answer_check_schema；
+        # 这里再兜一次，保证「直接 Database(create=True) 打开旧库」也能读到新列
+        # （桌面端、测试夹具、备份恢复都走这条路）。
+        for table, columns in (("answer_checks", ANSWER_CHECK_COLUMNS),
+                               ("answer_followups", ANSWER_FOLLOWUP_COLUMNS)):
+            tables = {row[0] for row in self.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+            if table in tables:
+                _add_missing_columns(self.conn, table, columns)
 
     # -- 连接 -------------------------------------------------------------
     def _connect(self):

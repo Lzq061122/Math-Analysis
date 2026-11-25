@@ -1,11 +1,14 @@
 """个人学情：把一名学生的已确认错题按知识点汇总，算近期辅导优先级，再请 AI 给候选建议。
 
+R1-07 起「请 AI 给候选建议」这一步在正式业务环境里已停用：generate() 在读取该生错题、
+拼提示词之前就抛出 ai_isolation 业务错误。原因与依据见 analysis.INDIVIDUAL_FLOW_MESSAGE。
+汇总、加权排序、老师手写建议的保存完全不受影响，仍然只用固定规则。
+
 只做四件事：
 1. 汇总只取 status='confirmed' 的错题，按知识点分组；没有知识点的归入「未分类」。
 2. 优先级按错题发生日期加权：最近 30 天每次 3 分、31–90 天每次 2 分、超过 90 天每次 1 分。
    日期缺失的单列不参与加权；未来日期按数据异常提示、不计入。
-3. 老师主动点击后才发请求；请求里只有问题名、次数、分值和题目/过程原文，
-   不含学生姓名、学校编号、班级名和账号名。
+3. 生成类请求已停用（个体数据不进生成式模型）；老师手写并保存建议的路径保留。
 4. AI 给的证据必须能在给出的原文里找到，找不到就丢弃；老师改过并保存的内容不会被重新生成覆盖。
 """
 
@@ -14,6 +17,7 @@ import json
 import re
 from datetime import date, datetime
 
+from .analysis import INDIVIDUAL_FLOW_CODE, INDIVIDUAL_FLOW_MESSAGE
 from .db import now_iso
 from .stats import confirmed_mistakes
 
@@ -182,7 +186,12 @@ def _fingerprint(items):
 
 
 def build_prompt(data):
-    """拼出发给服务商的内容：只有数学信息与分值，没有任何身份字段。"""
+    """拼出发给服务商的内容（组件层遗留，业务侧已不再调用它）。
+
+    注意：「没有身份字段」不是隔离 —— 题目与学生过程原文本身就是可关联个人的内容。
+    R1-07 的隔离是「整条路径不进入生成式模型」，由 api.api_student_advice_generate
+    与本模块 generate() 在读取学生数据之前拦断。
+    """
     lines = [
         PROMPT_MARKER,
         "下面是一名学生已确认错题的汇总。请给出优先辅导 1–%d 个问题的具体做法。" % MAX_FOCUS,
@@ -333,47 +342,16 @@ def load(db, class_id, student_id):
 
 
 def generate(db, class_id, student_id, provider, service_name, model):
-    """发起一次生成。provider 为 None 表示模拟模式：不发请求，也不编造建议。"""
-    data = summary(db, class_id, student_id)
-    if not data["items"]:
-        raise TutorError("这名学生还没有已确认的错题，暂时不能生成辅导建议。", 409, "empty")
-    if provider is None:
+    """R1-07：个体辅导建议的生成只在本机模拟时按原样拒绝，真实通道一律拦断。
+
+    两种情况都在 summary() 之前返回：不读该生已确认错题、不拼提示词、不发请求、不写 tutor_advice。
+    老师手写并保存建议（save）与个人学情汇总（load/summary）不受影响。
+    """
+    if provider is None or getattr(provider, "mode", "mock") == "mock":
         raise TutorError(
             "当前是模拟分析，不会生成辅导建议。请先在「AI 设置」里配置服务后再生成。", 409, "mock"
         )
-
-    prompt = build_prompt(data)
-    text, usage = provider.chat_text(prompt, SYSTEM_PROMPT)
-    parsed = parse_suggestion(text, data)
-    content = render(parsed, data)
-    now = now_iso()
-    evidence = {
-        "advice": parsed,
-        "items": [
-            {"name": item["name"], "count": item["count"], "weight": item["weight"],
-             "last_on": item["last_on"], "mistake_ids": item["mistake_ids"]}
-            for item in data["items"]
-        ],
-        "undated": [ev["id"] for ev in data["undated"]],
-        "anomalies": [ev["id"] for ev in data["anomalies"]],
-        "rule": data["rule"],
-        "today": data["today"],
-    }
-    with db.tx() as conn:
-        conn.execute("DELETE FROM tutor_advice WHERE student_id=?", (student_id,))
-        conn.execute(
-            "INSERT INTO tutor_advice(class_id, student_id, content, ai_content, evidence,"
-            " fingerprint, teacher_edited, mode, generated_at, updated_at)"
-            " VALUES (?,?,?,?,?,?,0,?,?,?)",
-            (
-                class_id, student_id, content, content,
-                json.dumps(evidence, ensure_ascii=False), data["fingerprint"],
-                service_name or "", now, now,
-            ),
-        )
-    row = _row(db, class_id, student_id)
-    return {"summary": summary(db, class_id, student_id),
-            "advice": _serialise(db, row, data["fingerprint"]), "usage": usage}
+    raise TutorError(INDIVIDUAL_FLOW_MESSAGE, 403, INDIVIDUAL_FLOW_CODE)
 
 
 def save(db, class_id, student_id, content):

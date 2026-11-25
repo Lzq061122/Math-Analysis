@@ -1,11 +1,13 @@
 """作答审核：老师对单条作答主动发起 AI 分析，AI 只给候选错因与步骤证据。
 
+R1-07 起 analyse() 在正式业务环境已停用：在读 answer_id 对应的题目、标准解法与
+学生步骤之前就抛出 ai_isolation 业务错误。原因与依据见 analysis.INDIVIDUAL_FLOW_MESSAGE。
+规则定位（equation_steps）、作答核对与人工保存、统计都不经过这里，全部照常可用。
+
 流程上只做三件事：
-1. 分析前把「要发什么」交给界面确认；请求里只有题号、题目、单元、标准解法和学生步骤，
-   不含学生姓名、学校编号、班级名和账号名。
-2. AI 返回的候选项先落成一条待核对的 answer_reviews 记录（status=pending），
-   不是错题，也不进任何统计；证据在原文里找不到的候选项一律丢掉，不替模型补写。
-3. 老师编辑后确认，才通过 records.insert_mistake 生成一条正式错题并回写 mistake_id；
+1. 分析请求已在业务环境停用；服务端不再为了生成而读取学生作答原文。
+2. 老师自己判断的错因落成待核对记录（update），证据在原文里找不到的一律丢掉。
+3. 老师确认后通过 records.insert_mistake 生成一条正式错题并回写 mistake_id；
    拒绝则只改审核记录本身。原始 answers 行在这里从头到尾只读。
 """
 
@@ -13,6 +15,7 @@ import json
 import re
 
 from . import records
+from .analysis import INDIVIDUAL_FLOW_CODE, INDIVIDUAL_FLOW_MESSAGE
 from .db import now_iso
 
 MAX_CAUSES = 3
@@ -49,7 +52,12 @@ class AnswerReviewError(Exception):
 
 
 def build_prompt(answer):
-    """拼出发给服务商的内容：只有数学信息，没有任何身份字段。"""
+    """拼出发给服务商的内容（组件层遗留，业务侧已不再调用它）。
+
+    注意：这里「只有数学信息、没有身份字段」并不能当作隔离 —— 学生步骤本身就是可关联个人的
+    内容，去掉姓名也仍然是个体数据。R1-07 的隔离是「整条路径不进入生成式模型」，
+    由 api.api_answer_analyse 与本模块 analyse() 在组装之前拦断。
+    """
     lines = [
         PROMPT_MARKER,
         "请分析下面这份学生作答，判断可能的错因，并指出对应的学生步骤证据。",
@@ -211,7 +219,15 @@ def _store(db, class_id, answer, status, provider, model, suggestion, raw, finge
 
 
 def analyse(db, class_id, answer_id, provider, service_name, model):
-    """发起一次分析。provider 为 None 表示模拟模式：不发请求，只记录本机判断。"""
+    """R1-07：真实通道一律在按 answer_id 读作答之前拦断；本机模拟只记本地判断。
+
+    - provider 指向真实通道（real/go/custom）：立即返回 ai_isolation 业务错误，
+      不读题目、标准解法、学生步骤与姓名，不拼提示词，不发请求，不写 answer_reviews。
+    - 本机模拟或缺测：不联网、不调用任何外部模型，只按规则记一条待核对记录。
+    """
+    if provider is not None and getattr(provider, "mode", "mock") != "mock":
+        raise AnswerReviewError(INDIVIDUAL_FLOW_MESSAGE, 403, INDIVIDUAL_FLOW_CODE)
+
     answer = _answer(db, class_id, answer_id)
     fingerprint = answer["fingerprint"] or ""
 
@@ -224,24 +240,13 @@ def analyse(db, class_id, answer_id, provider, service_name, model):
         row = _store(db, class_id, answer, "pending", "本地判断", "", suggestion, "", fingerprint)
         return _serialise(db, row)
 
-    if provider is None:
-        suggestion = {
-            "causes": [],
-            "note": "模拟分析不会判断对错，也不会发送任何内容；本次只验证流程。",
-            "uncertain": True,
-        }
-        row = _store(db, class_id, answer, "pending", service_name or "模拟分析", "", suggestion, "", fingerprint)
-        return _serialise(db, row)
-
-    prompt = build_prompt(answer)
-    text, usage = provider.chat_text(prompt, SYSTEM_PROMPT)
-    parsed = parse_suggestion(text, answer["student_steps"])
-    row = _store(
-        db, class_id, answer, "pending", service_name, model or "", parsed, text, fingerprint
-    )
-    data = _serialise(db, row)
-    data["usage"] = usage
-    return data
+    suggestion = {
+        "causes": [],
+        "note": "模拟分析不会判断对错，也不会发送任何内容；本次只验证流程。",
+        "uncertain": True,
+    }
+    row = _store(db, class_id, answer, "pending", service_name or "模拟分析", "", suggestion, "", fingerprint)
+    return _serialise(db, row)
 
 
 def update(db, class_id, review_id, causes, note):

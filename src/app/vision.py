@@ -1,5 +1,16 @@
 """模拟、OpenCode Console、OpenCode Go 与自定义 AI 服务的视觉分析接入。
 
+!!! R1-07 业务边界（先读这段再看下面的历史说明）!!!
+正式教师业务流程（错题、作答、追问、辅导建议）**不向生成式模型发送可关联个人的内容**：
+入口层在组装请求体之前就拦断并返回 ai_isolation 业务错误，通道层在此基础上再做一道
+「用途 + 地址」判定 —— 只有 analysis.PURPOSE_OFFLINE_TOOL（AI 设置自检、本机桩验证、
+离线资源制作）且目标为本机回环地址时才真的发请求；其余一律在发送前停止，连 JSON 都不组装。
+request 体还受字段白名单约束（ALLOWED_PAYLOAD_FIELDS 及各级嵌套字段），出现白名单外的
+字段直接拒绝发送。环境变量默认不参与配置（resolve_config 的 allow_env 默认 False），
+旧版 MISTAKE_AI_* / DASHSCOPE_* 变量放不开业务环境。
+
+下面这段是 1.4.6 起的历史说明，仅描述组件本身的行为，不再描述业务默认值。
+
 默认是模拟分析，不向任何外部服务发送照片或文字。只有老师在「AI 设置」里显式选择
 「OpenCode Go（订阅）」「OpenCode Console（按量付费）」或「自定义 AI 服务」并填写
 本次登录的密钥后，试分析、首次分析和重新分析才会真的发送；配置不完整时分析直接停止
@@ -34,7 +45,10 @@ import socket
 import urllib.error
 import urllib.request
 
-from .analysis import ERROR_TYPES, KNOWLEDGE_POINTS
+from .analysis import (
+    ALLOWED_EGRESS_PURPOSES, ERROR_TYPES, INDIVIDUAL_FLOW_CODE, INDIVIDUAL_FLOW_MESSAGE,
+    KNOWLEDGE_POINTS, PURPOSE_OFFLINE_TOOL,
+)
 from .db import now_iso
 from .version import VERSION
 
@@ -133,6 +147,46 @@ CUSTOM_POLICY_SUMMARY = (
     "本软件无法控制对方的留存与使用。发送前请确认学校/机构具备处理学生作答内容的合法依据。"
 )
 
+# ---------------------------------------------------------------------------
+# 外发字段白名单（R1-07 第 3 条）
+# _target_error 只管地址；这里管「请求体里允许出现什么」。默认拒绝：白名单外的字段、
+# 类型不对的值、非约定角色、非约定内容块，一律在发送前停下，不组装也不发。
+# 身份类字段（学生姓名/学号/班级/学校编号/账号/追问原话的独立字段）没有任何名额：
+# 白名单里根本不存在它们，所以「去姓名」不是这里的机制，结构上就没有这些字段的位置。
+# ---------------------------------------------------------------------------
+ALLOWED_PAYLOAD_FIELDS = {
+    "model": str,
+    "messages": list,
+    "max_tokens": int,
+    "temperature": (int, float),
+    "system": str,
+}
+ALLOWED_MESSAGE_FIELDS = {"role": str, "content": (str, list)}
+ALLOWED_ROLES = ("system", "user", "assistant")
+ALLOWED_CONTENT_FIELDS = {"type": str, "text": str, "image_url": dict, "source": dict}
+ALLOWED_CONTENT_TYPES = ("text", "image", "image_url")
+ALLOWED_IMAGE_URL_FIELDS = {"url": str}
+ALLOWED_SOURCE_FIELDS = {"type": str, "media_type": str, "data": str}
+ALLOWED_IMAGE_MEDIA_TYPES = ("image/jpeg", "image/png", "image/webp")
+ALLOWED_DATA_URL_PREFIXES = ("data:image/jpeg;base64,", "data:image/png;base64,", "data:image/webp;base64,")
+MAX_PAYLOAD_TEXT_CHARS = 20000
+MAX_PAYLOAD_IMAGE_BYTES = 12 * 1024 * 1024
+
+# analyze() 接受的作业字段；同样默认拒绝，多一个字段就停下。
+ALLOWED_JOB_FIELDS = (
+    "purpose",
+    "trial",
+    "blurry",
+    "image_bytes",
+    "image_mime",
+    "image_file",
+    "image_width",
+    "image_height",
+    "question_text",
+    "solution_text",
+    "observed_errors",
+)
+
 SYSTEM_PROMPT = """你是一名谨慎的初中数学老师助理，只根据照片内容分析学生的错题。
 必须遵守：
 1. 只写照片里能看清的内容，看不清、残缺或模糊就如实说信息不足，不要补全题目或编造步骤。
@@ -166,6 +220,136 @@ class AnalysisError(Exception):
         self.message = message
         self.code = code
         self.retryable = retryable
+
+
+# ---------------------------------------------------------------------------
+# 发送前的两道硬判定：用途 + 地址（业务隔离），字段白名单（请求体形状）
+# 两条都返回「错误文案」，空串表示可以发送；调用方必须在组装/发送之前调用。
+# ---------------------------------------------------------------------------
+def egress_error(base_url, purpose):
+    """业务隔离判定：只有离线工具用途、且目标是本机回环地址时才允许真的发请求。
+
+    正式教师业务流程的个体内容（题目原文、学生步骤、追问原话、照片）不进入生成式模型，
+    所以业务侧的调用点不带 PURPOSE_OFFLINE_TOOL，一律在这里被拦下，不会走到 urlopen。
+    """
+    if purpose not in ALLOWED_EGRESS_PURPOSES:
+        return INDIVIDUAL_FLOW_MESSAGE
+    if not is_loopback_base(base_url):
+        return (
+            "离线工具用途也只允许发往本机回环地址（127.0.0.1 或 localhost），当前地址是 %s，"
+            "已停止发送。%s" % (base_url or "（空）", INDIVIDUAL_FLOW_MESSAGE)
+        )
+    return ""
+
+
+def _field_type_error(value, expected):
+    """expected 可以是单个类型，也可以是类型元组（isinstance 两种写法都接受）。"""
+    return not isinstance(value, expected)
+
+
+def _dict_field_error(value, allowed, where):
+    """检查一个字典只用了白名单里的字段、类型也对；返回错误文案，没问题返回空串。"""
+    if not isinstance(value, dict):
+        return "%s 不是对象，已停止发送。" % where
+    for key, item in value.items():
+        if key not in allowed:
+            return "%s 出现白名单外的字段「%s」，已停止发送。" % (where, key)
+        if _field_type_error(item, allowed[key]):
+            return "%s 的字段「%s」类型不符合约定，已停止发送。" % (where, key)
+    return ""
+
+
+def _content_part_error(part, where):
+    error = _dict_field_error(part, ALLOWED_CONTENT_FIELDS, where)
+    if error:
+        return error
+    kind = part.get("type")
+    if kind not in ALLOWED_CONTENT_TYPES:
+        return "%s 的内容块类型「%s」不在白名单里，已停止发送。" % (where, kind)
+    if kind == "text":
+        text = part.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return "%s 的文字块为空，已停止发送。" % where
+        if len(text) > MAX_PAYLOAD_TEXT_CHARS:
+            return "%s 的文字块超过 %d 字符上限，已停止发送。" % (where, MAX_PAYLOAD_TEXT_CHARS)
+        return ""
+    if kind == "image_url":
+        image = part.get("image_url")
+        error = _dict_field_error(image, ALLOWED_IMAGE_URL_FIELDS, where + ".image_url")
+        if error:
+            return error
+        url = str(image.get("url") or "")
+        if not url.startswith(ALLOWED_DATA_URL_PREFIXES):
+            return "%s 的图片不是受限的 data URL，已停止发送。" % where
+        if len(url) > MAX_PAYLOAD_IMAGE_BYTES:
+            return "%s 的图片超过大小上限，已停止发送。" % where
+        return ""
+    source = part.get("source")
+    error = _dict_field_error(source, ALLOWED_SOURCE_FIELDS, where + ".source")
+    if error:
+        return error
+    if str(source.get("type") or "") != "base64":
+        return "%s 的图片来源必须是 base64，已停止发送。" % where
+    if str(source.get("media_type") or "") not in ALLOWED_IMAGE_MEDIA_TYPES:
+        return "%s 的图片类型不在白名单里，已停止发送。" % where
+    data = source.get("data")
+    if not isinstance(data, str) or not data:
+        return "%s 的图片数据为空，已停止发送。" % where
+    if len(data) > MAX_PAYLOAD_IMAGE_BYTES:
+        return "%s 的图片超过大小上限，已停止发送。" % where
+    return ""
+
+
+def payload_field_error(body):
+    """请求体字段白名单：顶层字段、角色、内容块、图片地址逐层校验。"""
+    error = _dict_field_error(body, ALLOWED_PAYLOAD_FIELDS, "请求体")
+    if error:
+        return error
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return "请求体没有 messages，已停止发送。"
+    for index, message in enumerate(messages):
+        where = "messages[%d]" % index
+        error = _dict_field_error(message, ALLOWED_MESSAGE_FIELDS, where)
+        if error:
+            return error
+        if message.get("role") not in ALLOWED_ROLES:
+            return "%s 的角色不在白名单里，已停止发送。" % where
+        content = message.get("content")
+        if isinstance(content, str):
+            if not content.strip():
+                return "%s 的内容为空，已停止发送。" % where
+            if len(content) > MAX_PAYLOAD_TEXT_CHARS:
+                return "%s 的内容超过 %d 字符上限，已停止发送。" % (where, MAX_PAYLOAD_TEXT_CHARS)
+            continue
+        if not isinstance(content, list):
+            return "%s 的内容既不是文本也不是内容块列表，已停止发送。" % where
+        for part_index, part in enumerate(content):
+            error = _content_part_error(part, "%s.content[%d]" % (where, part_index))
+            if error:
+                return error
+    system = body.get("system")
+    if system is not None and (not isinstance(system, str) or len(system) > MAX_PAYLOAD_TEXT_CHARS):
+        return "请求体的 system 不合规，已停止发送。"
+    return ""
+
+
+def job_field_error(job):
+    """analyze() 作业字段白名单：不接受任何白名单外的键（身份字段因此没有入口）。"""
+    if not isinstance(job, dict):
+        return "分析作业不是对象，已停止发送。"
+    for key in job:
+        if key not in ALLOWED_JOB_FIELDS:
+            return "分析作业出现白名单外的字段「%s」，已停止发送。" % key
+    blob = job.get("image_bytes") or b""
+    if not isinstance(blob, (bytes, bytearray)) or not blob:
+        return "没有可发送的图片数据，未调用真实 AI。"
+    if len(blob) > MAX_PAYLOAD_IMAGE_BYTES:
+        return "图片超过 %d 字节上限，已停止发送。" % MAX_PAYLOAD_IMAGE_BYTES
+    mime = str(job.get("image_mime") or "image/jpeg")
+    if mime not in ALLOWED_IMAGE_MEDIA_TYPES:
+        return "图片类型「%s」不在白名单里，已停止发送。" % mime
+    return ""
 
 
 def service_name(mode, custom_name=""):
@@ -263,11 +447,13 @@ def _go_spec(model, base_url=""):
 def resolve_config(config=None):
     """合并界面、账号与显式测试配置；返回内部使用的完整配置（含密钥，不对外展示）。
 
-    allow_env=False 时环境变量完全不参与：默认模式、地址、模型和密钥都只认界面输入。
-    桌面端固定这样，旧版 Console 环境变量不会影响默认模拟、Go 地址或自定义服务。
+    allow_env 默认 False（R1-07 起）：环境变量默认完全不参与，默认模式、地址、模型和密钥
+    都只认调用方显式传入的值。业务环境（网页服务、桌面端）都不放开它，所以
+    MISTAKE_AI_MODE=real + MISTAKE_AI_API_KEY 这类旧变量无法把业务环境全量打开。
+    需要验证环境变量优先级时，调用方必须显式传 allow_env=True，且发送仍受 egress_error 约束。
     """
     supplied = dict(config or {})
-    allow_env = bool(supplied.get("allow_env", True))
+    allow_env = bool(supplied.get("allow_env", False))
     explicit_key = str(supplied.get("api_key") or "").strip()
     explicit_base = str(supplied.get("base_url") or "").strip()
     explicit_model = str(supplied.get("model") or "").strip()
@@ -610,8 +796,12 @@ class CloudVisionProvider:
             )
         return ""
 
-    def _post(self, body, saved_note):
-        """真正发出请求并读回响应；只做传输与 JSON 层，业务解析交给调用方。"""
+    def _post(self, body, saved_note, purpose=""):
+        """真正发出请求并读回响应；只做传输与 JSON 层，业务解析交给调用方。
+
+        发送前的顺序固定：密钥 → 地址规则（_target_error）→ 业务隔离（egress_error）→
+        字段白名单（payload_field_error）。任何一步不通过都不会走到 urlopen。
+        """
         api_key = str(self.config.get("api_key") or "").strip()
         if not api_key:
             raise AnalysisError(
@@ -623,6 +813,12 @@ class CloudVisionProvider:
         error = self._target_error(base, bool(self.config.get("test_base")), "作答内容")
         if error:
             raise AnalysisError(error, "config", False)
+        error = egress_error(base, purpose)
+        if error:
+            raise AnalysisError(error, INDIVIDUAL_FLOW_CODE, False)
+        error = payload_field_error(body)
+        if error:
+            raise AnalysisError(error, "payload", False)
         request = urllib.request.Request(
             request_url(self.config["base_url"], self.api),
             data=json.dumps(body).encode("utf-8"),
@@ -659,8 +855,12 @@ class CloudVisionProvider:
         self.last_payload = payload
         return payload
 
-    def chat_text(self, prompt, system):
-        """纯文字请求：只发题目与步骤，不带图片、不带学生身份。返回 (正文, 用量)。"""
+    def chat_text(self, prompt, system, purpose=""):
+        """纯文字请求：只发题目与步骤，不带图片、不带学生身份。返回 (正文, 用量)。
+
+        purpose 必须是 analysis.PURPOSE_OFFLINE_TOOL（离线工具/自检）才能真的发出去；
+        业务侧的追问、作答分析、辅导建议都不带这个用途，在 egress_error 处即被拦断。
+        """
         if self.api == "messages":
             body = {
                 "model": self.config["model"],
@@ -679,7 +879,7 @@ class CloudVisionProvider:
                 "temperature": 0.1,
                 "max_tokens": 32000,
             }
-        payload = self._post(body, "作答内容和审核意见已保存")
+        payload = self._post(body, "作答内容和审核意见已保存", purpose)
         if self.api == "messages":
             content, truncated = self._messages_content(payload)
         else:
@@ -698,9 +898,15 @@ class CloudVisionProvider:
         return content or "", usage
 
     def analyze(self, job):
-        blob = job.get("image_bytes") or b""
-        if not blob:
-            raise AnalysisError("没有可发送的图片数据，未调用真实 AI。", "config", False)
+        """图片分析：发送前依次核对密钥、地址规则、业务隔离与字段白名单。
+
+        用途判定：job["purpose"] 必须是 analysis.PURPOSE_OFFLINE_TOOL；桌面「试分析」带
+        trial=True，属于 AI 设置自检（离线工具用途），它也只在目标为本机回环地址时才发出。
+        正式业务侧的个体内容不带用途标记，一律在发送前被拦断，连请求体都不组装。
+        """
+        purpose = str(job.get("purpose") or "")
+        if not purpose and job.get("trial"):
+            purpose = PURPOSE_OFFLINE_TOOL
         api_key = str(self.config.get("api_key") or "").strip()
         if not api_key:
             raise AnalysisError(
@@ -713,8 +919,18 @@ class CloudVisionProvider:
         error = self._target_error(base, test_base, "照片")
         if error:
             raise AnalysisError(error, "config", False)
+        error = egress_error(base, purpose)
+        if error:
+            raise AnalysisError(error, INDIVIDUAL_FLOW_CODE, False)
+        error = job_field_error(job)
+        if error:
+            raise AnalysisError(error, "payload", False)
+        request_body = self.build_request(job)
+        error = payload_field_error(request_body)
+        if error:
+            raise AnalysisError(error, "payload", False)
 
-        body = json.dumps(self.build_request(job)).encode("utf-8")
+        body = json.dumps(request_body).encode("utf-8")
         request = urllib.request.Request(
             request_url(self.config["base_url"], self.api),
             data=body,
