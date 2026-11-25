@@ -418,6 +418,8 @@ def group_c_basis_required(app, env, window):
     check("C10 提示里是后端原文（逐字）",
           "人工核验要留下判断依据" in error_text and "本次没有写入任何记录" in error_text,
           error_text[:160])
+    check("C10b 400 回执格式统一为「保存被拒绝（400 basis_required）：<后端原文>」",
+          error_text.startswith("保存被拒绝（400 basis_required）："), error_text[:80])
     row = db_row(data_dir, ids["oos"])
     check("C11 后端真的没写入（answer_checks 里没有这一份的结论）", row is None,
           dict(row) if row else None)
@@ -559,6 +561,8 @@ def group_e_content_update(app, env, window):
     text = window.answer_error.text()
     check("E4 版本冲突提示带 409 与 version_conflict", "409" in text and "version_conflict" in text,
           text[:140])
+    check("E4b 409 回执格式统一为「这份作答已被更新（409 version_conflict）：<后端原文>」",
+          text.startswith("这份作答已被更新（409 version_conflict）："), text[:90])
     check("E5 冲突提示是后端原文（逐字）",
           "这份作答的内容已经更新" in text and "请刷新后重新核对" in text, text[:160])
     check("E6 冲突后给出「刷新这份作答」入口", window.reload_answer_button.isVisible())
@@ -908,6 +912,8 @@ def group_j_failure_paths_and_empty_states(app, env, window):
           status_text[:80])
     check("J4 提示里带 403 与业务码 ai_isolation",
           "403" in status_text and "ai_isolation" in status_text, status_text[:140])
+    check("J4b 403 回执格式统一为「分析没有完成（403 ai_isolation）：<后端原文>」",
+          status_text.startswith("分析没有完成（403 ai_isolation）："), status_text[:90])
     check("J5 提示里是后端原文（逐字）", bool(expected) and expected in status_text,
           "%s | %s" % (expected[:50], status_text[:80]))
     check("J6 失败后列表还在、窗口还能用（没有被打断）",
@@ -986,6 +992,68 @@ def group_j_failure_paths_and_empty_states(app, env, window):
           "%d / %d" % (source.count("self.runner.run("), source.count("CheckWindow._call(")))
 
 
+# --------------------------------------------------------------------------
+# K. 四个业务错误码的界面回执（t9 整改项：cause_not_applicable 补断言）
+# --------------------------------------------------------------------------
+def group_k_error_code_matrix(app, env, window):
+    section("K. cause_not_applicable：对 correct 判「教师已判断」→ 显示 400 原文与 code，不崩不改状态")
+    service = env["service"]
+    class_id = env["class"]["id"]
+    ids = env["ids"]
+
+    before = service.check_answer(class_id, ids["ok"])
+    window.open_answer(ids["ok"])
+    wait(app, lambda: window._answer_id == ids["ok"] and not window.runner.busy, 20)
+    detail = window._detail or {}
+    check("K1 全程等价的作答 applicability=forbidden（只能记「无需判断」）",
+          detail.get("applicability") == "forbidden", detail.get("applicability"))
+    check("K2 打开时页面显示「已核对 · 无需判断」（B 组保存过的状态）",
+          window.axis_progress.text() == "已核对" and window.axis_cause.text() == "无需判断",
+          "%s/%s" % (window.axis_progress.text(), window.axis_cause.text()))
+
+    window.manual_label.setText("把「2x+6=10」写成「2x=10+6」")
+    app.processEvents()
+    window.manual_button.click()
+    failed = wait(app, lambda: window.answer_error.isVisible() and not window.runner.busy, 20)
+    text = window.answer_error.text()
+    check("K3 对 correct 判「教师已判断」→ 界面显示 400 与业务码 cause_not_applicable",
+          failed and "400" in text and "cause_not_applicable" in text, text[:140])
+    check("K4 显示的是后端原文（逐字）",
+          "这份作答没有可归因的错步" in text and "本次没有写入任何记录" in text, text[:180])
+    check("K5 回执格式统一为「保存被拒绝（400 cause_not_applicable）：<后端原文>」",
+          text.startswith("保存被拒绝（400 cause_not_applicable）："), text[:90])
+    check("K6 提示后给出下一步（复用同一错误区，没有新增视觉元素）",
+          "提示：" in text and "无需判断" in text, text[-90:])
+    check("K7 被拒后界面不自动改状态：仍显示「已核对 · 无需判断」",
+          window.axis_progress.text() == "已核对" and window.axis_cause.text() == "无需判断",
+          "%s/%s" % (window.axis_progress.text(), window.axis_cause.text()))
+    check("K8 被拒后窗口没崩、仍在单份核对页且可继续保存",
+          window.stack.currentIndex() == 1 and window.save_button.isEnabled())
+    after = service.check_answer(class_id, ids["ok"])
+    check("K9 库里状态没变（cause_state 仍 not_applicable、进度仍 checked、结论与保存前一致）",
+          after["judgement"]["cause_state"] == "not_applicable"
+          and after["judgement"]["progress"] == "checked"
+          and after["judgement"]["cause_state"] == before["judgement"]["cause_state"]
+          and after["judgement"]["progress"] == before["judgement"]["progress"],
+          json.dumps({k: after["judgement"].get(k) for k in ("cause_state", "progress")},
+                     ensure_ascii=False))
+
+    # service_call 层与 409（J13）对称：400 也把 status/code/message 原样带回
+    def raise_400():
+        raise ApiError("测试用 400", 400, code="cause_not_applicable")
+
+    outcome = ui.service_call(raise_400)()
+    check("K10 service_call 对 400 同样原样带回 status/code/message",
+          outcome.get("ok") is False and outcome.get("status") == 400
+          and outcome.get("code") == "cause_not_applicable"
+          and outcome.get("message") == "测试用 400", outcome)
+    check("K11 界面为 cause_not_applicable 备了专属下一步提示（auth 文案与 basis_required 分开）",
+          "cause_not_applicable" in ui.CHECK_ERROR_HINTS
+          and "basis_required" in ui.CHECK_ERROR_HINTS
+          and ui.CHECK_ERROR_HINTS["cause_not_applicable"] != ui.CHECK_ERROR_HINTS["basis_required"],
+          sorted(ui.CHECK_ERROR_HINTS))
+
+
 def main():
     shutil.rmtree(WORK, ignore_errors=True)
     os.makedirs(WORK)
@@ -1007,6 +1075,7 @@ def main():
         group_h_layout(app, env, window)
         group_i_legacy(app, env)
         group_j_failure_paths_and_empty_states(app, env, window)
+        group_k_error_code_matrix(app, env, window)
     finally:
         for widget in app.topLevelWidgets():
             try:

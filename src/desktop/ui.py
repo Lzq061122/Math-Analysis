@@ -5639,6 +5639,13 @@ CAUSE_STATE_TEXT = {"undecided": "原因待判断", "decided": "教师已判断"
 PROGRESS_TEXT = {"pending": "待核对", "checked": "已核对"}
 CHECK_FILTERS = (("undecided", "原因待判断"), ("decided", "教师已判断"),
                  ("not_applicable", "无需判断"), ("all", "全部"))
+# 400 的「下一步」提示：后端原文照旧逐字显示在前面，只在后面补一句老师该怎么改；
+# 复用同一个错误提示标签，不新增视觉元素。四类业务码各自的文案见桌面套件 K 组与 C/J/E 组。
+CHECK_ERROR_HINTS = {
+    "basis_required": "要判原因就必须填「判断依据」；确认无需判断就直接点主按钮保存。",
+    "cause_not_applicable": "正确 / 缺测 / 缺少步骤 的作答只能记「无需判断」；"
+                            "要留人工核对证据请用「人工核对并记录错误」。",
+}
 
 
 def service_call(func):
@@ -7401,8 +7408,10 @@ class CheckWindow(QMainWindow):
                     % (status, (" " + code) if code else "", message))
                 self.reload_answer_button.show()
             elif status == 400:
-                self._show_error("保存被拒绝（400%s）：%s"
-                                 % ((" " + code) if code else "", message))
+                hint = CHECK_ERROR_HINTS.get(code) or ""
+                self._show_error("保存被拒绝（400%s）：%s%s"
+                                 % ((" " + code) if code else "", message,
+                                    ("（提示：%s）" % hint) if hint else ""))
             else:
                 self._show_error("保存失败（%s%s）：%s"
                                  % (status, (" " + code) if code else "", message))
