@@ -478,8 +478,15 @@ def group_2_case_a_and_preset(envs):
         env.add_student(class_id, name)
 
     status, seeded = env.client.post("/api/classes/%d/check/demo/seed" % class_id)
-    check("2.1 合成演示 seed 成功且写入 4 份作答",
-          status == 200 and seeded.get("seeded", {}).get("answers") == 4, jdump(seeded))
+    # 原断言：`seeded["seeded"]["answers"] == 4`。
+    # 原依据：演示数据只有 A/B/C/OK 四条（契约 §5）。
+    # 新断言：`== len(demo.build()["answers"])`（仍是精确相等，不是 >=）。
+    # 改写依据：R1-T12 演示数据扩展——4 条 → 6 条，并分成两个演示批次（correct / first_bad /
+    #   missing_steps / out_of_scope 各 ≥1，另有「人工核对」「补录校正」「追问复核」专用样本）；
+    #   份数由 build() 决定，不再把数字写死在断言里，演示数据再扩也不用改测试。
+    demo_count = len(D.build()["answers"])
+    check("2.1 合成演示 seed 成功且写入 %d 份作答（与 build() 同数）" % demo_count,
+          status == 200 and seeded.get("seeded", {}).get("answers") == demo_count, jdump(seeded))
 
     rows = {row["record_key"]: row for row in env.db.query(
         "SELECT * FROM answers WHERE class_id=? ORDER BY id", (class_id,))}
@@ -1482,15 +1489,26 @@ def group_15_demo_seed_reset(envs):
 
     status, first = env.client.post("/api/classes/%d/check/demo/seed" % class_id)
     seeded = first.get("seeded") or {}
-    check("15.2 首次 seed 写入 4 份合成作答",
-          status == 200 and seeded.get("answers") == 4, jdump(first))
+    # 原断言：`seeded["answers"] == 4`。
+    # 原依据：演示数据只有 4 条。
+    # 新断言：`== len(D.build()["answers"])`（精确相等）。
+    # 改写依据：R1-T12 演示数据扩展（4 → 6 条、两个演示批次），份数以 build() 为准。
+    demo_count = len(D.build()["answers"])
+    check("15.2 首次 seed 写入 %d 份合成作答（与 build() 同数）" % demo_count,
+          status == 200 and seeded.get("answers") == demo_count, jdump(first))
 
     status, second = env.client.post("/api/classes/%d/check/demo/seed" % class_id)
     seeded2 = second.get("seeded") or {}
     total = env.db.scalar("SELECT COUNT(*) FROM answers WHERE class_id=?", (class_id,))
-    check("15.3 再次 seed 幂等：新增 0、跳过已存在 4、总数仍 5",
+    # 原断言：`skipped_existing == 4 and total == 5`。
+    # 原依据：4 条演示 + 15.1 造的 1 条真实作答。
+    # 新断言：`skipped_existing == len(build()) and total == len(build()) + 1`
+    #   （+1 是 15.1 那条真实作答，不能丢；仍是精确相等）。
+    # 改写依据：R1-T12 演示数据扩展（4 → 6 条），演示条数以 build() 为准。
+    demo_count = len(D.build()["answers"])
+    check("15.3 再次 seed 幂等：新增 0、跳过已存在 %d、总数仍 %d" % (demo_count, demo_count + 1),
           status == 200 and seeded2.get("answers") == 0
-          and seeded2.get("skipped_existing") == 4 and total == 5,
+          and seeded2.get("skipped_existing") == demo_count and total == demo_count + 1,
           jdump([seeded2, total]))
 
     status, reset = env.client.post("/api/classes/%d/check/demo/reset" % class_id)
@@ -1499,8 +1517,14 @@ def group_15_demo_seed_reset(envs):
     left = env.db.query("SELECT record_key, source FROM answers WHERE class_id=?", (class_id,))
     synthetic = env.db.scalar(
         "SELECT COUNT(*) FROM answers WHERE class_id=? AND source='合成演示'", (class_id,))
-    check("15.4 reset 删除 4 份合成作答、kept.imported_answers=1",
-          status == 200 and deleted.get("answers") == 4
+    # 原断言：`deleted["answers"] == 4`。
+    # 原依据：演示数据只有 4 条，并且都落在单个演示批次里。
+    # 新断言：`deleted["answers"] == len(build())`（精确相等；两个演示批次必须一起删干净）。
+    # 改写依据：R1-T12 演示数据扩展（4 → 6 条、两个演示批次）——reset 的三条口径已放宽为
+    #   「source + DEMO- 前缀 + 批次属于 DEMO_BATCHES」，这里顺带证明两个批次都被删到。
+    demo_count = len(D.build()["answers"])
+    check("15.4 reset 删除 %d 份合成作答（两个演示批次一起清）、kept.imported_answers=1" % demo_count,
+          status == 200 and deleted.get("answers") == demo_count
           and kept.get("imported_answers") == 1, jdump(reset))
     check("15.5 reset 后 source='合成演示' 归零，只剩真实导入那一条",
           synthetic == 0 and len(left) == 1 and left[0]["record_key"] == "REAL-001"

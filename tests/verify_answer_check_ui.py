@@ -1450,11 +1450,20 @@ def stage_reverify(cdp, ctx):
     after = db_query("SELECT COUNT(*) AS n FROM answers WHERE class_id=?", (class2,))[0]["n"]
     sources = db_query("SELECT source, COUNT(*) AS n FROM answers WHERE class_id=? GROUP BY source",
                        (class2,))
-    check("15.4 A7 点「载入合成演示数据」→ 页面显示 seeded 数字（新增 4 份）",
-          "新增 4 份" in (notice or ""), notice)
-    check("15.5 A7 载入后库里确实多出 4 份合成作答（%d → %d）" % (before, after),
-          after - before == 4
-          and any(row["source"] == "合成演示" and row["n"] == 4 for row in sources), sources)
+    # 原断言：`"新增 4 份" in notice`。
+    # 原依据：演示数据只有 4 条，页面文案按 `seeded.answers` 生成。
+    # 新断言：`"新增 %d 份" % len(build())`（精确文案，不是「包含某个数字」）。
+    # 改写依据：R1-T12 演示数据 4 → 6 条（其中 2 条落在第二演示批次），份数以 build() 为准。
+    demo_count = len(_demo_answers.build()["answers"])
+    check("15.4 A7 点「载入合成演示数据」→ 页面显示 seeded 数字（新增 %d 份）" % demo_count,
+          ("新增 %d 份" % demo_count) in (notice or ""), notice)
+    # 原断言：`after - before == 4` 且「合成演示」行数 == 4。
+    # 原依据：4 条演示作答。
+    # 新断言：`after - before == len(build())` 且「合成演示」行数 == len(build())（仍精确相等）。
+    # 改写依据：R1-T12 演示数据 4 → 6 条。
+    check("15.5 A7 载入后库里确实多出 %d 份合成作答（%d → %d）" % (demo_count, before, after),
+          after - before == demo_count
+          and any(row["source"] == "合成演示" and row["n"] == demo_count for row in sources), sources)
     hero_text = cdp.evaluate("document.querySelector('.check-hero').innerText") or ""
     # R1-01 改写（依据：任务书 R1-01 第 6 条「演示数据不进待核对队列、不影响 overview 的
     # expected」、基线审查 §14.2 P1「resolve_batch 无 source 过滤，演示可抢占『当前作业』」）。
@@ -1661,8 +1670,12 @@ def stage_reverify(cdp, ctx):
         " return el ? el.textContent.trim() : ''; })()", 20)
     left = db_query("SELECT record_key, source FROM answers WHERE class_id=?", (class2,))
     kept_check = db_query("SELECT COUNT(*) AS n FROM answer_checks WHERE answer_id=?", (long_id,))
-    check("15.24 A7 点「重置合成数据」→ 页面显示 deleted/kept 数字",
-          "删除 4 份作答" in (reset_notice or "")
+    # 原断言：`"删除 4 份作答" in reset_notice`。
+    # 原依据：演示数据只有 4 条，重置会把它们一起删掉。
+    # 新断言：`"删除 %d 份作答" % len(build())`（精确文案）。
+    # 改写依据：R1-T12 演示数据 4 → 6 条、两个演示批次——顺带证明「两个批次的演示行一起被清」。
+    check("15.24 A7 点「重置合成数据」→ 页面显示 deleted/kept 数字（删除 %d 份）" % demo_count,
+          ("删除 %d 份作答" % demo_count) in (reset_notice or "")
           and "真实导入的作答保留 1 份" in (reset_notice or ""), reset_notice)
     check("15.25 A7 重置只删合成数据：班里只剩那条真实导入作答",
           len(left) == 1 and left[0]["record_key"] == "LONG-1"
@@ -1760,6 +1773,323 @@ def stage_reverify(cdp, ctx):
     check("15.37 A1(b) 两处用词不同且各自可解释（错题 vs 作答）",
           "待确认错题" in joined_cards and has_answer_word,
           {"cards": card_texts, "hero": pending_hero[:80], "heads": overview_heads})
+
+
+def stage_t12_flows(cdp, ctx):
+    """R1-T12：五条新增能力的网页入口逐条点通（批次 / 人工核对 / 补录校正 / 追问复核 / 演示数据）。
+
+    为什么自成一体：这条 stage 排最后，前面的 A5/13.14/15.x 已经在演示作答上改过结论与数据，
+    所以这里先 reset 再 seed，从干净的演示数据起步——演示页本来就有这两个按钮，不算后门。
+    """
+    section("13.17 R1-T12：五条新增能力的网页入口（批次选择 / 人工核对 / 补录校正 / 追问复核 / 演示数据）")
+
+    http = ctx["http"]
+    class_id = ctx["class_id"]
+    base_url = "http://127.0.0.1:%d" % PORT
+
+    status, reset = http.post("/api/classes/%d/check/demo/reset" % class_id)
+    status, seeded = http.post("/api/classes/%d/check/demo/seed" % class_id)
+    demo_count = len(_demo_answers.build()["answers"])
+    demo_batches = list(_demo_answers.DEMO_BATCHES)
+    seeded_info = seeded.get("seeded") or {}
+    check("13.17.0 一键载入演示数据：%d 份、%d 个演示批次，逐批次都有作答"
+          % (demo_count, len(demo_batches)),
+          status == 200 and seeded_info.get("answers") == demo_count
+          and len(seeded.get("batches") or []) == len(demo_batches)
+          and all(n > 0 for n in (seeded_info.get("by_batch") or {}).values()),
+          {"seeded": seeded_info, "batches": seeded.get("batches")})
+
+    def read_selector(selector, timeout=25, settle=0.35):
+        """先等元素出现、再稳定一下再读：切批次会整页重渲染，读太早会拿到重渲染中途的空 DOM。"""
+        cdp.wait_selector(selector, timeout)
+        cdp.sleep(settle)
+        return cdp.evaluate(
+            "(() => { const el = document.querySelector(%s);"
+            " return el ? el.innerText : null; })()" % json.dumps(selector))
+
+    def wait_text(selector, needle, timeout=20):
+        """等到「元素里真的出现这句话」再返回文本；等不到也返回最后一次读到的文本（由断言判红）。"""
+        last = ""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            last = cdp.evaluate(
+                "(() => { const el = document.querySelector(%s);"
+                " return el ? el.innerText : ''; })()" % json.dumps(selector)) or ""
+            if needle in last:
+                return last
+            cdp.sleep(0.25)
+        return last
+
+    def set_batch(value):
+        """切批次下拉：先确认下拉还在（重渲染中会短暂消失），再改值并派发 change。"""
+        cdp.wait_selector(".batch-bar .batch-select", 25)
+        return cdp.evaluate(
+            "(() => { const s = document.querySelector('.batch-bar .batch-select');"
+            " if (!s) return 'no-select'; s.value = %s; s.dispatchEvent(new Event('change'));"
+            " return s.value; })()" % json.dumps(value))
+
+    ids = {row["record_key"]: row["id"] for row in db_query(
+        "SELECT id, record_key FROM answers WHERE class_id=? AND source='合成演示'", (class_id,))}
+    check("13.17.0b 六份演示作答的 id 已取到（供本段导航用）",
+          set(ids) == {item["record_key"] for item in _demo_answers.build()["answers"]}, ids)
+
+    # ---------------- 流程⑤：批次选择（总览） ----------------
+    cdp.navigate(base_url + "/#/class/%d/check" % class_id)
+    cdp.wait_selector(".batch-bar .batch-select", 25)
+    overview_body = cdp.evaluate("(() => document.querySelector('.check-overview').innerText)()")
+    options = cdp.evaluate(
+        "(() => Array.from(document.querySelectorAll('.batch-bar .batch-select option'))"
+        ".map((o) => o.value + '|' + o.textContent.trim()))()")
+    check("13.17.1 总览页有批次选择：当前作业 + 全部批次 + 每个演示批次都在选项里",
+          len(options) >= 2 and any(o.startswith("|") or "当前作业" in o for o in options)
+          and any("*all*" in o for o in options)
+          and all(any(b in o for o in options) for b in demo_batches), options)
+    check("13.17.1b 选择器下方写明「当前作业」与「全部批次」的区别",
+          "全部批次" in overview_body and "分母不同" in overview_body, overview_body[:160])
+
+    # 切到「全部批次」：标题变成合计，主按钮变成「查看核对记录」
+    check("13.17.2a 下拉切到「全部批次」后页面重新渲染（下拉可用）",
+          set_batch("*all*") == "*all*")
+    hero_all = wait_text(".check-hero", "全部批次")
+    body_all = wait_text(".check-overview", "分母不同")
+    check("13.17.2 切到「全部批次」：标题与合计数字随之变化，并说明与「当前作业」的分母不同",
+          "全部批次" in hero_all and "合计" in hero_all and "作业数" in hero_all
+          and "分母不同" in body_all, hero_all[:200])
+    path, size = cdp.screenshot("t12-1-batches-overview-1366x768.png")
+    check("13.17.2b 「全部批次」总览截图（1366×768）",
+          size == VIEWPORT and os.path.isfile(path), "%s %s" % (path, size))
+
+    # 切到第二个演示批次：本批演示行必须可见（不是 0/0）
+    second_batch = demo_batches[-1]
+    second_pending = db_query(
+        "SELECT COUNT(*) AS n FROM answers WHERE class_id=? AND batch=? AND source='合成演示'",
+        (class_id, second_batch))[0]["n"]
+    check("13.17.3a 下拉切到第二个演示批次（值已生效）",
+          set_batch(second_batch) == second_batch)
+    hero2 = wait_text(".check-hero", second_batch)
+    check("13.17.3 切到第二个演示批次：本批演示行可见（待核对 %d 份，不是 0/0）" % second_pending,
+          ("待核对作答 %d 份" % second_pending) in hero2, hero2[:200])
+    path, size = cdp.screenshot("t12-2-demo-batch2-1366x768.png")
+    check("13.17.3b 第二个演示批次截图（1366×768）", size == VIEWPORT, size)
+
+    # 真实批次里看不到任何演示行（库与接口双向对账）
+    assignments = (http.get("/api/classes/%d/check/overview" % class_id)[1] or {}).get("assignments") or []
+    real_rows = [item for item in assignments if not item.get("synthetic")]
+    leaks = []
+    for item in real_rows:
+        leaked = db_query(
+            "SELECT COUNT(*) AS n FROM answers WHERE class_id=? AND batch=? AND source='合成演示'",
+            (class_id, item["batch"]))[0]["n"]
+        if leaked:
+            leaks.append((item["batch"], leaked))
+    check("13.17.4 真实批次里看不到任何演示行（逐批次对账）",
+          not leaks and all(item["batch"] not in demo_batches for item in real_rows),
+          {"leaks": leaks, "real": [item["batch"] for item in real_rows]})
+
+    # ---------------- 流程⑤续：记录页批次选择 ----------------
+    cdp.navigate(base_url + "/#/class/%d/check/records?cause_state=all" % class_id)
+    cdp.wait_selector(".batch-bar .batch-select", 25)
+    records_options = cdp.evaluate(
+        "(() => Array.from(document.querySelectorAll('.batch-bar .batch-select option'))"
+        ".map((o) => o.value + '|' + o.textContent.trim()))()")
+    records_note = cdp.evaluate("(() => { const el = document.querySelector('.batch-note');"
+                                " return el ? el.textContent.trim() : ''; })()")
+    check("13.17.5 记录页有批次选择：默认「全部批次」并写明范围",
+          any("全部批次" in o for o in records_options) and "全部批次" in records_note,
+          {"options": records_options, "note": records_note})
+
+    # ---------------- 流程②：规则判不了时的人工核对 ----------------
+    oos_id = ids.get("DEMO-OOS-01")
+    cdp.navigate(base_url + "/#/class/%d/check/%d" % (class_id, oos_id))
+    cdp.wait_selector(".manual-check-entry", 25)
+    entry_text = wait_text(".manual-check-entry", "人工核对并记录错误")
+    check("13.17.6 out_of_scope 作答页出现「人工核对并记录错误」入口",
+          "人工核对并记录错误" in entry_text and "规则判不了" in entry_text, entry_text[:160])
+
+    cdp.click(".manual-check-entry .btn", "人工核对并记录错误", settle=0.5)
+    opened = cdp.evaluate(
+        "(() => { const d = document.querySelector('.manual-cause');"
+        " const area = document.querySelector('.judge-card textarea');"
+        " return {open: d ? d.open : null, basisFocused: document.activeElement === area}; })()")
+    check("13.17.7 点入口后展开人工填写区，并把焦点放到「判断依据」",
+          opened.get("open") is True and opened.get("basisFocused") is True, opened)
+
+    # 先制造一次「依据为空」的拒绝：填原因不填依据
+    cdp.fill(".manual-label", "不等式方向写反")
+    cdp.click(".manual-cause .btn", "保存人工判断", settle=0.8)
+    err_text = cdp.evaluate(
+        "(() => { const el = document.querySelector('.check-bar .banner.danger');"
+        " return el && !el.hidden ? el.textContent.trim() : ''; })()")
+    check("13.17.8 依据为空时保存被拒：页面写明要填判断依据（服务端 400 basis_required）",
+          ("判断依据" in err_text or "basis_required" in err_text), err_text[:160])
+
+    cdp.fill(".judge-card textarea", "作业本原图第二行写的是 2x>2，他抄成 x<1（依据逐字取自原图）")
+    cdp.click(".manual-cause .btn", "保存人工判断", settle=1.0)
+    ok = cdp.wait_selector(".receipt", 25)
+    receipt = wait_text(".receipt", "教师已判断") if ok else ""
+    check("13.17.9 填好依据后保存成功：回执显示「教师已判断」与「教师填写」来源",
+          bool(ok) and "教师已判断" in receipt and "教师填写" in receipt, receipt[:200])
+    # 统计/记录可单独看到这一档（记录页按原因筛选能找到，且不再挂「原因待判断」）
+    records = (http.get("/api/classes/%d/check/records?cause_state=decided&batch=%s"
+                        % (class_id, urllib.parse.quote(second_batch)))[1] or {}).get("items") or []
+    decided_ids = [item["answer_id"] for item in records]
+    check("13.17.9b 这条结论在「记录找回」里按「教师已判断」可查（不再永远挂账）",
+          oos_id in decided_ids, {"decided": decided_ids, "oos": oos_id})
+    path, size = cdp.screenshot("t12-3-manual-check-1366x768.png")
+    check("13.17.9c 人工核对截图（1366×768）", size == VIEWPORT, size)
+
+    # ---------------- 流程③：补录 / 校正原始作答 ----------------
+    c_id = ids.get("DEMO-C-01")
+    cdp.navigate(base_url + "/#/class/%d/check/%d" % (class_id, c_id))
+    cdp.wait_selector(".check-edit", 25)
+    cdp.evaluate("(() => { const d = document.querySelector('.check-edit'); d.open = true; return d.open; })()")
+    edit_visible = cdp.evaluate(
+        "(() => { const d = document.querySelector('.check-edit');"
+        " const area = d ? d.querySelector('textarea') : null;"
+        " return {open: d ? d.open : null, steps: area ? area.value : ''}; })()")
+    check("13.17.10 缺步骤作答提供「补录 / 校正原始作答」入口，且预填当前学生步骤",
+          edit_visible.get("open") is True and "x=1" in (edit_visible.get("steps") or ""), edit_visible)
+
+    before_version = ((http.get("/api/classes/%d/check/answers/%d" % (class_id, c_id))[1] or {})
+                      .get("answer") or {}).get("version", "")
+    cdp.fill(".check-edit textarea", "4(x-1)=8\nx-1=2\nx=3")
+    cdp.click(".check-edit .btn", "保存补录并重新分析", settle=1.2)
+    cdp.wait_selector(".check-body .banner.info", 25)
+    notice = wait_text(".check-body .banner.info", "已按新内容重新分析")
+    check("13.17.11 补录保存后页内回执给出旧/新版本号，并说明本份回到待核对",
+          "已按新内容重新分析" in notice and "旧版本" in notice and "待核对" in notice, notice[:200])
+    after_edit = http.get("/api/classes/%d/check/answers/%d" % (class_id, c_id))[1] or {}
+    after_steps = (after_edit.get("answer") or {}).get("student_steps") or ""
+    # 这份（DEMO-C-01「只有答案」）之前没有任何结论，所以这里不预设 stale；
+    # 要验的是「版本换了 + 按新内容重新分析 + 回到待核对」三件事。
+    check("13.17.12 补录后按新内容重新分析：版本变化、定位重算成 correct、本份回到待核对",
+          "x=3" in after_steps
+          and (after_edit.get("answer") or {}).get("version") not in ("", before_version)
+          and (after_edit.get("locate") or {}).get("status") == "correct"
+          and (after_edit.get("judgement") or {}).get("progress") == "pending",
+          {"steps": after_steps[:40],
+           "version_changed": (after_edit.get("answer") or {}).get("version") != before_version,
+           "locate": (after_edit.get("locate") or {}).get("status"),
+           "progress": (after_edit.get("judgement") or {}).get("progress")})
+    check("13.17.12b 演示作答被校正后明确说明「预置已失效 / 重置可恢复」",
+          "预置" in notice and "重置" in notice, notice[:220])
+    path, size = cdp.screenshot("t12-4-supplement-1366x768.png")
+    check("13.17.12c 补录校正截图（1366×768）", size == VIEWPORT, size)
+
+    # ---------------- 流程④：追问 + 证据更新后的复核 ----------------
+    mv_id = ids.get("DEMO-MV-01")
+    cdp.navigate(base_url + "/#/class/%d/check/%d" % (class_id, mv_id))
+    cdp.wait_selector(".check-ask", 25)
+    ask = cdp.evaluate(
+        "(() => { const card = document.querySelector('.check-ask');"
+        " const line = card.querySelector('.ask-line');"
+        " const input = card.querySelector('.ask-input');"
+        " return {line: line ? line.textContent.trim() : '', value: input ? input.value : ''}; })()")
+    check("13.17.13 移项题的追问句按本条错步生成（不含「括号」），并给出来源标注",
+          "括号" not in ask["line"] and ("移" in ask["line"] or "符号" in ask["line"])
+          and bool(ask["value"]), ask)
+
+    cdp.evaluate("(() => { const d = document.querySelector('.check-ask');"
+                 " const b = Array.from(d.querySelectorAll('.check-actions .btn'))"
+                 "   .find((el) => el.textContent.indexOf('记录学生回答') >= 0); b.click(); return b.textContent; })()")
+    cdp.sleep(0.3)
+    cdp.fill(".check-ask .follow-wrap textarea", "我以为 7 移过去还是 7。")
+    cdp.click(".check-bar .btn.primary", "保存错步，原因待判断", settle=1.2)
+    ok = cdp.wait_selector(".receipt", 25)
+    receipt1 = wait_text(".receipt", "学生原话") if ok else ""
+    check("13.17.14 记录学生回答后回执给出问句与来源（预置问句可由老师改写）",
+          bool(ok) and "学生原话" in receipt1 and "问：" in receipt1, receipt1[:200])
+
+    # 改关键证据（错步）→ 旧确认失效，回执出现「依据已更新，需复核」
+    cdp.navigate(base_url + "/#/class/%d/check/%d" % (class_id, mv_id))
+    cdp.wait_selector(".observed-input", 25)
+    # 复核演示的关键：老师改了依据，但**没有**重新记录同一句原话。页面默认会把上次的原话
+    # 预填回输入框，直接保存等于「在新证据下重新确认同一条」（T5 的正确行为），演不出失效；
+    # 所以先点「暂时跳过」把原话清空，保存时不带 followup。
+    cdp.click(".check-ask .check-actions .btn", "暂时跳过", settle=0.3)
+    # headless 下 insertText 偶尔落到别的元素上，observed_step 会变成空串——那样「证据没变」，
+    # 回执当然不会提示复核。这里直接写值 + 派发 input，并回读确认，避免把测试自己搞成假阴性。
+    written = cdp.evaluate(
+        "(() => { const el = document.querySelector('.observed-input');"
+        " if (!el) return null; el.focus(); el.value = '2x=15+7（原图这一行下面还划了线）';"
+        " el.dispatchEvent(new Event('input', {bubbles: true})); return el.value; })()")
+    check("13.17.15a 观察到的错步已改成与规则不同的写法（人工核验）",
+          written == "2x=15+7（原图这一行下面还划了线）", written)
+    cdp.fill(".judge-card textarea", "作业本原图上 7 没有变号，这一行下面还划了线")
+    cdp.click(".check-bar .btn.primary", "保存错步，原因待判断", settle=1.2)
+    ok = cdp.wait_selector(".receipt", 25)
+    if ok:
+        cdp.sleep(0.4)
+    receipt2 = wait_text(".receipt", "需复核") if ok else ""
+    check("13.17.15 改了关键错步后回执提示「依据已更新，需复核」",
+          bool(ok) and "需复核" in receipt2 and "依据" in receipt2, receipt2[:240])
+    follow = (http.get("/api/classes/%d/check/answers/%d" % (class_id, mv_id))[1] or {}).get("followup") or {}
+    check("13.17.15b 旧确认不再算「已记录」：recorded=false、needs_review=true",
+          follow.get("recorded") is False and follow.get("needs_review") is True, follow)
+    path, size = cdp.screenshot("t12-5-followup-review-1366x768.png")
+    check("13.17.15c 追问复核截图（1366×768）", size == VIEWPORT, size)
+
+    # ---------------- 不做视觉重构：三页都要在 1366 内，且主按钮唯一 ----------------
+    metrics = []
+    for name, path_hash in (("总览", "/#/class/%d/check" % class_id),
+                            ("记录", "/#/class/%d/check/records?cause_state=all" % class_id),
+                            ("核对", "/#/class/%d/check/%d" % (class_id, ids.get("DEMO-MV-01")))):
+        cdp.navigate(base_url + path_hash)
+        cdp.wait_selector(".check-hero, .check-body, .check-records", 25)
+        cdp.sleep(0.8)
+        item = cdp.evaluate(
+            "(() => ({overflowX: document.documentElement.scrollWidth - window.innerWidth,"
+            " primary: document.querySelectorAll('.btn.primary').length,"
+            " hash: location.hash,"
+            " bar: Array.from(document.querySelectorAll('.check-bar .btn, .check-bar a.btn'))"
+            "   .map((el) => el.textContent.trim())}))()")
+        item["label"] = name
+        log("T12 三页度量 %s：%s" % (name, json.dumps(item, ensure_ascii=False)[:200]))
+        metrics.append(item)
+    # 核对页在「保存回执」与「详情」两种形态下都只有一个 primary；这里按「≤1 且 ≥1」的
+    # 语义核：每页必须恰好 1 个，且不能出现第二个（A6 的「一屏一个主动作」）。
+    check("13.17.16 三页在 1366×768 下无横向滚动、主按钮仍唯一",
+          all(item["overflowX"] <= 0 for item in metrics)
+          and all(item["primary"] == 1 for item in metrics), metrics)
+
+    # ---------------- 隔离最后一根钉子：真实行冒用演示批名，reset 也不能删 ----------------
+    # 口径：reset 三条同时成立才删（source='合成演示' 且 record_key 带 DEMO- 前缀 且 批次属于
+    # DEMO_BATCHES）。这里故意把一条真实导入的作答**批名写成主演示批次**、record_key 不带前缀，
+    # 重置后它必须还在；演示行必须全清。
+    conn = sqlite3.connect(DB_PATH, timeout=15)
+    keep_id = None
+    try:
+        with conn:
+            cur = conn.execute(
+                "INSERT INTO answers(class_id, student_id, record_key, batch, student_name,"
+                " student_code, question_no, question_text, unit, standard_solution, student_steps,"
+                " source, occurred_on, missing, missing_reason, fingerprint, imported_at,"
+                " created_at, updated_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (class_id, 1, "REAL-IN-DEMO-BATCH", demo_batches[0], "真学生",
+                 "", "1", "3(x-2)=12", "一元一次方程", "x=6", "3(x-2)=12\nx=6",
+                 "真实导入", "2026-11-20", 0, "", "fp-real-in-demo-batch", "2026-11-20T08:00:00+08:00",
+                 "2026-11-20T08:00:00+08:00", "2026-11-20T08:00:00+08:00"))
+            keep_id = cur.lastrowid
+    finally:
+        conn.close()
+
+    http.post("/api/classes/%d/check/demo/reset" % class_id)
+    kept_rows = db_query("SELECT id, record_key, batch, source FROM answers WHERE id=?", (keep_id,))
+    demo_left = db_query(
+        "SELECT COUNT(*) AS n FROM answers WHERE class_id=? AND source='合成演示'", (class_id,))[0]["n"]
+    check("13.17.17 真实作答冒用演示批名时，reset 也不删它（三条口径少一条都不删）",
+          bool(kept_rows) and kept_rows[0]["record_key"] == "REAL-IN-DEMO-BATCH"
+          and kept_rows[0]["source"] == "真实导入" and demo_left == 0,
+          {"kept": kept_rows, "demo_left": demo_left})
+
+    # 这条只是本段的取证夹具，用完删掉，别把真实班级弄脏
+    conn = sqlite3.connect(DB_PATH, timeout=15)
+    try:
+        with conn:
+            conn.execute("DELETE FROM answers WHERE id=?", (keep_id,))
+    finally:
+        conn.close()
 
 
 def stage_old_tabs(cdp, ctx):
@@ -1930,14 +2260,26 @@ def main():
         log("演示班级：%s (id=%d)" % (class_name, class_id))
 
         status, seeded = http.post("/api/classes/%d/check/demo/seed" % class_id)
-        check("13.0.2 合成演示数据已载入（4 份）", status == 200
-              and seeded.get("seeded", {}).get("answers") == 4, seeded)
+        # 原断言：`seeded["seeded"]["answers"] == 4`。
+        # 原依据：演示数据只有 A/B/C/OK 四条。
+        # 新断言：`== len(_demo_answers.build()["answers"])`（精确相等，不是 >=）。
+        # 改写依据：R1-T12 演示数据扩展——4 条 → 6 条、两个演示批次（correct / first_bad /
+        #   missing_steps / out_of_scope 各 ≥1，另有「人工核对」「补录校正」「追问复核」样本）。
+        demo_count = len(_demo_answers.build()["answers"])
+        check("13.0.2 合成演示数据已载入（%d 份，与 build() 同数）" % demo_count, status == 200
+              and seeded.get("seeded", {}).get("answers") == demo_count, seeded)
         answers = {row["record_key"]: row["id"] for row in db_query(
             "SELECT id, record_key FROM answers WHERE class_id=? AND source='合成演示'"
             " ORDER BY id", (class_id,))}
         log("合成作答 id：%s" % answers)
-        check("13.0.3 四份合成作答齐备", set(answers) == {"DEMO-A-01", "DEMO-B-01",
-                                                          "DEMO-C-01", "DEMO-OK-01"}, answers)
+        # 原断言：`set(answers) == {"DEMO-A-01", "DEMO-B-01", "DEMO-C-01", "DEMO-OK-01"}`。
+        # 原依据：演示数据只有这四条 record_key。
+        # 新断言：与 `build()` 里的 record_key 集合**完全相等**（仍然精确，不是「至少包含」）。
+        # 改写依据：R1-T12 扩展为 6 条（新增 DEMO-OOS-01 超范围 / DEMO-MV-01 移项追问），
+        #   集合同样由 build() 决定，避免以后每加一条演示数据就改一次测试。
+        expect_keys = {item["record_key"] for item in _demo_answers.build()["answers"]}
+        check("13.0.3 合成作答齐备（%d 份、record_key 与 build() 完全一致）" % len(expect_keys),
+              set(answers) == expect_keys, sorted(answers))
 
         status, created = http.post("/api/classes", {"name": "七年级 2 班", "grade": "七年级"})
         check("13.0.4 新建一个空班级（no_answers 取证用）", status == 200 and created.get("id"),
@@ -1995,6 +2337,7 @@ def main():
                             ("R1-02 人工判断", lambda: stage_manual_cause(cdp, ctx)),
                             ("T11 聚焦复验", lambda: stage_reverify(cdp, ctx)),
                             ("A2 其余状态", lambda: stage_other_status(cdp, ctx)),
+                            ("T12 五条入口", lambda: stage_t12_flows(cdp, ctx)),
                             ("旧五 tab 回归", lambda: stage_old_tabs(cdp, ctx)),
                             ("T11 依据必填", lambda: stage_basis_required(cdp, ctx))]:
             try:

@@ -50,6 +50,12 @@ from .db import DEMO_BATCH, DEMO_RECORD_PREFIX, DEMO_SOURCE, now_iso
 DEMO_BATCH_EXTRA = "【合成演示】9月第3次作业"
 DEMO_BATCHES = (DEMO_BATCH, DEMO_BATCH_EXTRA)
 
+# 第二演示批次的固定导入时间（比 seed 时的 now 早）：`answer_check.resolve_batch` 按
+# `imported_at DESC, id DESC` 挑「当前作业」，让第二条演示作业的导入时间刻意更早，
+# 演示班级的「当前作业」就仍然是主演示批次（4 份）——主批次的既有语义一个字不改，
+# 多出来的只是「作业表里多一行可切换的演示批次」。
+DEMO_EXTRA_IMPORTED_AT = "2026-09-03T08:00:00+08:00"
+
 # 若班级里没有学生，seed 会补建这几个合成学生；note 用这段标记，
 # 重置时只清理「带标记且已经没有任何记录」的学生，绝不碰真实名单。
 STUDENT_NOTE = "合成演示数据 · 可重置"
@@ -851,6 +857,8 @@ def seed(db, uploads, class_id, student_ids=None):
                 continue
             student_id = picked[index % len(picked)]
             row = answer_row(record)
+            # 主演示批次用真实的导入时刻；第二演示批次固定为更早的时间（见常量说明）。
+            imported_at = now if record["batch"] == DEMO_BATCH else DEMO_EXTRA_IMPORTED_AT
             cur = conn.execute(
                 "INSERT INTO answers(class_id, student_id, record_key, batch, student_name,"
                 " student_code, question_no, question_text, unit, standard_solution,"
@@ -874,7 +882,7 @@ def seed(db, uploads, class_id, student_ids=None):
                     int(record["missing"]),
                     record["missing_reason"],
                     _fingerprint(row, student_id),
-                    now,
+                    imported_at,
                     now,
                     now,
                 ),

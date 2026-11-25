@@ -351,3 +351,13 @@ dialog .dlg-foot { padding: 12px 18px; border-top: 1px solid var(--line); displa
   .step-line .step-mark { grid-column: 2; justify-self: start; }
   .check-head { flex-direction: column; }
 }
+
+/* R1-T12：批次选择与补录表单。只补必要的布局，不改既有视觉（复用 .card/.row/.field/.btn）。 */
+.batch-bar { padding: 10px 12px; }
+.batch-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.batch-select { max-width: 320px; }
+.batch-note { flex: 1 1 240px; min-width: 0; }
+.check-edit { margin-top: 10px; }
+.check-edit > summary { cursor: pointer; font-weight: 600; }
+.check-edit[open] > summary { margin-bottom: 8px; }
+.manual-check-entry { margin-top: 10px; border-color: #fcd34d; background: var(--warn-weak); }

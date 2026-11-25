@@ -1737,6 +1737,10 @@ async function waitForRestart() {
 // R1-06：不再有「写死的去括号问句」兜底。问句一律取服务端 followup.suggestion（按本条错步生成），
 // 没有依据时服务端给 available=false + 「暂无适用追问」，这里只照着显示，不自己编一句。
 const CHECK_ASK_UNAVAILABLE = '暂无适用追问';
+// R1-T12：批次选择里的「全部批次」。它只是**本地视图标记**，不会当成批次名发给后端
+// （后端没有叫「全部批次」的批次，`?batch=*all*` 只会查到 0 份）；选它时页面照常要
+// 「当前作业 + 各批次清单」，再把各批次并列相加，并写明它和「当前作业」的区别。
+const CHECK_ALL_BATCHES = '*all*';
 const CHECK_PRESET_NOTE = '预置演示 · 不代表已实现通用定位';
 const CHECK_QUEUE_NOTE = '保存后这份作答退出待核对队列，但仍可在「查看核对记录」里按「原因待判断」找回。';
 const CHECK_LONG_LINES = 10;
@@ -1935,8 +1939,18 @@ function renderCheckTab(classData, sub, query) {
 /* ---------------- A1：课前总览 ---------------- */
 async function renderCheckOverview(classData, query) {
   const batch = query.batch || '';
+  const viewAll = batch === CHECK_ALL_BATCHES;
+  // 「全部批次」不向后端要一个不存在的批次：照常取「当前作业 + 各批次清单」，
+  // 由页面把各批次并列相加（每份作答仍然只属于一个批次）。
+  const apiBatch = viewAll ? '' : batch;
   const overview = (await api('/api/classes/' + classData.id + '/check/overview'
-    + (batch ? '?batch=' + encodeURIComponent(batch) : ''))) || {};
+    + (apiBatch ? '?batch=' + encodeURIComponent(apiBatch) : ''))) || {};
+  const assignments = Array.isArray(overview.assignments) ? overview.assignments : [];
+  // 「全部批次」的合计：必须定义在 headline / detail / primary 之前，否则 viewAll 分支会撞
+  // const 的 TDZ（ReferenceError），整页渲染不出来（实测「全部批次」页空白）。
+  const allTotal = assignments.reduce((sum, item) => sum + checkNum(item.total), 0);
+  const allChecked = assignments.reduce((sum, item) => sum + checkNum(item.checked), 0);
+  const allPending = assignments.reduce((sum, item) => sum + checkNum(item.pending), 0);
 
   const overviewState = overview.state || 'no_answers';
   const assignment = overview.assignment || {};
@@ -1958,13 +1972,18 @@ async function renderCheckOverview(classData, query) {
       ? h('span', { class: 'state-flag done' }, '全部已核对')
       : null;
 
-  const headline = overviewState === 'no_answers'
+  const headline = viewAll
+    ? '全部批次：' + assignments.length + ' 个作业、应交 ' + allTotal + ' 份'
+    : overviewState === 'no_answers'
     ? '尚未导入作答'
     : overviewState === 'all_checked'
       ? '本次作业已核对完'
       : ((next && next.headline) || '这批作答里，哪些可以判、哪些还需要问一句？');
 
-  const detail = overviewState === 'no_answers'
+  const detail = viewAll
+    ? '这是把各批次并列相加的结果：已核对 ' + allChecked + ' 份、待核对 ' + allPending
+      + ' 份。要看某一批的点下面作业表那一行；「当前作业」范围请在下拉里切回去。'
+    : overviewState === 'no_answers'
     ? '可以导入本班作答，或用下面的合成演示数据先走一遍。'
     : overviewState === 'all_checked'
       ? '本次作业共 ' + total + ' 份，已核对 ' + checked + ' 份；原因待判断的记录可以在「查看核对记录」里找回。'
@@ -1973,18 +1992,58 @@ async function renderCheckOverview(classData, query) {
         + '。待核对数与「查看待核对作答」用同一个队列。';
 
   // 唯一主按钮：按当前状态给出唯一一个可点的下一步（A1/A7）。
-  const primary = overviewState === 'no_answers'
+  const primary = viewAll
+    ? h('a', { class: 'btn primary', href: '#/class/' + classData.id + '/check/records' }, '查看核对记录')
+    : overviewState === 'no_answers'
     ? h('a', { class: 'btn primary', href: '#/upload?class=' + classData.id }, '导入作答')
     : nextId
       ? h('a', { class: 'btn primary', href: '#/class/' + classData.id + '/check/' + nextId }, '查看待核对作答')
       : h('a', { class: 'btn primary', href: '#/class/' + classData.id + '/check/records' }, '查看核对记录');
   const recordsLink = h('a', { class: 'btn', href: '#/class/' + classData.id + '/check/records' }, '查看核对记录');
 
+  // R1-T12：批次选择。总览页原来只能靠作业表点进去，没有「当前看的是哪一批」的显式选择；
+  // 这里补一个下拉，并把「当前作业 / 全部批次 / 具体批次」三种范围的差别写成一句话。
+  const batchOptions = [
+    { value: '', label: '当前作业（最近一次导入的真实批次）' },
+    { value: CHECK_ALL_BATCHES, label: '全部批次（各批次并列相加）' },
+  ].concat(assignments.map((item) => ({
+    value: item.batch || '',
+    label: (item.name || item.batch || '（未命名作业）') + (item.synthetic ? '（演示）' : ''),
+  })));
+  const batchSelect = h('select', { class: 'batch-select' },
+    batchOptions.map((opt) => h('option', { value: opt.value }, opt.label)));
+  batchSelect.value = viewAll ? CHECK_ALL_BATCHES : batch;
+  batchSelect.addEventListener('change', () => {
+    const value = batchSelect.value;
+    location.hash = '#/class/' + classData.id + '/check'
+      + (value ? '?batch=' + encodeURIComponent(value) : '');
+  });
+  const batchRow = h('div', { class: 'card batch-bar' },
+    h('div', { class: 'row batch-row' },
+      h('label', { class: 'small' }, '看哪个批次：'),
+      batchSelect,
+      h('span', { class: 'tiny muted batch-note' }, viewAll
+        ? '当前范围：全部批次（' + assignments.length + ' 个作业，各批次并列相加；每份作答仍属于某个批次）'
+        : (batch
+          ? '当前范围：只看「' + assignmentName + '」这一批'
+          : '当前范围：当前作业（最近一次导入的真实批次）；要并看所有批次请选「全部批次」'))),
+    h('p', { class: 'tiny muted', style: 'margin:6px 0 0' },
+      '「当前作业」只算最近一次导入的真实批次，「全部批次」把本班每个作业的应交/已核对/待核对并列相加，'
+      + '两者分母不同；具体某一批请直接选批次名，或在下面作业表点那一行。'),
+  );
+
   const hero = h('div', { class: 'card check-hero' },
     h('div', { class: 'row between' }, flag, showAssignment ? h('span', { class: 'rec-no' }, '当前作业：' + assignmentName) : null),
     h('h2', { class: 'state-title' }, headline),
     h('p', { class: 'small muted' }, detail),
-    overviewState === 'has_pending'
+    viewAll
+      ? h('div', { class: 'kv-row' },
+        h('div', { class: 'kv' }, h('div', { class: 'k' }, '作业数'), h('div', { class: 'v' }, assignments.length)),
+        h('div', { class: 'kv' }, h('div', { class: 'k' }, '应交（各批合计）'), h('div', { class: 'v' }, allTotal)),
+        h('div', { class: 'kv' }, h('div', { class: 'k' }, '已核对（合计）'), h('div', { class: 'v' }, allChecked)),
+        h('div', { class: 'kv' }, h('div', { class: 'k' }, '待核对作答（合计）'), h('div', { class: 'v' }, allPending)))
+      : null,
+    !viewAll && overviewState === 'has_pending'
       ? h('div', { class: 'kv-row' },
         h('div', { class: 'kv' }, h('div', { class: 'k' }, '应交'), h('div', { class: 'v' }, total)),
         h('div', { class: 'kv' }, h('div', { class: 'k' }, '已核对'), h('div', { class: 'v' }, checked)),
@@ -2048,8 +2107,7 @@ async function renderCheckOverview(classData, query) {
     }
   }
 
-  const assignments = Array.isArray(overview.assignments) ? overview.assignments : [];
-  const assignmentCard = (assignments.length && overviewState !== 'no_answers')
+  const assignmentCard = (assignments.length && (overviewState !== 'no_answers' || viewAll))
     ? h('div', { class: 'card' },
       h('h3', {}, '作业与待核对作答数量'),
       h('div', { class: 'table-wrap' },
@@ -2062,7 +2120,8 @@ async function renderCheckOverview(classData, query) {
               class: 'clickable',
               onclick: () => { location.hash = '#/class/' + classData.id + '/check?batch=' + encodeURIComponent(item.batch || ''); },
             },
-            h('td', {}, item.name || item.batch || '（未命名作业）'),
+            h('td', {}, item.name || item.batch || '（未命名作业）',
+              item.synthetic ? h('span', { class: 'chip mock', style: 'margin-left:6px' }, '演示') : null),
             h('td', { class: 'num' }, checkNum(item.total)),
             h('td', { class: 'num' }, checkNum(item.checked)),
             h('td', { class: 'num' }, checkNum(item.pending)),
@@ -2084,6 +2143,7 @@ async function renderCheckOverview(classData, query) {
 
   return h('div', { class: 'check-overview' },
     h('p', { class: 'small muted', style: 'margin:0 0 8px' }, '课前总览 · 先看这批作答里哪一份需要问一句'),
+    batchRow,
     hero,
     demoCard,
     assignmentCard,
@@ -2190,6 +2250,103 @@ async function renderCheckAnswer(classData, answerId) {
       : '本次定位没有给出错步行：可以留空，也可以手动写下你观察到的错误步骤；'
         + '手写错步算「人工核验」，需要同时在「教师判断」卡里填判断依据。'),
   );
+
+  /* ---- R1-T12 流程③：补录 / 校正原始作答（复用现有 field/textarea/btn 组件，不新增视觉） ---- */
+  const editSteps = h('textarea', {
+    rows: 6,
+    placeholder: '逐行照抄学生原文，一行一步；补上缺的中间步骤后保存即可',
+  });
+  editSteps.value = draft.editSteps !== undefined ? draft.editSteps : (answer.student_steps || '');
+  editSteps.addEventListener('input', () => { draft.editSteps = editSteps.value; });
+  const editMissing = h('input', { type: 'checkbox' });
+  editMissing.checked = draft.editMissing !== undefined ? !!draft.editMissing : !!Number(answer.missing || 0);
+  editMissing.addEventListener('change', () => { draft.editMissing = editMissing.checked; });
+  const editReason = h('input', {
+    type: 'text', placeholder: '缺测原因（标为缺测时填，例如「未提供学生步骤」）',
+    value: answer.missing_reason || '',
+  });
+  // 注意：这里**不能**用 `.banner.danger`。它排在页面底部操作栏之前，而保存失败横幅
+  // （fillError）用的是同一个类；多一个空的 `.banner.danger` 会让既有断言读到空文本
+  // （实测把 13.10 的 500 横幅两条断言带红）。用独立的轻量提示元素。
+  const editError = h('p', { class: 'small check-edit-error', style: 'margin:8px 0 0; color:#b91c1c' }, '');
+  editError.hidden = true;
+  const editBtn = h('button', { class: 'btn', onclick: () => submitContent() }, '保存补录并重新分析');
+  async function submitContent() {
+    editError.hidden = true;
+    editBtn.disabled = true;
+    try {
+      const payload = {
+        expected_version: answer.version || '',
+        student_steps: String(editSteps.value || ''),
+        missing: editMissing.checked ? '是' : '否',
+      };
+      if (editMissing.checked) payload.missing_reason = String(editReason.value || '').trim();
+      const result = await api(base + '/answers/' + answerId + '/content',
+        { method: 'PATCH', body: payload }) || {};
+      const prev = String(result.previous_version || '').slice(0, 8);
+      const next = String(result.version || '').slice(0, 8);
+      // 回执只说服务端的话：新版本、旧版本作废、是否演示预置失效（演示作答校正后由后端标注）。
+      state.ui.checkNotice = {
+        answerId: answerId,
+        text: '已按新内容重新分析：旧版本 ' + (prev || '—') + ' 作废、新版本 ' + (next || '—')
+          + '；这份作答已回到待核对。' + (result.note ? ' ' + result.note : ''),
+      };
+      state.ui.checkDrafts[String(answerId)] = {};
+      await renderRoute();
+    } catch (err) {
+      editError.hidden = false;
+      editError.textContent = '补录没有保存：' + (err.message || '请稍后重试')
+        + '。（本次没有改动这份作答）';
+    } finally {
+      editBtn.disabled = false;
+    }
+  }
+  const editCard = h('details', { class: 'card check-edit' },
+    h('summary', {}, '补录 / 校正原始作答'),
+    h('p', { class: 'small muted' },
+      '缺步骤、步骤写错、学生后来又补了过程——都在这里改，不用重新导入整批。'
+      + '保存后生成新版本：旧结论作废、本份回到待核对，并按新内容重新分析。'),
+    h('label', { class: 'field' },
+      h('span', { class: 'lab' }, '学生步骤（逐行原文）'),
+      editSteps,
+    ),
+    h('label', { class: 'row', style: 'margin:6px 0' },
+      editMissing, h('span', { class: 'small' }, '标为缺测（这份没有学生步骤）')),
+    h('label', { class: 'field' },
+      h('span', { class: 'lab' }, '缺测原因'),
+      editReason,
+    ),
+    h('div', { class: 'check-actions', style: 'margin-top:6px' }, editBtn),
+    editError,
+  );
+
+  /* ---- R1-T12 流程②：规则判不了时的人工核对入口（点一下就把人工判断区展开并聚焦） ---- */
+  const manualCheckEntry = (loc.status === 'out_of_scope')
+    ? h('div', { class: 'card manual-check-entry' },
+      h('h3', {}, '规则判不了这份作答'),
+      h('p', { class: 'small muted' },
+        '可以选择「人工核对并记录错误」：写下你观察到的错误步骤、原因与判断依据，'
+        + '保存后这份不再挂在「原因待判断」上（依据为空会被服务端拒绝并提示）。'),
+      h('div', { class: 'check-actions' },
+        h('button', {
+          class: 'btn',
+          onclick: () => {
+            manualWrap.open = true;
+            if (observedInput) observedInput.focus();
+            basisArea.focus();
+            toast('已展开人工核对：请填观察到的错误步骤、原因与判断依据');
+          },
+        }, '人工核对并记录错误')),
+    )
+    : null;
+
+  /* ---- R1-T12：补录成功后的页内回执（只从服务端拿版本号与说明） ---- */
+  const notice = state.ui.checkNotice && state.ui.checkNotice.answerId === answerId
+    ? state.ui.checkNotice : null;
+  if (notice) state.ui.checkNotice = null;
+  const noticeBanner = notice
+    ? h('div', { class: 'banner info' }, notice.text)
+    : null;
 
   const selected = { code: draft.causeCode !== undefined ? draft.causeCode : (judgement.cause_code || '') };
   let adoptBtn = null;
@@ -2634,6 +2791,14 @@ async function renderCheckAnswer(classData, answerId) {
     const evidence = afterCandidates.find((item) => (item.code || '') === (after.cause_code || ''))
       || (afterCandidates.length ? afterCandidates[0] : null);
 
+    // R1-T12 流程④：依据一变，旧确认不再算「已记录」——回执必须当场说，别等老师刷新页面才发现。
+    const reviewNode = afterFollowup.needs_review === true
+      ? h('div', { class: 'banner warn', style: 'margin-top:8px' },
+        h('b', {}, '依据已更新，需复核：'),
+        afterFollowup.review_note
+          || '这条追问依据的错步或原因已经变了，请重新确认后再当作当前证据。')
+      : null;
+
     const quoteNode = followed
       ? h('div', { class: 'quote-box' },
         h('div', { class: 'rec-no' },
@@ -2678,6 +2843,7 @@ async function renderCheckAnswer(classData, answerId) {
             + (after.teacher_error_text ? '（人工记录的错步：「' + after.teacher_error_text + '」）' : ''))
           : (after.verify_source_label ? h('p', { class: 'small' }, '核验来源：' + after.verify_source_label) : null),
         quoteNode,
+        reviewNode,
         evidenceNode,
         h('div', { class: 'kv', style: 'margin-top:10px' },
           h('div', { class: 'k' }, '教师判断'),
@@ -2720,10 +2886,10 @@ async function renderCheckAnswer(classData, answerId) {
   }
 
   const grid = h('div', { class: 'check-split' },
-    h('div', { class: 'check-col' }, questionCard, stepsCard),
+    h('div', { class: 'check-col' }, questionCard, stepsCard, manualCheckEntry, editCard),
     h('div', { class: 'check-col check-side' }, stepBlock, causeBlock, judgeBlock),
   );
-  wrapper.appendChild(h('div', { class: 'check-body' }, head, grid, askCard, actionBar));
+  wrapper.appendChild(h('div', { class: 'check-body' }, head, noticeBanner, grid, askCard, actionBar));
   return wrapper;
 }
 
@@ -2733,7 +2899,8 @@ async function renderCheckRecords(classData, query) {
   const allowed = ['undecided', 'decided', 'not_applicable', 'all'];
   const causeState = allowed.indexOf(query.cause_state) >= 0 ? query.cause_state : 'undecided';
   const params = new URLSearchParams({ cause_state: causeState });
-  if (query.batch) params.set('batch', query.batch);
+  const recordsBatch = query.batch || '';
+  if (recordsBatch) params.set('batch', recordsBatch);
 
   const [records, overview] = await Promise.all([
     api('/api/classes/' + classData.id + '/check/records?' + params.toString()),
@@ -2742,6 +2909,28 @@ async function renderCheckRecords(classData, query) {
   const items = Array.isArray((records || {}).items) ? records.items : [];
   const next = overview && overview.next ? overview.next : null;
   const nextId = next && next.answer_id !== undefined && next.answer_id !== null ? Number(next.answer_id) : null;
+
+  // R1-T12 流程⑤：记录页也要能选批次。不传批次 = 全班所有批次（契约 §3.4），
+  // 选具体批次 = 只看那批；两种范围的差别写成一句话，避免「为什么这里 8 条、统计页 3 条」。
+  const batchOptions = [{ value: '', label: '全部批次（本班所有批次）' }]
+    .concat(((overview || {}).assignments || []).map((item) => ({
+      value: item.batch || '',
+      label: (item.name || item.batch || '（未命名作业）') + (item.synthetic ? '（演示）' : ''),
+    })));
+  const batchSelect = h('select', { class: 'batch-select' },
+    batchOptions.map((opt) => h('option', { value: opt.value }, opt.label)));
+  batchSelect.value = recordsBatch;
+  batchSelect.addEventListener('change', () => {
+    const chosen = batchSelect.value;
+    location.hash = '#/class/' + classData.id + '/check/records?cause_state=' + causeState
+      + (chosen ? '&batch=' + encodeURIComponent(chosen) : '');
+  });
+  const batchBar = h('div', { class: 'row batch-row batch-bar', style: 'margin:0 0 8px' },
+    h('label', { class: 'small' }, '看哪个批次：'),
+    batchSelect,
+    h('span', { class: 'tiny muted batch-note' }, recordsBatch
+      ? '当前范围：只看「' + recordsBatch + '」这一批'
+      : '当前范围：全部批次（本班所有批次，每行都标着所属批次）'));
 
   const filters = [
     ['undecided', '原因待判断'],
@@ -2808,6 +2997,7 @@ async function renderCheckRecords(classData, query) {
         h('h3', {}, '核对记录（' + checkNum((records || {}).total) + ' 条）'),
         primary),
       h('p', { class: 'small muted' }, '只列当前版本的有效记录，按保存时间倒序。改判后的旧原因不再作为当前结论，但仍保留在历史里。'),
+      batchBar,
       filterRow,
       body,
     ),
