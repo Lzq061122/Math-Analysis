@@ -1,6 +1,12 @@
 """错题分析引擎。
 
-有可用配置且显式启用时调用 OpenAI 兼容接口，否则使用 MockProvider。
+默认使用 MockProvider；真实通道属于「独立组件」，正式教师业务流程不经过这里。
+
+R1-07 起，本模块同时存放「个体数据不进生成式模型」这条业务边界的唯一文案与错误码：
+- 业务侧（错题、作答、追问、辅导建议）在组装请求体之前就用它们拦断；
+- 通道侧（vision.CloudVisionProvider）用它们拒绝任何非「离线工具用途」的发送。
+边界依据：数智伴学_Agent开发规格.md §「业务环境只运行固定规则与人工流程，不发起个体化生成式请求」。
+
 所有结果都带 mode 字段，界面据此区分真实与模拟，不冒充真实 AI。
 """
 
@@ -9,6 +15,23 @@ import hashlib
 from .db import now_iso
 
 MODE_MOCK = "mock"
+
+# ---------------------------------------------------------------------------
+# 个体数据边界：正式教师业务流程不向生成式模型发送可关联个人的内容
+# ---------------------------------------------------------------------------
+# 错误码固定为 ai_isolation，前端与测试据此区分「被隔离拦断」与「调用失败」。
+INDIVIDUAL_FLOW_CODE = "ai_isolation"
+
+INDIVIDUAL_FLOW_MESSAGE = (
+    "正式教师业务流程不向生成式模型发送学生的作答、作答原文、身份或追问原话。"
+    "本次没有组装请求，也没有把任何内容发出去；"
+    "分析类内容请用规则定位与人工判断录入，结论照常可以保存与统计。"
+)
+
+# 唯一保留的非个体用途：离线工具/自检（AI 设置自检、本机桩验证、离线资源制作）。
+# 该用途只允许发往本机回环地址，且不得携带任何学生记录；业务侧没有任何调用点。
+PURPOSE_OFFLINE_TOOL = "offline_tool"
+ALLOWED_EGRESS_PURPOSES = frozenset({PURPOSE_OFFLINE_TOOL})
 
 KNOWLEDGE_POINTS = [
     "一元一次方程",
@@ -366,7 +389,12 @@ class MockProvider(AnalysisProvider):
 
 
 def get_provider(config=None):
-    """按合并后的配置选择分析服务：显式启用且配置完整时走真实分析，否则用模拟分析。"""
+    """按合并后的配置选择分析服务：配置完整时给出真实通道对象，否则用模拟分析。
+
+    R1-07 起这里只是「构造对象」：真实通道的发送口（vision.CloudVisionProvider）只放行
+    analysis.PURPOSE_OFFLINE_TOOL 且目标为本机回环的请求，业务侧的个体数据无法借它外发。
+    环境变量默认不参与（resolve_config 的 allow_env 默认 False），旧变量也放不开。
+    """
     from . import vision
 
     cfg = vision.resolve_config(config)

@@ -1,17 +1,22 @@
 """教师短追问：针对一个已确认问题，帮老师准备一句追问，记录学生怎么回答，
 再把回答带去请 AI 提一份待核对的错因候选。
 
+R1-07 起「请 AI 提候选」的两步（suggest / update_causes）在正式业务环境已停用：
+两个函数在读取题目原文、学生过程原文、老师追问原话与学生回答之前就抛出 ai_isolation 错误。
+原因与依据见 analysis.INDIVIDUAL_FLOW_MESSAGE。老师自己写追问、记回答、改错因、
+接受或拒绝历史候选全部保留，且完全不需要模型。
+
 只做四件事：
 1. 追问候选最多 3 条；证据不足时明确说不确定，不编造装作确定的追问。
 2. 只有老师确认使用后才落库成「实际提问」，并记下提问时间与这次依据的题目/过程原文。
 3. 学生回答由老师录入；提问时间、回答时间、学生与证据都跟着这条记录走。
-4. 根据回答更新错因候选时，只生成「待老师核对」的候选，老师接受才写进错题，
-   拒绝或调用失败都不动原有作答、已确认错题与历史追问。
+4. 生成类请求已停用；错因仍由老师自己判断并在核对页确认，拒绝修改都不动作答与历史追问。
 """
 
 import json
 import re
 
+from .analysis import INDIVIDUAL_FLOW_CODE, INDIVIDUAL_FLOW_MESSAGE
 from .db import now_iso
 
 MAX_CANDIDATES = 3
@@ -164,7 +169,12 @@ def evidence_payload(db, class_id, student_id, problem, mistake_id=None):
 
 
 def build_suggest_prompt(payload):
-    """只放问题名、次数无关的原文与已确认错因，不放姓名、编号、班级或账号。"""
+    """拼追问提示词（组件层遗留，业务侧已不再调用它）。
+
+    注意：「不放姓名、编号、班级或账号」不是隔离 —— 题目原文、学生过程原文与老师追问原话
+    本身就是可关联个人的内容。R1-07 的隔离是整条路径不进入生成式模型，
+    由 api.api_followup_suggest/api_followup_update 与本模块 suggest()/update_causes() 拦断。
+    """
     lines = ["【追问候选】", "问题：%s" % payload["problem"]]
     if payload.get("question_text"):
         lines.append("题目原文：%s" % payload["question_text"])
@@ -289,22 +299,18 @@ def parse_causes(text, payload, answer):
 
 
 def suggest(db, class_id, student_id, problem, mistake_id, provider, service_name, model):
-    """生成追问候选；模拟模式不发请求，也不编造。"""
-    payload = evidence_payload(db, class_id, student_id, problem, mistake_id)
-    if provider is None:
+    """R1-07：追问候选的生成只在本机模拟时按原样拒绝，真实通道一律拦断。
+
+    两种情况都在 evidence_payload() 之前返回：不读题目原文、学生过程原文与已确认错因，
+    不拼提示词，不发请求，也不落 followups。
+    """
+    if provider is None or getattr(provider, "mode", "mock") == "mock":
         raise FollowupError(
             "当前是模拟分析，不会生成追问候选。可以先自己写一句，或到「AI 设置」里配置服务。",
             409,
             "mock",
         )
-    prompt = build_suggest_prompt(payload)
-    text, usage = provider.chat_text(prompt, SUGGEST_SYSTEM)
-    parsed = parse_candidates(text, payload)
-    parsed["provider"] = service_name
-    parsed["model"] = model
-    parsed["prompt"] = prompt
-    parsed["payload"] = payload
-    return parsed
+    raise FollowupError(INDIVIDUAL_FLOW_MESSAGE, 403, INDIVIDUAL_FLOW_CODE)
 
 
 def create(db, class_id, student_id, problem, question, source, suggestion, payload):
@@ -426,51 +432,16 @@ def _mistake_row(db, class_id, student_id, mistake_id):
 
 
 def update_causes(db, class_id, student_id, followup_id, provider, service_name, model):
-    """根据学生回答生成待核对的错因候选。"""
-    record = get(db, class_id, student_id, followup_id)
-    if not record.get("answer"):
-        raise FollowupError("先记下学生的回答，再让 AI 更新错因候选。", 409, "empty")
-    if provider is None:
+    """R1-07：按学生回答生成错因候选只在本机模拟时按原样拒绝，真实通道一律拦断。
+
+    两种情况都在 get() 之前返回：不读老师追问原话与学生回答原话，不拼提示词，不发请求，
+    也不写 followup_updates；旧候选的记录与老师自己的决定保持原样。
+    """
+    if provider is None or getattr(provider, "mode", "mock") == "mock":
         raise FollowupError(
             "当前是模拟分析，不会生成错因候选。可以自己改，或到「AI 设置」里配置服务。", 409, "mock"
         )
-
-    payload = record.get("evidence") or {}
-    if not isinstance(payload, dict):
-        payload = {}
-    prompt = build_update_prompt(payload, record["question"], record["answer"])
-    text, usage = provider.chat_text(prompt, UPDATE_SYSTEM)
-    parsed = parse_causes(text, payload, record["answer"])
-
-    mistake = _mistake_row(db, class_id, student_id, record.get("mistake_id"))
-    before = _load_list(mistake["possible_causes"]) if mistake is not None else []
-    now = now_iso()
-    with db.tx() as conn:
-        cur = conn.execute(
-            "INSERT INTO followup_updates (followup_id, causes, note, uncertain, raw, before_json,"
-            " after_json, status, created_at, decided_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (
-                followup_id,
-                json.dumps(parsed["causes"], ensure_ascii=False),
-                parsed["note"],
-                1 if parsed["uncertain"] else 0,
-                json.dumps({"prompt": prompt, "provider": service_name, "model": model}, ensure_ascii=False),
-                json.dumps(before, ensure_ascii=False),
-                json.dumps([item["cause"] for item in parsed["causes"]], ensure_ascii=False),
-                "pending",
-                now,
-                "",
-            ),
-        )
-        update_id = cur.lastrowid
-        conn.execute("UPDATE followups SET updated_at=? WHERE id=?", (now, followup_id))
-    return {
-        "update": _serialise_update(
-            db.query_one("SELECT * FROM followup_updates WHERE id=?", (update_id,))
-        ),
-        "before": before,
-        "followup": get(db, class_id, student_id, followup_id),
-    }
+    raise FollowupError(INDIVIDUAL_FLOW_MESSAGE, 403, INDIVIDUAL_FLOW_CODE)
 
 
 def decide(db, class_id, student_id, followup_id, update_id, action, causes=None, note=None):

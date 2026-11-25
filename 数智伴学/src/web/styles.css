@@ -260,7 +260,15 @@ dialog .dlg-foot { padding: 12px 18px; border-top: 1px solid var(--line); displa
 }
 .axis-chip.progress.on { background: var(--brand-weak); border-color: #bfdbfe; color: #1d4ed8; }
 .axis-chip.cause.on { background: var(--ok-weak); border-color: #a7f3d0; color: var(--ok); }
+/* R1-02 三态：无需判断用中性色，既不是「已判断」也不是「待判断」。 */
+.axis-chip.cause.na { background: #f8fafc; border-color: var(--line); color: #6b7280; }
 .axis-sep { color: var(--muted); font-size: 13px; }
+
+/* R1-02：人工填写原因（无候选也能完成判断） */
+.manual-cause { margin-top: 10px; }
+.manual-cause > summary { cursor: pointer; font-size: 13px; color: #374151; }
+.manual-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.manual-row input { flex: 1 1 160px; min-width: 120px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; }
 
 .check-split {
   display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr);

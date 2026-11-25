@@ -6,6 +6,40 @@
 做法：把每行解析成 Ax+B=Cx+D，A、B、C、D 都用 fractions.Fraction 记录，相邻两行解集相同
 等价于 (A-C, B-D) 与 (A'-C', B'-D') 成比例；所有比较都用有理数交叉相乘，不引入浮点误差。
 题型只限一元一次方程，超范围时原样返回并转人工，绝不硬判。
+
+五个概念分开表达，互不顶替（对应返回值里的键）：
+
+  ① 数学等价性   status（相邻两行解集是否相同）+ contrast
+  ② 错步定位     first_bad_index / first_bad_text / underline / hint_text
+  ③ 步骤完整性   steps{raw_line_count, copied_question_lines, step_count, process_count,
+                       answer_only_count, unparsed_count, has_process, answer_only, empty,
+                       kind}
+  ④ 作答完成情况 completion{state, has_result, result_form, final_line_index, final_answer,
+                            answer_value, expected_value, solution_kind, result_matches, note}
+  ⑤ 人工处理状态 manual{state, reason_code, note}（manual_note 保留为同一句话的文本形态）
+
+  另加 verification{scope, total_lines, verified_indexes, unverified_indexes,
+                    checked_comparisons, failed_line_index, failed_line_text,
+                    failed_role, failed_position, note} 记录核验范围：哪些行核验过、第几行
+  解析失败、从哪一行起没有核验。**未核验的行不给任何保证**：不标错，也不当作正确。
+
+status 仍只用契约 §2 已发布的 5 个取值（不新增取值，避免与已发布的契约文档、前端文案和
+`answer_checks.locate_status` 的落库口径冲突），但每个取值现在有唯一、可复述的条件：
+
+  missing        缺测：整份不作核对
+  out_of_scope   题干或某一步解析不出一元一次方程 → 转人工，并报失败行与核验范围
+  first_bad      相邻两行解集不同：报首个错步行
+  missing_steps  没有观察到不等价，但也没有可判的结果：
+                   · 步骤栏是空的，或只有结论行（steps.kind ∈ empty / answer_only）
+                   · 各行都等价却没有走到结果（steps.has_process 且 completion.state=unfinished）
+  correct        各行都等价，且末行是一个结果形态（completion.has_result）
+
+「求解未完成」因此不再落进 correct：`2x+4=10 / 2x=6` 判 missing_steps +
+completion.state=unfinished，与「只写了最终答案」由 steps.kind / reason_code 区分开来。
+
+**standard_solution 不参与判定**：它保留在签名里只为固定契约 §2 的接口，函数体从不读取它。
+定位只比较题干与学生自己的行，不拿标准解法替学生补话，对照句的两端一律取自作答原文。
+同理 `missing_reason` 只是调用方带上来的上下文（缺测原因本身由 answers 表列承担），不参与判定。
 """
 
 import re
@@ -15,8 +49,13 @@ from fractions import Fraction
 REASON_FIRST_BAD = "这里只记录观察到的不等价，不推断学生为什么这样写。"
 REASON_MISSING = "这条作答标为缺测，没有学生步骤可核对；这里不标错步，也不假设原因。"
 REASON_MISSING_STEPS = "学生只写了最终答案，缺少可核对的过程；这里只记录缺少步骤，不猜错在哪一行。"
+REASON_EMPTY_STEPS = "步骤栏里没有可核对的过程；这里只记录缺少步骤，不猜错在哪一行。"
+REASON_UNFINISHED = "各行都等价，但最后一行还不是结果，没有写出未知数的值；这里只记录未解完，不猜原因。"
+REASON_OUT_OF_SCOPE_QUESTION = "题干没能解析成一元一次方程，这份不作核对。"
+REASON_OUT_OF_SCOPE_STEP = "有一步没能解析成一元一次方程，它和它之后的步骤没有核验。"
 MANUAL_OUT_OF_SCOPE = "已转人工"
 MANUAL_MISSING_STEPS = "缺少步骤：请补录过程后再核对。"
+MANUAL_UNFINISHED = "解题未完成：请补录最后一步后再核对。"
 
 # 全角、数学减号、乘号等统一成 ASCII 再解析；位置不变，方便把下划线映射回学生原文。
 _TRANSLATE = {
@@ -306,12 +345,55 @@ def _same_solution(first, second):
     return first_b * second_a == second_b * first_a
 
 
-def _answer_only(line):
-    """学生这一行是不是只有最终答案（不含任何变形过程）。"""
-    chars = _scan(line["text"])
+def _answer_only(text):
+    """这一行是不是只有最终答案（不含任何变形过程）。"""
+    chars = _scan(text)
     if not chars:
         return False
     return bool(_ANSWER_ONLY.match("".join(char for char, _ in chars)))
+
+
+def _solution_of(poly):
+    """(x 系数, 常数) → (解集类型, 唯一解)；类型只有 unique / all / none。"""
+    coefficient, constant = poly
+    if coefficient == 0:
+        return ("all" if constant == 0 else "none"), None
+    return "unique", (-constant) / coefficient
+
+
+def _result_form(item):
+    """末行是不是一个「作答结果」形态。
+
+    value          x=3 / 3=x 这类把未知数单独留在一边的结论行
+    identity       0=0 / x=x：恒等式，对任何实数都成立
+    contradiction  1=5 / 2=3：矛盾式，对任何实数都不成立
+    None           还不是结果（2x=6、3x-6=12 这类中间变形）
+    """
+    if _answer_only(item["text"]):
+        return "value"
+    if item["a"] == 0 and item["b"] == 0:
+        return "identity"
+    if item["a"] == 0:
+        return "contradiction"
+    return None
+
+
+def _value_of(item):
+    """结果行里未知数的值：x=v 与 v=x 都按 -b/a 取到 v。"""
+    if item["a"] == 0:
+        return None
+    return (-item["b"]) / item["a"]
+
+
+def _position(index, total):
+    """失败行在一串学生行里的位置，供人工核对时按位置描述。"""
+    if total <= 1:
+        return "only"
+    if index == 0:
+        return "first"
+    if index == total - 1:
+        return "last"
+    return "middle"
 
 
 def _bracket_form(side):
@@ -384,7 +466,163 @@ def _contrast(previous, bad, line_text):
     }
 
 
+# --------------------------------------------------------------------------
+# ③ 步骤完整性 / ④ 作答完成情况 / ⑤ 人工处理状态 / 核验范围
+# --------------------------------------------------------------------------
+def _steps_block(raw_count, shown_student, answer_flags, broken_line=False):
+    """③ 步骤完整性：给出可用的量，不只 missing_steps 一档。
+
+    raw_count      拆行后的原始行数（含被认定为「抄题干」而去重掉的行）
+    shown_student  去重后真正展示与核对的学生行
+    answer_flags   与 shown_student 等长：True=结论行，False=有变形过程的行，None=没解析
+    broken_line    这一串学生行里是否有行真的解析失败过（区别于「压根没解析」，如题干就没解析出来）
+    """
+    step_count = len(shown_student)
+    process_count = sum(1 for flag in answer_flags if flag is False)
+    answer_only_count = sum(1 for flag in answer_flags if flag is True)
+    unparsed_count = sum(1 for flag in answer_flags if flag is None)
+    has_process = process_count > 0
+    if step_count == 0:
+        kind = "empty"
+    elif broken_line:
+        kind = "unparsable"
+    elif unparsed_count and step_count == unparsed_count:
+        kind = "unchecked"
+    elif has_process and answer_only_count:
+        kind = "process_and_answer"
+    elif has_process:
+        kind = "process_only"
+    else:
+        kind = "answer_only"
+    return {
+        "raw_line_count": raw_count,
+        "copied_question_lines": max(raw_count - step_count, 0),
+        "step_count": step_count,
+        "process_count": process_count,
+        "answer_only_count": answer_only_count,
+        "unparsed_count": unparsed_count,
+        "has_process": has_process,
+        "answer_only": bool(step_count) and not has_process and not unparsed_count,
+        "empty": step_count == 0,
+        "kind": kind,
+    }
+
+
+def _empty_completion(note=""):
+    return {
+        "state": "unknown",
+        "has_result": False,
+        "result_form": None,
+        "final_line_index": None,
+        "final_answer": None,
+        "answer_value": None,
+        "expected_value": None,
+        "solution_kind": None,
+        "result_matches": None,
+        "note": note,
+    }
+
+
+def _completion_block(given, parsed):
+    """④ 作答完成情况：末行是不是结果，以及这个结果与题干方程的解是否一致。
+
+    这一档只回答「作答有没有走到结果、这个结果对不对」，与 ① 的行间等价、③ 的过程完整
+    分开记：只有结论行也能是「解对了但没过程」，过程齐全也能是「等价但没解完」。
+    """
+    block = _empty_completion()
+    if given is None:
+        block["note"] = "题干没有解析成一元一次方程，核对不了结果。"
+        return block
+    solution_kind, expected = _solution_of((given["a"], given["b"]))
+    block["solution_kind"] = solution_kind
+    block["expected_value"] = _fraction_text(expected) if expected is not None else None
+    if not parsed:
+        block["note"] = "没有可核验的学生步骤行，结果未核对。"
+        return block
+
+    terminal = parsed[-1]
+    form = _result_form(terminal)
+    # lines 里题干占第 0 位，学生第 k 行（0 起）落在下标 k+1。
+    block["final_line_index"] = len(parsed)
+    block["final_answer"] = terminal["text"]
+    block["result_form"] = form
+    if form is None:
+        block["state"] = "unfinished"
+        block["note"] = "最后一行「%s」还不是结果，没有写出未知数的值。" % terminal["text"]
+        return block
+
+    block["has_result"] = True
+    value = _value_of(terminal) if form == "value" else None
+    block["answer_value"] = _fraction_text(value) if value is not None else None
+    if form == "value":
+        matches = solution_kind == "unique" and value == expected
+    elif form == "identity":
+        matches = solution_kind == "all"
+    else:
+        matches = solution_kind == "none"
+    block["result_matches"] = bool(matches)
+    block["state"] = "solved" if matches else "wrong_result"
+
+    answer = terminal["text"]
+    if matches:
+        if solution_kind == "unique":
+            block["note"] = "最后一行「%s」与题干方程的解 x=%s 一致。" % (
+                answer, _fraction_text(expected))
+        elif solution_kind == "all":
+            block["note"] = "题干方程是恒等式（解为全体实数），最后一行「%s」与它同解。" % answer
+        else:
+            block["note"] = "题干方程无解，最后一行「%s」与它同解。" % answer
+    else:
+        if form == "identity":
+            block["note"] = "最后一行「%s」是恒等式（对任何实数都成立），与题干方程「%s」不同解。" % (
+                answer, given["canon"])
+        elif form == "contradiction":
+            block["note"] = "最后一行「%s」是矛盾式（对任何实数都不成立），与题干方程「%s」不同解。" % (
+                answer, given["canon"])
+        elif solution_kind == "unique":
+            block["note"] = "最后一行「%s」与题干方程的解 x=%s 不一致。" % (
+                answer, _fraction_text(expected))
+        elif solution_kind == "all":
+            block["note"] = "题干方程是恒等式（解为全体实数），最后一行「%s」与它不同解。" % answer
+        else:
+            block["note"] = "题干方程无解，最后一行「%s」与它不同解。" % answer
+    return block
+
+
+def _manual(state, reason_code, note):
+    """⑤ 人工处理状态：转人工 与 步骤不足待补录 是两种不同的语义，分开列。"""
+    return {"state": state, "reason_code": reason_code, "note": note}
+
+
+def _verification_block(total, verified_indexes, comparisons, note,
+                        failed_index=None, failed_text=None, failed_role=None,
+                        failed_position=None):
+    """核验范围：核验过哪些行、哪一行解析失败、从哪一行起没有核验。"""
+    verified = sorted(int(index) for index in verified_indexes)
+    seen = set(verified)
+    unverified = [index for index in range(total) if index not in seen]
+    if not verified:
+        scope = "none"
+    elif len(verified) >= total:
+        scope = "full"
+    else:
+        scope = "partial"
+    return {
+        "scope": scope,
+        "total_lines": total,
+        "verified_indexes": verified,
+        "unverified_indexes": unverified,
+        "checked_comparisons": comparisons,
+        "failed_line_index": failed_index,
+        "failed_line_text": failed_text,
+        "failed_role": failed_role,
+        "failed_position": failed_position,
+        "note": note,
+    }
+
+
 def _result(status, source, lines):
+    """契约 §2 的固定键原样保留；新增结构键先给空壳，由 locate 按分支填。"""
     return {
         "status": status,
         "source": source,
@@ -396,17 +634,43 @@ def _result(status, source, lines):
         "reason_note": "",
         "manual_note": "",
         "lines": lines,
+        "steps": _steps_block(0, [], []),
+        "completion": _empty_completion(),
+        "manual": _manual("none", "", ""),
+        "verification": _verification_block(len(lines), [], 0, ""),
     }
+
+
+def _finish(status, source, lines, steps, completion, manual, verification, reason_note=""):
+    result = _result(status, source, lines)
+    result["steps"] = steps
+    result["completion"] = completion
+    result["manual"] = manual
+    # manual_note 是 manual["note"] 的文本形态，二者不许说两套话。
+    result["manual_note"] = manual["note"]
+    result["verification"] = verification
+    result["reason_note"] = reason_note
+    return result
 
 
 def locate(question_text, standard_solution, student_steps, missing=False, missing_reason="") -> dict:
     """把题干与学生步骤逐行比较，返回契约 §2 规定的那一份结果。
 
-    只在相邻两行解集不同时给出首个错步；正确、只有答案、缺测、超范围都不标错步，
-    也不写任何「为什么错」的推断。
+    只在相邻两行解集不同时给出首个错步；缺测、超范围都不标错步，也不写任何「为什么错」的推断。
+    返回值在契约 §2 的固定键之外，另带 steps / completion / manual / verification 四组结构字段
+    （含义见模块 docstring ③④⑤ 与「核验范围」）。
 
-    standard_solution 保留在签名里（契约 §2 接口固定），但定位只比较题干与学生自己的行：
-    不拿标准解法替学生补话，对照句的两端一律取自作答原文。
+    **字段分工（不许混着读）**：`status` 只表达 ① 定位结论——相邻两行是否等价、有没有错步、
+    这份算不算判得了；`steps` / `completion` / `manual` / `verification` 分别表达其余四概念
+    （③ 步骤完整性 / ④ 作答完成情况 / ⑤ 人工处理状态 / 核验范围）。任何一档都不能拿 `status`
+    顶替，也不许把它们的结论塞回 `status`（落库列 `locate_status` 因此只记定位结论）。
+    例：`status='missing_steps'` 既可能是「没有过程」（`steps.kind ∈ empty / answer_only`），
+    也可能是「有过程却没解完」（`completion.state='unfinished'`），必须看补充字段才能区分；
+    反过来 `completion.state='solved'` 也不等于判对（步骤不足时 `status` 仍是 `missing_steps`）。
+
+    standard_solution **不参与判定**：它保留在签名里只为固定契约 §2 的接口，函数体从不读取它。
+    定位只比较题干与学生自己的行，不拿标准解法替学生补话，对照句的两端一律取自作答原文。
+    missing_reason 同理只作上下文，不参与判定。
     """
     question = (question_text or "").strip()
     student_texts = _split_lines(student_steps)
@@ -426,29 +690,92 @@ def locate(question_text, standard_solution, student_steps, missing=False, missi
         lines.append({"text": text, "role": "student", "bad": False})
 
     if missing:
-        result = _result("missing", "none", lines)
-        result["reason_note"] = REASON_MISSING
-        return result
+        steps = _steps_block(len(student_texts), shown_student,
+                             [None] * len(shown_student))
+        completion = _completion_block(given, [])
+        completion["note"] = "这份标为缺测，没有学生步骤可核对。"
+        verification = _verification_block(
+            total=len(lines), verified_indexes=[], comparisons=0,
+            note="这份标为缺测：整份不作核对，不对任何一步作保证。")
+        return _finish("missing", "none", lines, steps, completion,
+                       _manual("none", "", ""), verification, REASON_MISSING)
 
     parsed = []
     broken = given is None
+    failed_student_index = None
     if not broken:
-        for text in shown_student:
+        for index, text in enumerate(shown_student):
             item = _parse_line(text)
             if item is None:
                 broken = True
+                failed_student_index = index
                 break
             parsed.append(item)
-    if broken:
-        result = _result("out_of_scope", "none", lines)
-        result["manual_note"] = MANUAL_OUT_OF_SCOPE
-        return result
 
-    if not parsed or all(_answer_only(item) for item in parsed):
-        result = _result("missing_steps", "rule", lines)
-        result["reason_note"] = REASON_MISSING_STEPS
-        result["manual_note"] = MANUAL_MISSING_STEPS
-        return result
+    answer_flags = []
+    for index, text in enumerate(shown_student):
+        answer_flags.append(_answer_only(text) if index < len(parsed) else None)
+    steps = _steps_block(len(student_texts), shown_student, answer_flags,
+                         broken_line=failed_student_index is not None)
+
+    if broken:
+        completion = _completion_block(given, [])
+        if given is None:
+            completion["note"] = "题干没有解析成一元一次方程，核对不了结果。"
+            if question:
+                verification = _verification_block(
+                    total=len(lines), verified_indexes=[], comparisons=0,
+                    failed_index=0, failed_text=question, failed_role="given",
+                    note="题干（第 1 行）没能解析成一元一次方程；它之后的 %d 行没有核验，"
+                         "不对它们作保证。" % (len(lines) - 1))
+            else:
+                verification = _verification_block(
+                    total=len(lines), verified_indexes=[], comparisons=0,
+                    failed_role="given",
+                    note="题干是空的，解析不出一元一次方程；全部 %d 行学生步骤都没有核验，"
+                         "不对它们作保证。" % len(lines))
+            manual = _manual("referred", "question_unparsable", MANUAL_OUT_OF_SCOPE)
+            return _finish("out_of_scope", "none", lines, steps, completion, manual,
+                           verification, REASON_OUT_OF_SCOPE_QUESTION)
+
+        index = failed_student_index
+        completion["note"] = "第 %d 行（学生第 %d 行）没能解析，它和它之后的步骤没有核对，结果不作判定。" % (
+            index + 2, index + 1)
+        if index:
+            prefix = "题干与第 1–%d 行已读入（只做解析，没有做等价比较）；" % (index + 1)
+        else:
+            prefix = "题干之后的第一行就解析失败；"
+        verification = _verification_block(
+            total=len(lines), verified_indexes=list(range(index + 1)), comparisons=0,
+            failed_index=index + 1, failed_text=shown_student[index], failed_role="student",
+            failed_position=_position(index, len(shown_student)),
+            note=prefix + "第 %d 行「%s」解析失败，本行及之后的 %d 行没有核验，不对它们作保证。"
+                 % (index + 2, shown_student[index], len(lines) - (index + 1)))
+        manual = _manual("referred", "step_unparsable", MANUAL_OUT_OF_SCOPE)
+        return _finish("out_of_scope", "none", lines, steps, completion, manual,
+                       verification, REASON_OUT_OF_SCOPE_STEP)
+
+    completion = _completion_block(given, parsed)
+
+    if not parsed or all(flag for flag in answer_flags):
+        if not parsed:
+            if given is not None:
+                verified = []
+                note = "步骤栏是空的：没有可核验的学生行，0 组等价比较。"
+            else:
+                verified = []
+                note = "步骤栏是空的：没有可核对的步骤行。"
+            manual = _manual("need_steps", "empty_steps", MANUAL_MISSING_STEPS)
+            reason = REASON_EMPTY_STEPS
+        else:
+            verified = list(range(len(lines)))
+            note = "只有结论行：没有相邻两步可比，0 组等价比较；结论本身按 ④ 单独核验。"
+            manual = _manual("need_steps", "answer_only", MANUAL_MISSING_STEPS)
+            reason = REASON_MISSING_STEPS
+        verification = _verification_block(
+            total=len(lines), verified_indexes=verified, comparisons=0, note=note)
+        return _finish("missing_steps", "rule", lines, steps, completion, manual,
+                       verification, reason)
 
     chain = [given] + parsed
     bad_index = None
@@ -458,17 +785,53 @@ def locate(question_text, standard_solution, student_steps, missing=False, missi
             break
 
     if bad_index is None:
-        return _result("correct", "rule", lines)
+        comparisons = len(chain) - 1
+        if completion["has_result"]:
+            verification = _verification_block(
+                total=len(lines), verified_indexes=list(range(len(lines))),
+                comparisons=comparisons,
+                note="题干到最后一行逐行核验，%d 组相邻比较都同解。" % comparisons)
+            return _finish("correct", "rule", lines, steps, completion,
+                           _manual("none", "", ""), verification)
+        # 各行等价却没有走到结果：记「未解完」，不判 correct，也不猜错在哪一行。
+        verification = _verification_block(
+            total=len(lines), verified_indexes=list(range(len(lines))),
+            comparisons=comparisons,
+            note="题干到最后一行逐行等价（%d 组相邻比较）；末行不是结果，完成情况见 ④。" % comparisons)
+        return _finish("missing_steps", "rule", lines, steps, completion,
+                       _manual("need_steps", "unfinished", MANUAL_UNFINISHED),
+                       verification, REASON_UNFINISHED)
 
     bad_text = lines[bad_index]["text"]
     lines[bad_index]["bad"] = True
-    result = _result("first_bad", "rule", lines)
+    rest = len(lines) - (bad_index + 1)
+    if rest:
+        note = ("相邻等价只比到第 %d 行（本行是首个错步行）；它之后的 %d 行没有核验，"
+                "不对它们作保证。" % (bad_index + 1, rest))
+    else:
+        note = "相邻等价只比到第 %d 行（本行是首个错步行，也是最后一行）。" % (bad_index + 1)
+    verification = _verification_block(
+        total=len(lines), verified_indexes=list(range(bad_index + 1)),
+        comparisons=bad_index, note=note)
+    result = _finish("first_bad", "rule", lines, steps, completion,
+                     _manual("none", "", ""), verification, REASON_FIRST_BAD)
     result["first_bad_index"] = bad_index
     result["first_bad_text"] = bad_text
-    result["reason_note"] = REASON_FIRST_BAD
     contrast = _contrast(chain[bad_index - 1], chain[bad_index], bad_text)
     result.update(contrast)
     return result
 
 
-__all__ = ["locate", "REASON_FIRST_BAD", "MANUAL_OUT_OF_SCOPE"]
+__all__ = [
+    "locate",
+    "REASON_FIRST_BAD",
+    "REASON_MISSING",
+    "REASON_MISSING_STEPS",
+    "REASON_EMPTY_STEPS",
+    "REASON_UNFINISHED",
+    "REASON_OUT_OF_SCOPE_QUESTION",
+    "REASON_OUT_OF_SCOPE_STEP",
+    "MANUAL_OUT_OF_SCOPE",
+    "MANUAL_MISSING_STEPS",
+    "MANUAL_UNFINISHED",
+]

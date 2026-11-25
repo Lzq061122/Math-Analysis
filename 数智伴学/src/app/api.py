@@ -25,7 +25,9 @@ from . import answers as answers_mod
 from . import tutor as tutor_mod
 from . import followup as followup_mod
 from . import auth, backup, vision
-from .analysis import ERROR_TYPES, KNOWLEDGE_POINTS, get_provider
+from .analysis import (
+    ERROR_TYPES, INDIVIDUAL_FLOW_CODE, INDIVIDUAL_FLOW_MESSAGE, KNOWLEDGE_POINTS, MockProvider,
+)
 from .db import now_iso
 from .preview import PreviewError
 from .records import DECISIVE_FIELDS, edited_fields, insert_mistake, record_fingerprint
@@ -448,42 +450,50 @@ def _decode_image(raw):
 
 
 def _analysis_provider(ctx=None):
-    """优先使用当前会话按账号配置的 provider；网页端仍走环境变量配置。"""
+    """只认当前会话显式注入的 provider；没有注入时给本机模拟，绝不读环境变量。
+
+    旧实现 `get_provider()` 会用 resolve_config(None) 读 MISTAKE_AI_MODE / MISTAKE_AI_API_KEY，
+    于是业务环境可以靠环境变量全量打开外发（R1-00 §13 已实测）。现在：
+    - 注入了 provider（桌面端按账号设置构造）→ 用它；
+    - 没注入（网页业务环境）→ MockProvider：本机模拟、不联网；
+    环境变量在任何情况下都不参与这条回落。
+    """
     provider = getattr(ctx, "ai_provider", None) if ctx is not None else None
-    return provider if provider is not None else get_provider()
+    return provider if provider is not None else MockProvider()
 
 
-def _run_analysis(job, ctx=None):
-    provider = _analysis_provider(ctx)
-    return provider.analyze(job)
+def _is_mock_provider(provider):
+    return getattr(provider, "mode", "mock") == "mock"
 
 
-def _failure_result(job, mode, exc):
-    """分析失败时落库的空结果：保留录入文字、照片与失败原因，供老师重试或手填。"""
+def _reject_individual_ai(flow, provider=None):
+    """R1-07 业务隔离闸门：真要调用生成式模型时，在组装请求体之前拦断。
+
+    依据数智伴学_Agent开发规格.md §「业务环境只运行固定规则与人工流程，不发起个体化生成式请求」
+    与「AI 接口不读取学生记录、不直写业务库」。这里不再用「默认关闭 + 老师手点 + 勾选同意」
+    充当隔离：勾选与开关都不是隔离，所以只要配置指向真实通道，整条路径直接返回业务错误，
+    服务端不再读记录、不再拼提示词。mock 是本机模拟（不联网、无外部模型），不构成生成式调用，
+    因此保留其原有行为，返回 False 表示「可以继续走本地模拟」。
+    """
+    if _is_mock_provider(provider):
+        return False
+    raise ApiError(
+        "「%s」已停用：%s" % (flow, INDIVIDUAL_FLOW_MESSAGE),
+        403,
+        code=INDIVIDUAL_FLOW_CODE,
+    )
+
+
+def _mock_job(ctx, row):
+    """本机模拟用的作业：不读照片字节，也不带任何身份字段。"""
     return {
-        "mode": mode,
-        "question_text": job.get("question_text") or "",
-        "solution_text": job.get("solution_text") or "",
-        "knowledge_points": [],
-        "error_type": "",
-        "observed_errors": [],
-        "possible_causes": [],
-        "advice_text": "",
-        "insufficient": False,
-        "insufficient_reason": "",
-        "likely_correct": False,
-        "ai_error": exc.message,
-        "ai_error_code": exc.code,
-        "basis": "分析失败，未生成 AI 内容。",
-        "analyzed_at": now_iso(),
+        "question_text": row["question_text"],
+        "solution_text": row["solution_text"],
+        "image_file": row["image_file"],
+        "image_width": row["image_width"],
+        "image_height": row["image_height"],
+        "blurry": bool((ctx.body or {}).get("blurry")),
     }
-
-
-def _require_consent(ctx, provider):
-    """真实模式必须先得到老师对发送范围的明确同意，服务端再次校验。"""
-    if provider.mode in vision.REMOTE_MODES and not ctx.body.get("consent"):
-        service = getattr(provider, "service", "") or vision.service_name(provider.mode)
-        raise ApiError("需要先勾选同意，才能把照片与文字发送给%s" % service, 400)
 
 
 def _local_result(job):
@@ -505,6 +515,19 @@ def _local_result(job):
     }
 
 
+def _business_local_result(job):
+    """业务环境的首次分析：只落录入内容与照片，不发起任何生成式请求。
+
+    不返回错误，是因为「新建错题」本身是导入路径，必须照常可用；被停用的是其中的 AI 分析。
+    停用原因写进 ai_error / ai_error_code，界面与记录里都留痕，不做静默降级。
+    """
+    result = _local_result(job)
+    result["basis"] = "正式业务流程本地录入：未调用生成式模型，题目与步骤由老师自己填写或修改。"
+    result["ai_error"] = INDIVIDUAL_FLOW_MESSAGE
+    result["ai_error_code"] = INDIVIDUAL_FLOW_CODE
+    return result
+
+
 def api_create_mistake(ctx):
     body = ctx.body
     class_row = owned_class(ctx.db, ctx.user, body.get("class_id"))
@@ -515,10 +538,11 @@ def api_create_mistake(ctx):
     width = int((body.get("image") or {}).get("width") or 0)
     height = int((body.get("image") or {}).get("height") or 0)
 
-    provider = None
-    if not body.get("local_only"):
-        provider = _analysis_provider(ctx)
-        _require_consent(ctx, provider)
+    # R1-07：新建错题是导入路径，必须照常可用；被停用的是它里面的真实 AI 分析。
+    # 真实通道在这里直接拦下（不构造请求、不发照片）；本机模拟照旧，不联网。
+    local_only = bool(body.get("local_only"))
+    provider = None if local_only else _analysis_provider(ctx)
+    remote_blocked = bool(provider is not None and not _is_mock_provider(provider))
 
     image_file = "%s.%s" % (uuid.uuid4().hex, ext)
     ctx.uploads.save(image_file, blob)
@@ -536,13 +560,13 @@ def api_create_mistake(ctx):
         "image_height": height,
         "blurry": bool(body.get("blurry")),
     }
-    if provider is None:
+    if local_only:
         result = _local_result(job)
+    elif remote_blocked:
+        result = _business_local_result(job)
     else:
-        try:
-            result = provider.analyze(job)
-        except vision.AnalysisError as exc:
-            result = _failure_result(job, provider.mode, exc)
+        # 本机模拟：不联网、不调用任何外部模型，只按老师填写的文字给示例分析。
+        result = provider.analyze(job)
 
     occurred = (body.get("occurred_on") or "").strip() or date.today().isoformat()
     try:
@@ -588,11 +612,15 @@ def serialise_detail(ctx, row):
     return data
 
 
-AI_SEND_FIELDS = ["错题照片", "题目文字", "学生解题过程"]
+AI_SEND_FIELDS = ["无：正式业务流程不向生成式模型发送学生作答、身份或追问原话"]
 
 
 def describe_ai(ctx=None):
-    """桌面版与网页版共用的分析说明：模式、模型、密钥状态与发送范围。"""
+    """桌面版与网页版共用的分析说明：模式、模型、密钥状态与发送范围。
+
+    R1-07 起「发送范围」恒为「无」：个体教学业务不发起生成式请求，
+    因此不再按账号里保存的服务商去承诺「会发哪些字段」。
+    """
     cfg = vision.describe_config(getattr(ctx, "ai_config", None) if ctx is not None else None)
     remote = cfg["mode"] in vision.REMOTE_MODES
     return {
@@ -610,6 +638,9 @@ def describe_ai(ctx=None):
         "ai_policy_summary": vision.policy_summary(cfg["mode"]),
         "ai_policy_url": vision.POLICY_URL,
         "ai_send_fields": list(AI_SEND_FIELDS),
+        "ai_business_isolated": True,
+        "ai_isolation_note": INDIVIDUAL_FLOW_MESSAGE,
+        "ai_isolation_code": INDIVIDUAL_FLOW_CODE,
     }
 
 
@@ -619,25 +650,6 @@ def _fresh_detail(ctx, mistake_id):
         (mistake_id,),
     )
     return serialise_detail(ctx, row)
-
-
-def _analysis_job(ctx, row):
-    blob = b""
-    if row["image_file"]:
-        path = ctx.uploads.path(row["image_file"])
-        if os.path.exists(path):
-            with open(path, "rb") as fh:
-                blob = fh.read()
-    return {
-        "question_text": row["question_text"],
-        "solution_text": row["solution_text"],
-        "image_file": row["image_file"],
-        "image_bytes": blob,
-        "image_mime": row["image_mime"],
-        "image_width": row["image_width"],
-        "image_height": row["image_height"],
-        "blurry": bool(ctx.body.get("blurry")),
-    }
 
 
 def _record_analysis_failure(ctx, mistake_id, message, code):
@@ -880,14 +892,14 @@ def api_revert_field(ctx):
 
 
 def api_reanalyze(ctx):
-    """网页端入口：分析后立即写入记录。桌面端走预览，不调用这里。"""
+    """对一条错题重新分析。真实通道已停用；本机模拟照旧（不联网、不读照片字节）。"""
     row = owned_mistake(ctx.db, ctx.user, ctx.params["id"])
     provider = _analysis_provider(ctx)
-    _require_consent(ctx, provider)
+    _reject_individual_ai("错题重新分析", provider)
     try:
-        result = provider.analyze(_analysis_job(ctx, row))
+        result = provider.analyze(_mock_job(ctx, row))
     except vision.AnalysisError as exc:
-        # 分析失败不丢已有内容：只记录失败原因，供老师在页面上重试或手填。
+        # 分析失败不丢已有内容：只记录失败原因，供老师手动补充。
         _record_analysis_failure(ctx, row["id"], exc.message, exc.code)
         return _fresh_detail(ctx, row["id"])
     return _write_analysis(ctx, row, result)
@@ -901,13 +913,16 @@ def _preview_store(ctx):
 
 
 def api_preview_analysis(ctx):
-    """只算不写：建议交给当前进程保管，采用之前正式记录一个字都不改。"""
+    """只算不写：建议交给当前进程保管，采用之前正式记录一个字都不改。
+
+    真实通道已停用（在读取记录内容之前就返回 403）；本机模拟照旧，不联网、不读照片字节。
+    """
     row = owned_mistake(ctx.db, ctx.user, ctx.params["id"])
-    store = _preview_store(ctx)
     provider = _analysis_provider(ctx)
-    _require_consent(ctx, provider)
+    _reject_individual_ai("错题照片分析建议", provider)
+    store = _preview_store(ctx)
     try:
-        result = provider.analyze(_analysis_job(ctx, row))
+        result = provider.analyze(_mock_job(ctx, row))
     except vision.AnalysisError as exc:
         # 这里只把失败交回界面，一个字都不写：结果可能已经迟到，
         # 窗口是否关掉、账号是否换过只有界面知道，由它确认后再单独记。
@@ -1138,13 +1153,16 @@ def api_student_insight(ctx):
 
 
 def api_student_advice_generate(ctx):
-    """老师主动发起：真实模式必须先确认发送范围，请求里没有任何身份字段。"""
+    """按一名学生的已确认错题生成辅导建议：真实通道已停用，在读取该生错题前拦断。
+
+    本机模拟不联网，交给 tutor_mod.generate 按原样拒绝（它自己先判模拟再读数据）。
+    老师手写并保存建议（api_student_advice_save）与学情汇总不受影响。
+    """
     class_row, student = _insight_student(ctx)
-    provider, service, model = _review_provider(ctx)
-    if provider is not None and not ctx.body.get("consent"):
-        raise ApiError("需要先确认发送范围，才能把问题与题目、步骤证据发送给%s" % service, 400)
+    provider = _analysis_provider(ctx)
+    _reject_individual_ai("个人辅导建议生成", provider)
     try:
-        result = tutor_mod.generate(ctx.db, class_row["id"], student["id"], provider, service, model)
+        result = tutor_mod.generate(ctx.db, class_row["id"], student["id"], provider, "", "")
     except tutor_mod.TutorError as exc:
         raise ApiError(exc.message, exc.status, code=exc.code)
     except vision.AnalysisError as exc:
@@ -1199,25 +1217,25 @@ def api_followup_context(ctx):
 
 
 def api_followup_suggest(ctx):
-    """老师主动发起：先生成候选追问，尚未记为实际提问。"""
+    """为一条已确认错题生成候选追问：真实通道已停用，在读取题目/过程原文前拦断。
+
+    本机模拟不联网，交给 followup_mod.suggest 按原样拒绝（先判模拟再读数据）。
+    老师自己写追问并保存（api_followup_create）不受影响。
+    """
     class_row, student = _followup_student(ctx)
-    provider, service, model = _review_provider(ctx)
-    if provider is not None and not ctx.body.get("consent"):
-        raise ApiError("需要先确认发送范围，才能把问题与题目、步骤证据发送给%s" % service, 400)
+    provider = _analysis_provider(ctx)
+    _reject_individual_ai("追问候选生成", provider)
 
     def run():
-        try:
-            result = followup_mod.suggest(
-                ctx.db, class_row["id"], student["id"], ctx.body.get("problem"),
-                ctx.body.get("mistake_id"), provider, service, model,
-            )
-        except vision.AnalysisError:
-            raise
-        except followup_mod.FollowupError:
-            raise
-        return {"ok": True, **result}
+        return followup_mod.suggest(
+            ctx.db, class_row["id"], student["id"], ctx.body.get("problem"),
+            ctx.body.get("mistake_id"), provider, "", "",
+        )
 
-    return _followup_call(run)
+    result = _followup_call(run)
+    if isinstance(result, dict) and result.get("ok") is False:
+        return result
+    return {"ok": True, **result}
 
 
 def api_followup_create(ctx):
@@ -1259,15 +1277,18 @@ def api_followup_answer(ctx):
 
 
 def api_followup_update(ctx):
-    """根据学生的回答更新错因候选；结果一律是待老师核对的候选。"""
+    """按学生回答生成错因候选：真实通道已停用，在读取追问原话与回答前拦断。
+
+    本机模拟不联网，交给 followup_mod.update_causes 按原样拒绝。
+    老师自己改错因、接受或拒绝历史候选（api_followup_decide）不受影响。
+    """
     class_row, student = _followup_student(ctx)
-    provider, service, model = _review_provider(ctx)
-    if provider is not None and not ctx.body.get("consent"):
-        raise ApiError("需要先确认发送范围，才能把问题、学生步骤与这次回答发送给%s" % service, 400)
+    provider = _analysis_provider(ctx)
+    _reject_individual_ai("追问后的错因候选生成", provider)
 
     def run():
         return followup_mod.update_causes(
-            ctx.db, class_row["id"], student["id"], int(ctx.params["fid"]), provider, service, model
+            ctx.db, class_row["id"], student["id"], int(ctx.params["fid"]), provider, "", "",
         )
 
     result = _followup_call(run)
@@ -1700,17 +1721,6 @@ def api_answers_template(ctx):
     }
 
 
-def _review_provider(ctx):
-    """作答分析只能走「纯文字」通道：模拟模式返回 None，不发任何请求。"""
-    provider = _analysis_provider(ctx)
-    mode = getattr(provider, "mode", "mock")
-    if mode == "mock":
-        return None, vision.service_name(mode), ""
-    config = getattr(provider, "config", None) or {}
-    service = getattr(provider, "service", "") or vision.service_name(mode)
-    return provider, service, str(config.get("model") or "")
-
-
 def _review_error(exc):
     raise ApiError(exc.message, exc.status, code=exc.code)
 
@@ -1731,14 +1741,17 @@ def api_answer_review_get(ctx):
 
 
 def api_answer_analyse(ctx):
-    """老师主动发起：真实模式必须先勾选同意，请求里不含任何身份字段。"""
+    """对一条真实作答做分析：真实通道已停用，在按 answer_id 读作答前拦断。
+
+    本机模拟不联网，交给 review_mod.analyse 按原样处理（缺测只记本地判断，不推断错因）。
+    规则定位、作答核对与人工保存走各自接口，不受影响。
+    """
     cls = owned_class(ctx.db, ctx.user, ctx.params["id"])
-    provider, service, model = _review_provider(ctx)
-    if provider is not None and not ctx.body.get("consent"):
-        raise ApiError("需要先确认发送范围，才能把题目与学生步骤发送给%s" % service, 400)
+    provider = _analysis_provider(ctx)
+    _reject_individual_ai("作答分析", provider)
     try:
         review = review_mod.analyse(
-            ctx.db, cls["id"], int(ctx.params["answer_id"]), provider, service, model
+            ctx.db, cls["id"], int(ctx.params["answer_id"]), provider, "模拟分析", "",
         )
     except review_mod.AnswerReviewError as exc:
         _review_error(exc)
@@ -1816,6 +1829,17 @@ def api_check_save(ctx):
         _check_error(exc)
 
 
+def api_check_answer_content(ctx):
+    """R1-05：单条补录/校正原始作答。改完由服务端按新内容重新分析，旧结论自动变旧版本。"""
+    cls = owned_class(ctx.db, ctx.user, ctx.params["id"])
+    try:
+        return answer_check_mod.update_content(
+            ctx.db, cls, ctx.user["id"], int(ctx.params["answer_id"]), ctx.body
+        )
+    except answer_check_mod.AnswerCheckError as exc:
+        _check_error(exc)
+
+
 def api_check_records(ctx):
     cls = owned_class(ctx.db, ctx.user, ctx.params["id"])
     try:
@@ -1824,6 +1848,7 @@ def api_check_records(ctx):
             cls,
             (ctx.query.get("batch") or "").strip(),
             (ctx.query.get("cause_state") or "undecided").strip(),
+            (ctx.query.get("verify_source") or "").strip(),
         )
     except answer_check_mod.AnswerCheckError as exc:
         _check_error(exc)
@@ -1888,6 +1913,8 @@ ROUTES = [
     ("GET", r"^/api/classes/(?P<id>\d+)/check/overview$", api_check_overview, True),
     ("GET", r"^/api/classes/(?P<id>\d+)/check/answers/(?P<answer_id>\d+)$", api_check_answer, True),
     ("POST", r"^/api/classes/(?P<id>\d+)/check/answers/(?P<answer_id>\d+)/save$", api_check_save, True),
+    ("PATCH", r"^/api/classes/(?P<id>\d+)/check/answers/(?P<answer_id>\d+)/content$",
+     api_check_answer_content, True),
     ("GET", r"^/api/classes/(?P<id>\d+)/check/records$", api_check_records, True),
     ("POST", r"^/api/classes/(?P<id>\d+)/check/demo/seed$", api_check_demo_seed, True),
     ("POST", r"^/api/classes/(?P<id>\d+)/check/demo/reset$", api_check_demo_reset, True),

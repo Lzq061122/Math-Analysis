@@ -51,6 +51,11 @@ STATIC_TYPES = {
     ".ico": "image/x-icon",
 }
 
+# R1-07：网页服务是业务环境，固定为模拟分析、且环境变量不参与。
+# 旧版 MISTAKE_AI_MODE=real + MISTAKE_AI_API_KEY 能把整个网页端全量外发，这是缺陷不是开关，
+# 所以这里不读环境、不留开关：Ctx.ai_config 恒为这一份，个体业务流程另有前置闸门。
+BUSINESS_AI_CONFIG = {"mode": vision.MODE_MOCK, "allow_env": False}
+
 
 class Ctx:
     def __init__(self, server, db, uploads, user, token, body, query, params, client_ip):
@@ -63,6 +68,10 @@ class Ctx:
         self.query = query
         self.params = params
         self.client_ip = client_ip
+        # 业务环境固定模拟：不因环境变量或账号设置变成真实通道（见 BUSINESS_AI_CONFIG）。
+        self.ai_config = dict(BUSINESS_AI_CONFIG)
+        # 网页端不注入任何 provider：api._analysis_provider 只会给出本机 MockProvider。
+        self.ai_provider = None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -377,24 +386,18 @@ def make_server(host, port, data_dir, use_demo=False, portable=False):
 
 def banner(server, use_demo):
     port = server.server_address[1]
-    cfg = vision.describe_config()
-    if cfg["mode"] == vision.MODE_REAL:
-        mode_line = "AI 模式：真实 AI 分析（OpenCode Console / %s）" % cfg["model"]
-    else:
-        mode_line = "AI 模式：模拟分析（%s）" % cfg["reason"]
+    cfg = vision.describe_config(BUSINESS_AI_CONFIG)
 
     print("=" * 62)
-    print(" 数学错题学情分析 %s  %s" % (VERSION, mode_line))
+    print(" 数学错题学情分析 %s" % VERSION)
+    print(" AI 状态：%s（业务环境不向生成式模型发送学生作答，见 docs/R1-00 §13）" % (cfg["service"] or "模拟分析"))
     print("=" * 62)
     print(" 本机访问：http://127.0.0.1:%d" % port)
     if server.server_address[0] in ("0.0.0.0", ""):
         for _, url in lan_addresses(port):
             print(" 手机访问：%s   （需同一局域网）" % url)
     print(" 数据目录：%s" % server.data_dir)
-    if cfg["mode"] == vision.MODE_REAL:
-        print(" 真实 AI：每张照片需老师勾选同意后才发送；重试会再次调用服务，是否计费以所配置服务为准")
-    else:
-        print(" 启用真实 AI：本版本默认关闭；需显式设置 MISTAKE_AI_MODE=real 并配置 MISTAKE_AI_API_KEY（默认地址/模型为 OpenCode Console）")
+    print(" 生成式分析：已停用；错步定位、作答核对、人工判断与统计不依赖模型，照常可用")
     if use_demo:
         print(" 演示账号：demo（密码见 README 的「演示账号」一节，可在“设置”里改密码）")
     print(" Ctrl+C 停止服务")

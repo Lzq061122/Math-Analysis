@@ -429,17 +429,33 @@ def main():
     check("Go 订阅也出现额外费用时失败", not payload["ok"] and payload.get("error_code") == "billing", payload)
     service.save_ai_settings("go", "", "qwen3.8-max", None)
 
+    # 【R1-07 改写点】verify_ai_146.py 原第 434 行附近
+    #   原断言内容：正式分析（桌面「分析建议」）会把这次请求发出去；遇到非订阅计费来源返回
+    #     billing 失败，并把账号标成「已停止发送」，阻断后不再发请求、仍提示核对设置。
+    #   改写依据：R1-07；PRD §4.2 / §4.5；规格 §5「业务环境只运行固定规则与人工流程，
+    #     不发起个体化生成式请求」（错题照片、题目、学生步骤都是可关联个人的内容）。
+    #   新断言内容：正式分析一律被 ai_isolation 拦断、0 次请求；因为请求根本没发生，
+    #     不会把账号标成计费阻断；第二次调用仍被拦断。计费阻断机制本身仍由试分析通道
+    #     在上面两节（试分析请求真实发出）继续覆盖。
     STUB["mode"] = "billing_balance"
     before = len(stub_calls())
-    formal = service.preview_analysis(mistake["id"], consent=True)
-    check("正式分析同样拒绝非订阅计费来源", not formal.get("ok") and formal.get("error_code") == "billing", formal)
-    check("正式分析确实发出了这次请求", len(stub_calls()) == before + 1, len(stub_calls()) - before)
-    check("正式分析异常后记录已停止发送", "停止" in (service.ai_settings().get("billing_block_message") or ""))
+    try:
+        formal = service.preview_analysis(mistake["id"], consent=True)
+    except ApiError as exc:
+        formal = {"ok": False, "error": exc.message, "error_code": exc.code}
+    check("正式分析同样拒绝非订阅计费来源", formal.get("error_code") == "ai_isolation", formal)
+    check("正式分析一次请求都没发出（原：确实发出了这次请求）", len(stub_calls()) == before, len(stub_calls()) - before)
+    check("拦断没有把账号标成计费阻断（原：正式分析异常后记录已停止发送）",
+          not (service.ai_settings().get("billing_block_message") or ""),
+          service.ai_settings().get("billing_block_message"))
     after_first = len(stub_calls())
-    blocked_formal = service.preview_analysis(mistake["id"], consent=True)
+    try:
+        blocked_formal = service.preview_analysis(mistake["id"], consent=True)
+    except ApiError as exc:
+        blocked_formal = {"ok": False, "error": exc.message, "error_code": exc.code}
     check("阻断后正式分析不再发出请求", len(stub_calls()) == after_first, len(stub_calls()) - after_first)
-    check("阻断后正式分析仍提示先核对设置",
-          not blocked_formal.get("ok") and "停止" in (blocked_formal.get("error") or ""), blocked_formal)
+    check("阻断后正式分析仍被拦断（原：阻断后正式分析仍提示先核对设置）",
+          blocked_formal.get("error_code") == "ai_isolation", blocked_formal)
     STUB["mode"] = "ok"
 
     LOG.write("== 六、OpenAI 兼容模型的图片分析")
@@ -452,10 +468,17 @@ def main():
     check("chat 模型用量仍标 go", ((chat_trial.get("usage") or {}).get("billing_source")) == "go", chat_trial.get("usage"))
 
     LOG.write("== 七、正式分析失败保留内容、老师确认与重开")
+    # 【同上改写点】原流程用真实通道跑「失败 → 内容保留 → 重试 → 预览 → 采用 → 确认 → 重开」。
+    #   真实通道已被 R1-07 拦断，失败形态变成 ai_isolation；预览/采用/确认/重开这条人工流程
+    #   改由本机模拟的预览继续验证（不联网、不读照片字节），落库与状态断言全部保留。
     service.save_ai_settings("go", stub_root + "/go/anthropic/v1", "qwen3.8-max", None)
     STUB["mode"] = "payment"
-    failed = service.preview_analysis(mistake["id"], consent=True)
-    check("正式分析失败不产生建议", not failed.get("ok") and failed.get("error_code") == "payment", failed)
+    try:
+        failed = service.preview_analysis(mistake["id"], consent=True)
+    except ApiError as exc:
+        failed = {"ok": False, "error": exc.message, "error_code": exc.code}
+    check("正式分析失败不产生建议",
+          not failed.get("ok") and failed.get("error_code") == "ai_isolation", failed)
     after = service.get_mistake(mistake["id"])
     check("失败后题目文字保留", after["question_text"] == "解方程：3(x-2)=2x+5", after["question_text"])
     check("失败后解题过程保留", after["solution_text"] == "3x-6=2x+5", after["solution_text"])
@@ -463,16 +486,20 @@ def main():
     check("失败后记录仍待核对", after["status"] == "pending", after["status"])
     service.record_analysis_failure(mistake["id"], failed.get("error") or "分析失败", failed.get("error_code") or "")
     after = service.get_mistake(mistake["id"])
-    check("失败原因写入记录但不改内容", "Go" in (after.get("ai_error") or "") and after["question_text"], after.get("ai_error"))
+    check("失败原因写入记录但不改内容",
+          "不向生成式模型发送" in (after.get("ai_error") or "") and after["question_text"],
+          after.get("ai_error"))
     STUB["mode"] = "ok"
+    service.save_ai_settings("mock", "", "", None)
     preview = service.preview_analysis(mistake["id"], consent=True)
-    check("重试成功生成待核对建议", preview.get("ok") and preview.get("preview_id"), preview)
+    check("重试用本机模拟生成待核对建议（原：重试成功生成待核对建议）", preview.get("ok") and preview.get("preview_id"), preview)
     check("预览阶段不直接改记录", service.get_mistake(mistake["id"])["status"] == "pending")
     applied = service.apply_analysis(mistake["id"], preview["preview_id"])
     check("采用建议后进入待核对", applied["status"] == "pending", applied["status"])
     check("采用建议后知识点写入", applied["knowledge_points"] == ["一元一次方程"], applied["knowledge_points"])
     confirmed = service.confirm_mistake(mistake["id"], applied.get("base_fingerprint") or "")
     check("老师确认后状态为已确认", confirmed["status"] == "confirmed", confirmed["status"])
+    service.save_ai_settings("go", stub_root + "/go/anthropic/v1", "qwen3.8-max", None)
     reopened = DesktopService(data_root, test_ai_base=stub_root)
     reopened.login("验证老师甲", "pw-go-145")
     persisted = reopened.get_mistake(mistake["id"])
@@ -481,7 +508,11 @@ def main():
 
     LOG.write("== 八、账号隔离、退出清密钥与迟到结果")
     sid_one = service._ai_session_id
+    # 【同上改写点】待采用的旧建议由本机模拟预览产生（真实通道已拦断），
+    #   「换账号后不能采用旧建议」这条断言原样保留。
+    service.save_ai_settings("mock", "", "", None)
     stale = service.preview_analysis(mistake["id"], consent=True)
+    service.save_ai_settings("go", stub_root + "/go/anthropic/v1", "qwen3.8-max", None)
     service.logout()
     service.register("验证老师乙", "pw-go-145-b")
     try:
@@ -655,16 +686,26 @@ def main():
          "occurred_on": "2026-11-13", "source_type": "作业"},
         photo,
     )
-    preview = svc.preview_analysis(mistake2["id"], consent=True, task_id="custom-preview")
-    check("自定义服务正式分析成功", preview.get("ok"), preview)
-    applied = svc.apply_analysis(mistake2["id"], preview["preview_id"])
+    # 【同上改写点】原为「自定义服务正式分析成功 → 采用 → 确认 → 重开」。
+    #   自定义模式现在同样被 R1-07 拦断，采用/确认/重开改由本机模拟预览验证；
+    #   落库来源因此标为 mock（不再是 custom），状态流转断言不变。
+    try:
+        preview = svc.preview_analysis(mistake2["id"], consent=True, task_id="custom-preview")
+    except ApiError as exc:
+        preview = {"ok": False, "error": exc.message, "error_code": exc.code}
+    check("自定义服务正式分析被拦断（原：自定义服务正式分析成功）", preview.get("error_code") == "ai_isolation", preview)
+    svc.save_ai_settings("mock", "", "", None)
+    mock_preview = svc.preview_analysis(mistake2["id"], consent=True, task_id="custom-preview")
+    applied = svc.apply_analysis(mistake2["id"], mock_preview["preview_id"])
     check("自定义建议可以进入待核对", applied.get("status") == "pending", applied.get("status"))
     svc.confirm_mistake(mistake2["id"], applied.get("base_fingerprint") or "")
+    svc.save_ai_settings("custom", custom_base + "/", "vision-x", None, service_name="测试云")
     reopened = DesktopService(custom_root, test_ai_base=stub_root)
     reopened.login("自定义老师庚", "pw-custom-146")
     detail = reopened.get_mistake(mistake2["id"])
     check("自定义分析确认后重开仍已确认", detail.get("status") == "confirmed", detail.get("status"))
-    check("自定义分析内容已保存", detail.get("ai_mode") == "custom" and bool(detail.get("advice_text")), detail.get("ai_mode"))
+    check("自定义分析内容已保存",
+          detail.get("ai_mode") == "mock" and bool(detail.get("advice_text")), detail.get("ai_mode"))
     reopened.logout()
 
     for mode, code in (("auth", "auth"), ("payment", "payment"), ("request", "request"),

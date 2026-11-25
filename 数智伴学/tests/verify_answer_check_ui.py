@@ -23,6 +23,7 @@ import threading
 import time
 import traceback
 import urllib.error
+import urllib.parse
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -33,6 +34,8 @@ from logmeta import environment_lines, exit_line  # noqa: E402
 
 import server as server_mod  # noqa: E402
 
+from app import demo_answers as _demo_answers  # noqa: E402  （sys.path 已含 src）
+
 WORK = os.path.join(ROOT, "tests", ".tmp-e2e-web")
 SHOTS = os.path.join(ROOT, "docs", "screenshots")
 LOG_PATH = os.path.join(ROOT, "docs", "verify-answer-check-ui.txt")
@@ -40,7 +43,9 @@ PORT = 8899
 DB_PATH = os.path.join(WORK, "app.db")
 VIEWPORT = (1366, 768)
 CLASS_NAME = "初二(3)班"          # demo.ensure_seed 建好的演示班级
-ASSIGNMENT_NAME = "9月第2次作业"   # demo_answers.DEMO_BATCH
+# R1-01：合成演示批次名改由 db/demo_answers 决定（旧值「9月第2次作业」会与真实作业撞名，
+# 撞名后演示数据会被算进真实作业的应交数）。这里直接取模块常量，避免测试与实现各写一份。
+ASSIGNMENT_NAME = _demo_answers.DEMO_BATCH
 
 EDGE_CANDIDATES = [
     r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
@@ -776,11 +781,34 @@ def stage_a3(cdp, ctx):
 
 
 def stage_a4_skip(cdp, ctx):
-    section("13.4 A4：当面追问——默认问句逐字；「暂时跳过」不发请求、不跳页、不保存")
+    section("13.4 A4：当面追问——问句按本条作答给出（R1-06 改写）；「暂时跳过」不发请求、不跳页、不保存")
 
     body = cdp.evaluate("document.querySelector('.check-ask').innerText") or ""
-    check("13.4.1 默认问句逐字「可以这样问学生：你当时是怎么展开这个括号的？」",
-          "可以这样问学生：你当时是怎么展开这个括号的？" in body, body[:120])
+    # R1-06 改写（依据：PRD §4.3「追问要针对具体的错步」、规格 §3.2「追问来源分预置/教师自拟/
+    # 已审资源库，没有可用资源时明确写暂无」、任务书 R1-06「移除对所有真实作答统一使用去括号问句；
+    # 无资源时明确暂无」，以及基线审查 §10/§12 —— 原文断言等于把「写死常量」写成了预期）。
+    # 原文只要求页面逐字出现「你当时是怎么展开这个括号的？」，它无法区分「按本条错步给的问句」
+    # 与「任何作答都一样的常量」。现在改成与接口对账：页面上那句必须逐字等于服务端为本条作答
+    # 给出的 followup.suggestion.question，且来源是这条演示记录的预置问句。
+    detail_api = ctx["http"].get(
+        "/api/classes/%d/check/answers/%d" % (ctx["class_id"], ctx["first_answer"]))[1]
+    follow = detail_api.get("followup") or {}
+    suggestion = follow.get("suggestion") or {}
+    question = suggestion.get("question") or ""
+    check("13.4.1 卡片问句逐字等于服务端按本条作答给出的建议问句（来源：本条预置记录）",
+          bool(question) and ("可以这样问学生：" + question) in body
+          and suggestion.get("source") == "preset"
+          and suggestion.get("source_detail") == "demo_record", body[:160])
+    other = (ctx["http"].get("/api/classes/%d/check/answers/%d"
+                             % (ctx["class_id"], ctx["answers"]["DEMO-B-01"]))[1].get("followup") or {})
+    ok_one = (ctx["http"].get("/api/classes/%d/check/answers/%d"
+                              % (ctx["class_id"], ctx["answers"]["DEMO-OK-01"]))[1].get("followup") or {})
+    check("13.4.1b 问句随本题错步变化（移项题另一句、不含「括号」）；正确作答不自动给追问",
+          bool(other.get("question")) and other.get("question") != question
+          and "括号" not in (other.get("question") or "")
+          and ok_one.get("available") is False and (ok_one.get("question") or "") == ""
+          and "暂无适用追问" in (ok_one.get("note") or ""),
+          {"other": other.get("question"), "ok": ok_one.get("question")})
     actions = cdp.texts(".check-ask .check-actions .btn")
     check("13.4.2 追问卡只有「记录学生回答」「暂时跳过」两个动作",
           actions == ["记录学生回答", "暂时跳过"], actions)
@@ -969,24 +997,48 @@ def stage_records(cdp, ctx):
     check("13.8.4 列表里的「观察到的错步」与详情一致", observed and observed in joined,
           "%s vs %s" % (observed, joined))
 
-    # 先把「只有答案」那份用接口保存掉（老师点保存），待判断筛选才有内容可比对
-    pending_id = ctx["answers"]["DEMO-C-01"]
+    # R1-02 契约变更改写（依据：任务书 T4 第 1 条「cause_state 增加能收口的第三态」、
+    # 基线审查 §15.3、契约 §3.3 规则 3）。旧断言把「只有答案」那份存成「原因待判断」，
+    # 三态收口后它只能记「无需判断」（正确/缺测/缺少步骤没有可归因的错步）。
+    # 因此这里改用「首处错步」那份准备待判断记录，并顺带覆盖「无需判断」那一档。
+    pending_id = ctx["answers"]["DEMO-B-01"]
     pending_detail = ctx["http"].get(
         "/api/classes/%d/check/answers/%d" % (ctx["class_id"], pending_id))[1]
     status, _ = save_via_api(ctx["http"], ctx["class_id"], pending_id, {
         "expected_version": pending_detail["answer"]["version"],
+        "observed_step": pending_detail["locate"].get("first_bad_text") or "",
+        "first_bad_index": pending_detail["locate"].get("first_bad_index"),
+        "cause_state": "undecided",
+    })
+    check("13.8.0 先把「首处错步」那份存成待判断（准备待判断记录）", status == 200, status)
+    no_apply_id = ctx["answers"]["DEMO-C-01"]
+    no_apply_detail = ctx["http"].get(
+        "/api/classes/%d/check/answers/%d" % (ctx["class_id"], no_apply_id))[1]
+    status_na, saved_na = save_via_api(ctx["http"], ctx["class_id"], no_apply_id, {
+        "expected_version": no_apply_detail["answer"]["version"],
         "observed_step": "",
         "first_bad_index": None,
         "cause_state": "undecided",
     })
-    check("13.8.0 先把「只有答案」那份存成待判断（准备待判断记录）", status == 200, status)
+    check("13.8.0b 「只有答案」那份保存后记「无需判断」(not_applicable)",
+          status_na == 200
+          and (saved_na.get("judgement") or {}).get("cause_state") == "not_applicable",
+          (status_na, (saved_na.get("judgement") or {}).get("cause_state")))
 
     cdp.navigate("http://127.0.0.1:%d/#/class/%d/check/records?cause_state=undecided"
                  % (PORT, ctx["class_id"]))
     cdp.wait_selector(".check-records", 25)
     undecided_heading = " ".join(cdp.texts(".check-records h3"))
-    check("13.8.5 「原因待判断」筛选能找回跳过/待判断的那几份",
+    check("13.8.5 「原因待判断」筛选能找回待判断的那一份",
           "核对记录（1 条）" in undecided_heading, undecided_heading)
+    cdp.navigate("http://127.0.0.1:%d/#/class/%d/check/records?cause_state=not_applicable"
+                 % (PORT, ctx["class_id"]))
+    cdp.wait_selector(".check-records", 25)
+    na_heading = " ".join(cdp.texts(".check-records h3"))
+    na_cells = cdp.texts(".check-records tbody td:nth-child(6)")
+    check("13.8.6 「无需判断」筛选能找回拒答/无需归因的那几份（不再混进待判断）",
+          "核对记录（1 条）" in na_heading and any("无需判断" in (cell or "") for cell in na_cells),
+          {"heading": na_heading, "cause_cells": na_cells})
 
 def stage_a6(cdp, ctx):
     section("13.9 A6：1366×768 首屏可见错步与主动作、无横向滚动、只有一个主按钮")
@@ -1210,6 +1262,49 @@ def stage_states(cdp, ctx):
     check("13.11.9 all_checked 截图已保存且尺寸正确", size == VIEWPORT, "%s %s" % (path, size))
 
 
+def stage_manual_cause(cdp, ctx):
+    """R1-02：真实作答没有候选时，老师也能在页面上人工填写原因完成判断。
+
+    这是「无候选也能完成判断」的界面取证：入口默认展开（没有候选就不该让它藏起来），
+    保存后回执与数据库都把来源标成「教师填写」，与「采纳候选」可区分。
+    """
+    section("13.14 R1-02 无候选也能人工判断：入口可见 → 保存 → 来源标「教师填写」")
+
+    long_id = ctx["long_answer"]
+    cdp.navigate("http://127.0.0.1:%d/#/class/%d/check/%d" % (PORT, ctx["class2_id"], long_id))
+    cdp.wait_selector(".check-bar", 25)
+    opened = cdp.evaluate(
+        "(() => { const d = document.querySelector('.manual-cause');"
+        " const btn = Array.from(document.querySelectorAll('.manual-cause .btn'))"
+        "   .find((b) => b.textContent.trim() === '保存人工判断');"
+        " const input = document.querySelector('.manual-label');"
+        " return {has: !!d, open: d ? d.open : null, hasBtn: !!btn, hasInput: !!input,"
+        "         candidates: document.querySelectorAll('.cause-item').length}; })()")
+    check("13.14.1 真实作答没有候选时，人工填写入口默认展开且有「保存人工判断」",
+          opened["has"] and opened["open"] is True and opened["hasBtn"] and opened["hasInput"]
+          and opened["candidates"] == 0, opened)
+
+    label = "人工判断：去括号漏乘"
+    cdp.fill("input.manual-label", label)
+    cdp.click(".manual-cause .btn", "保存人工判断", settle=1.0)
+    ok = cdp.wait_selector(".receipt", 25)
+    page = cdp.evaluate(
+        "(() => ({receipt: (document.querySelector('.receipt') || {innerText: ''}).innerText,"
+        " error: (document.querySelector('.banner.danger') || {innerText: ''}).innerText}))()")
+    receipt_text = (page or {}).get("receipt") or ""
+    check("13.14.2 人工判断回执：教师已判断 + 来源「教师填写」",
+          bool(ok) and ("教师已判断" in receipt_text) and ("教师填写" in receipt_text),
+          {"receipt": receipt_text[:200], "error": (page or {}).get("error")})
+    rows = db_query("SELECT cause_state, cause_source, cause_label, progress"
+                    " FROM answer_checks WHERE answer_id=?", (long_id,))
+    check("13.14.3 库里落的是 cause_state=decided / cause_source=teacher 且只有一条当前结论",
+          len(rows) == 1 and rows[0]["cause_state"] == "decided"
+          and rows[0]["cause_source"] == "teacher" and rows[0]["cause_label"] == label
+          and rows[0]["progress"] == "checked", rows)
+    path, size = cdp.screenshot("ui-r1-02-manual-cause-1366x768.png")
+    check("13.14.4 人工判断截图已保存且尺寸正确", size == VIEWPORT, "%s %s" % (path, size))
+
+
 def stage_other_status(cdp, ctx):
     section("13.13 A2 补充：正确作答不标错；只有答案显示「缺少步骤」且不猜行")
 
@@ -1283,10 +1378,26 @@ def stage_reverify(cdp, ctx):
           after - before == 4
           and any(row["source"] == "合成演示" and row["n"] == 4 for row in sources), sources)
     hero_text = cdp.evaluate("document.querySelector('.check-hero').innerText") or ""
-    ctx["pending_hero"] = hero_text
-    check("15.6 A7 载入后总览立即刷新：待核对作答 4 份 + 主按钮「查看待核对作答」",
-          "待核对作答 4 份" in hero_text
-          and cdp.texts(".check-hero .btn.primary") == ["查看待核对作答"], hero_text[:160])
+    # R1-01 改写（依据：任务书 R1-01 第 6 条「演示数据不进待核对队列、不影响 overview 的
+    # expected」、基线审查 §14.2 P1「resolve_batch 无 source 过滤，演示可抢占『当前作业』」）。
+    # 原 15.6 要求载入演示后演示批次直接顶替「当前作业」并显示 4 份待核对——那正是本轮要修的污染：
+    # 这个班级此时有真实作业「长作答作业」，演示数据没有资格把它挤掉。
+    # 现在断言：① 当前作业仍是真实作业；② 演示批次作为单独一行出现在作业表里；
+    # ③ 从作业表进入演示批次后，才是演示的 4 份待核对。
+    check("15.6 A7 载入后「当前作业」仍是真实作业（演示批次不抢占当前作业）",
+          "长作答作业" in hero_text and ASSIGNMENT_NAME not in hero_text, hero_text[:200])
+    batch_rows = cdp.texts(".check-overview table tbody td:nth-child(1)")
+    check("15.6a A7 作业表里单独列出演示批次（4/0/4 那一行）",
+          any(ASSIGNMENT_NAME in (cell or "") for cell in batch_rows), batch_rows)
+    cdp.navigate("http://127.0.0.1:%d/#/class/%d/check?batch=%s"
+                 % (PORT, class2, urllib.parse.quote(ASSIGNMENT_NAME)))
+    demo_hero = cdp.wait_js(
+        "(() => { const el = document.querySelector('.check-hero');"
+        " return el ? el.innerText : ''; })()", 25) or ""
+    ctx["pending_hero"] = demo_hero
+    check("15.6b A7 演示批次页：待核对作答 4 份 + 主按钮「查看待核对作答」",
+          "待核对作答 4 份" in demo_hero
+          and cdp.texts(".check-hero .btn.primary") == ["查看待核对作答"], demo_hero[:200])
     path, size = cdp.screenshot("ui-a7-demo-seeded-1366x768.png")
     check("15.7 A7 载入截图已保存且尺寸正确", size == VIEWPORT, "%s %s" % (path, size))
 
@@ -1756,6 +1867,7 @@ def main():
 
         for name, stage in [("A6 长作答", lambda: stage_a6_long(cdp, ctx)),
                             ("保存失败留页", lambda: stage_save_failure(cdp, ctx)),
+                            ("R1-02 人工判断", lambda: stage_manual_cause(cdp, ctx)),
                             ("T11 聚焦复验", lambda: stage_reverify(cdp, ctx)),
                             ("A2 其余状态", lambda: stage_other_status(cdp, ctx)),
                             ("旧五 tab 回归", lambda: stage_old_tabs(cdp, ctx))]:

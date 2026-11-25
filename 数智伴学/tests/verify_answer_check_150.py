@@ -504,9 +504,17 @@ def group_2_case_a_and_preset(envs):
     check("2.11 causes_source=preset 且 causes_note 说明本轮未接已审错因库",
           data["causes_source"] == "preset" and "B2" in (data["causes_note"] or ""),
           "%s / %s" % (data["causes_source"], data["causes_note"]))
-    check("2.12 案例A 默认问句用预置那条",
-          data["followup"]["question"] == "你当时是怎么展开这个括号的？",
-          data["followup"]["question"])
+    # R1-01 改写（依据：PRD §4.1「分析以证据为基础……不编造步骤或强行选定原因」、
+    # 规格 §3.1.3「候选原因：只检索已审错因库」、任务书 R1-01「预置证据仅对
+    # source+record_key+question_text+student_steps+版本 全匹配的演示记录生效」）。
+    # 原文只断言「案例A 默认问句用预置那条」，读起来像「按题干取预置就是对的」；
+    # 现在把「这条预置属于哪份作答」也写进断言：必须是与演示内容五项全匹配的那一条，
+    # 而不是任何同题干作答都能拿到。
+    check("2.12 演示案例A 的问句来自五项全匹配的预置记录（不是按题干猜出来的）",
+          data["followup"]["question"] == "你当时是怎么展开这个括号的？"
+          and D.match_answer(rows["DEMO-A-01"]) is not None
+          and data["causes_scope"] == "synthetic_demo",
+          "%s / %s" % (data["followup"]["question"], data["causes_scope"]))
 
     # 同一题的「真实导入」作答：预置数据绝不能套上去，必须走规则定位
     real_class = env.add_class("七年级 2 班")
@@ -528,9 +536,36 @@ def group_2_case_a_and_preset(envs):
           real["answer"]["data_source"] == "imported"
           and real["answer"]["data_source_label"] == "真实导入",
           real["answer"]["data_source_label"])
-    check("2.16 真实导入仍拿同一份预置候选（候选是预置库、定位是规则，二者分离）",
-          real["candidates"] == preset and real["causes_source"] == "preset",
-          len(real["candidates"]))
+    # R1-01 改写（依据：PRD §4.1「分析以证据为基础：候选错因分别列出支持证据、冲突证据与
+    # 仍需信息……不编造步骤或强行选定原因」、规格 §3.1.3「未匹配……保留『待判断』并转人工」、
+    # 任务书 R1-01「真实作答不得引用任何演示预置证据」）。
+    # 原文写的是「真实导入仍拿同一份预置候选」——那是把缺陷当成了预期（基线审查 §12）。
+    # 现在断言相反的行为：真实作答没有候选、说明不冒充演示条目，且详情里不出现任何
+    # 演示候选的支持/冲突/待补/证据原句（含演示学生原话）。
+    # 只比对「描述性话术」（支持/冲突/仍需），不比 evidence：evidence 是原文切片，
+    # 真实作答恰好写着同一行 `3x-2=12` 时，字符串当然会出现——那不是泄露，那是它自己的原文。
+    demo_texts = [
+        text
+        for record in D.build()["answers"]
+        for candidate in record["candidates"]
+        for text in (list(candidate.get("support") or []) + list(candidate.get("rebut") or [])
+                     + list(candidate.get("pending") or []))
+    ]
+    real_blob = json.dumps(real, ensure_ascii=False)
+    leaked = [text for text in demo_texts if text in real_blob]
+    real_steps = real["answer"]["student_steps"]
+    real_evidence = real.get("causes_evidence") or []
+    check("2.16 R1-01：真实导入没有预置候选、说明不冒充演示、证据只取本条作答原文",
+          real["candidates"] == [] and real["causes_source"] == "none"
+          and real["causes_scope"] == "real_answer"
+          and "预置演示条目" not in (real["causes_note"] or "")
+          and "B2" in (real["causes_note"] or "")
+          and not leaked
+          and bool(real_evidence)
+          and all(item["line"] in real_steps for item in real_evidence),
+          jdump({"candidates": real["candidates"], "source": real["causes_source"],
+                 "scope": real["causes_scope"], "note": real["causes_note"],
+                 "evidence": real_evidence, "leaked": leaked}))
 
     # 契约 §3.2：demo_answers 被裁掉时必须安静退化（[]+兜底说明），不许拖垮详情接口。
     # 用 sys.modules 里放 None 让 `from . import demo_answers` 真的抛 ImportError，走的是同一条 except 分支。
@@ -709,14 +744,20 @@ def group_5_queue(envs):
           ov3["state"] == "all_checked" and ov3["assignment"]["pending"] == 0
           and ov3["next"] is None, jdump(ov3))
 
-    status, records = env.client.get("/api/classes/%d/check/records" % class_id)
+    # R1-02 契约变更改写（依据：契约 §3.4「记录找回默认只列原因待判断」+ 新增第三态
+    # not_applicable；基线审查 §15.3）。A5 的「从原因待判断找回」仍只列真正待判断的两份，
+    # 而「保存过的三条都能找回」要用 cause_state=all —— 原文把两件事混在一条断言里，
+    # 三态收口后必须分开写，否则「无需判断」的记录会被当成丢失。
+    status, records = env.client.get(
+        "/api/classes/%d/check/records?cause_state=all" % class_id)
     ids = sorted(item["answer_id"] for item in records.get("items") or [])
-    check("5.10 保存后退出队列，但 check/records 仍能找回三条",
+    check("5.10 保存后退出队列，但 check/records（cause_state=all）仍能找回三条",
           status == 200 and records.get("total") == 3 and ids == sorted([a1, a2, a3]),
           jdump(ids))
-    check("5.11 records 里每条 progress=checked、cause_state=undecided",
-          all(item["progress"] == "checked" and item["cause_state"] == "undecided"
-              for item in records.get("items") or []),
+    check("5.11 records 里每条 progress=checked；两份「原因待判断」+ 一份「无需判断」",
+          sorted((item["progress"] for item in records.get("items") or [])) == ["checked"] * 3
+          and sorted(item["cause_state"] for item in records.get("items") or [])
+          == ["not_applicable", "undecided", "undecided"],
           jdump([(i["progress"], i["cause_state"]) for i in records.get("items") or []]))
     status, all_records = env.client.get("/api/classes/%d/check/records?cause_state=all" % class_id)
     check("5.12 cause_state=all 也给出同样三条",
@@ -736,8 +777,12 @@ def group_6_rejudge(envs):
     student = env.add_student(class_id, "学生甲")
     answer_id = env.add_answer(class_id, student, "A1", CASE_A, student_name="学生甲")
     data = detail(env, class_id, answer_id)
-    causes = data["candidates"]
-    first, second = causes[0], causes[1]
+    # R1-01（依据：PRD §4.1「分析以证据为基础……不编造步骤或强行选定原因」、规格 §3.1.3、
+    # 任务书 R1-01「真实作答不得引用任何演示预置证据」）：真实作答不再有预置候选，
+    # 改判链路因此改用「教师人工判断」的两条原因（cause_code/cause_label 由请求体直传，
+    # R1-02 起是正式的人工路径）。断言语义不变：仍是「先采纳第一条、再改判第二条」。
+    first = {"code": "E-DIST-01", "label": "只把系数乘以括号里的第一项（常数项没乘）"}
+    second = {"code": "E-WRITE-01", "label": "书写遗漏（抄写或跳步时漏写）"}
 
     status, r1 = save(env, class_id, answer_id, save_body(
         data, cause_state="decided", cause_code=first["code"], cause_label=first["label"],
@@ -803,19 +848,34 @@ def group_7_no_mistake(envs):
                               student_name="学生甲")
 
     forced = []
+    rejected = []
     for answer_id, label in ((correct_id, "正确作答"), (steps_id, "只有答案"),
                              (missing_id, "缺测")):
-        status, result = save(env, class_id, answer_id, save_body(
-            detail(env, class_id, answer_id), cause_state="decided",
-            cause_code="E-DIST-01", cause_label="只把系数乘以括号里的第一项"))
+        # R1-02 契约变更改写（依据：PRD §4.1「不应编造步骤或强行选定原因」、基线审查
+        # §15.3「out_of_scope/missing_steps 永久挂账」、任务书 T4 第 1 条「cause_state
+        # 增加能收口的第三态」，以及契约 §3.3 的同步修订）。
+        # 原文断言「三份都能保存，但原因被强制回 undecided」——那是把缺陷写成了规定：
+        # 服务端悄悄清空老师提交的原因、清空 code/label，还回 200 成功。
+        # 新规则两条：① 这三份没有可归因的错步 → 原因轴记「无需判断」(not_applicable)，
+        # 不再挂在「原因待判断」上永久挂账；② 提交「教师已判断」属非法组合 →
+        # 400 cause_not_applicable，一条都不写，绝不静默改写。
+        status, result = save(env, class_id, answer_id, save_body(detail(env, class_id, answer_id)))
         judgement = result.get("judgement") or {}
         row = env.db.query_one("SELECT * FROM answer_checks WHERE answer_id=?", (answer_id,))
-        ok = (status == 200 and judgement.get("progress") == "checked"
-              and judgement.get("cause_state") == "undecided"
-              and row["cause_state"] == "undecided" and row["cause_code"] == "")
-        forced.append((label, ok, judgement.get("cause_state"), row["cause_code"]))
-    check("7.1 正确/只有答案/缺测 三份都能保存处理进度，但原因被强制回 undecided",
-          all(item[1] for item in forced), jdump(forced))
+        forced.append((label, status, judgement.get("progress"),
+                       judgement.get("cause_state"), row and row["cause_state"],
+                       row and row["cause_code"]))
+        status_bad, bad = save(env, class_id, answer_id, save_body(
+            detail(env, class_id, answer_id), cause_state="decided",
+            cause_code="E-DIST-01", cause_label="只把系数乘以括号里的第一项"))
+        rejected.append((label, status_bad, bad.get("code")))
+    check("7.1 正确/只有答案/缺测 三份都能保存处理进度，原因轴记「无需判断」(not_applicable)",
+          all(item[1] == 200 and item[2] == "checked" and item[3] == "not_applicable"
+              and item[4] == "not_applicable" and item[5] == "" for item in forced),
+          jdump(forced))
+    check("7.1b 同一份提交「教师已判断」→ 400 cause_not_applicable（不静默改写、不写库）",
+          all(item[1] == 400 and item[2] == "cause_not_applicable" for item in rejected),
+          jdump(rejected))
 
     status, result = save(env, class_id, error_id, save_body(detail(env, class_id, error_id)))
     check("7.2 真的错步那份保存成功", status == 200, status)
@@ -828,15 +888,18 @@ def group_7_no_mistake(envs):
     stats = answer_check_stats(env.db, env.db.query_one("SELECT * FROM classes WHERE id=?", (class_id,)))
     check("7.4 original_errors 只数错步那一份（=1），缺测与正确不计入",
           stats["original_errors"] == 1, stats["original_errors"])
-    check("7.5 cause_decided=0：三份被强制待判断，只有错步那份手动保存也是 undecided",
+    check("7.5 cause_decided=0：三份记「无需判断」，错步那份没判原因",
           stats["cause_decided"] == 0, stats["cause_decided"])
     check("7.6 checked=4 / pending=0 / missing=1",
           stats["checked"] == 4 and stats["pending"] == 0 and stats["missing"] == 1,
           jdump(stats))
     checks = env.db.query("SELECT cause_state, cause_code, locate_status FROM answer_checks"
                           " ORDER BY id")
-    check("7.7 四行 check 的 cause_state 全是 undecided，locate_status 各自如实",
-          all(row["cause_state"] == "undecided" and row["cause_code"] == "" for row in checks)
+    # 三态收口后：正确/只有答案/缺测 = not_applicable（无需判断），错步那份 = undecided（真欠账）。
+    check("7.7 四行 check：三份「无需判断」+ 错步那份「待判断」，locate_status 各自如实",
+          sorted(row["cause_state"] for row in checks)
+          == ["not_applicable", "not_applicable", "not_applicable", "undecided"]
+          and all(row["cause_code"] == "" for row in checks)
           and {row["locate_status"] for row in checks}
           == {"correct", "missing_steps", "missing", "first_bad"},
           jdump(checks))
@@ -986,7 +1049,9 @@ def group_10_stats(envs):
     for key in ["ok%d" % i for i in range(6)] + ["missing"]:
         save(env, class_id, ids[key], save_body(detail(env, class_id, ids[key])))
     data_bad0 = detail(env, class_id, ids["bad0"])
-    first = data_bad0["candidates"][0]
+    # R1-01（依据同上）：真实作答没有预置候选，这里改用教师人工填写的原因编码与说明。
+    # 断言口径不变：10.1 / 10.2 仍要求 cause_decided=1、original_errors=2。
+    first = {"code": "E-DIST-01", "label": "只把系数乘以括号里的第一项（常数项没乘）"}
     save(env, class_id, ids["bad0"], save_body(
         data_bad0, cause_state="decided", cause_code=first["code"], cause_label=first["label"]))
     save(env, class_id, ids["bad1"], save_body(detail(env, class_id, ids["bad1"])))
@@ -1163,9 +1228,13 @@ def group_12_mutants(envs, queue_env, queue_class_id):
             "C._force_undecided({'missing':0},'missing_steps'),"
             "C._force_undecided({'missing':1},'first_bad')]))" % root)
     rc, out, err = _run_mutant(root, code)
-    check("12.7 变异体3 让「正确/只有答案/缺测强制待判断」失效 → 第 7.1 条断言不再成立",
+    # R1-02 契约变更改写（依据：任务书 T4 第 1 条「cause_state 增加能收口的第三态」、
+    # 基线审查 §15.3、契约 §3.3 同步修订）：变异体 3 现在让「有没有可归因的错步」判定失效，
+    # 于是正确/只有答案/缺测不再被登记为「无需判断」——第 7.1 条断言因此不再成立。
+    # 锚点仍是同一行 `_force_undecided` 的返回语句，补丁命中位置不变。
+    check("12.7 变异体3 让「无可归因错步 → 无需判断」判定失效 → 第 7.1 条断言不再成立",
           rc == 0 and out == "[false, false, false]", "%s %s" % (out, err))
-    check("12.8 对照：真实实现三种情形都强制待判断",
+    check("12.8 对照：真实实现对正确/只有答案/缺测/缺测都判为「有/无可归因」如实现所声明",
           C._force_undecided({"missing": 0}, "correct") is True
           and C._force_undecided({"missing": 0}, "missing_steps") is True
           and C._force_undecided({"missing": 1}, "first_bad") is True)
