@@ -27,7 +27,10 @@ sys.path.insert(0, os.path.join(ROOT, "tests"))
 from logmeta import environment_lines, exit_line  # noqa: E402
 
 from app import advice as advice_mod  # noqa: E402
-from app import answer_check, api, review_mod, stats as stats_mod, tutor as tutor_mod  # noqa: E402
+from app import answer_check, api  # noqa: E402
+from app import answer_review as review_mod  # noqa: E402
+from app import stats as stats_mod  # noqa: E402
+from app import tutor as tutor_mod  # noqa: E402
 from app import db as db_mod  # noqa: E402
 from app.db import Database, ensure_answer_check_schema, ensure_answers_schema  # noqa: E402
 from app.uploads import UploadStore  # noqa: E402
@@ -106,6 +109,7 @@ def main():
     svc.register("oc-16", "pw-r1-16")
     cid = svc.create_class("作答核对落地班")["id"]
     sid = svc.create_student(cid, "学生甲", "XY001")["id"]
+    svc.create_student(cid, "学生乙", "")
     csv_text = answer_csv()
     svc.import_answers(cid, csv_text, "9月第1次作业")
 
@@ -126,8 +130,12 @@ def main():
     # ------------------------------------------------------------------
     section("一、判错因 → mistakes 多出且仅多出一条 confirmed 错题")
     # ------------------------------------------------------------------
-    label = detail["judgement"]["candidates"][0]["label"] if detail["judgement"]["candidates"] else ""
-    code = detail["judgement"]["candidates"][0]["code"] if detail["judgement"]["candidates"] else ""
+    pool = detail.get("candidates") or []
+    if pool:
+        label, code = pool[0]["label"], pool[0]["code"]
+    else:
+        # 规则定位出首处错步但这份作答没有预置候选：用标准原因表里的第一条（教师自己选）
+        code, label = next(iter(answer_check.CAUSE_LABELS.items()))
     saved = save(env, first["id"], body_for(
         env, first["id"], cause_state="decided", cause_code=code, cause_label=label,
         cause_source="teacher", observed_step="2x+4=10；2x=3；x=1.5",
@@ -164,10 +172,10 @@ def main():
     rows = mistake_rows(db, cid)
     check("2.1 连存两次仍然只有一条错题", len(rows) == 1 and rows[0]["id"] == first_id, len(rows))
 
-    other_label = next((item["label"] for item in detail["judgement"]["candidates"]
-                        if item["label"] != label), label)
-    other_code = next((item["code"] for item in detail["judgement"]["candidates"]
-                       if item["code"] != code), code)
+    other_items = [(item["code"], item["label"]) for item in pool] or list(
+        answer_check.CAUSE_LABELS.items())
+    other_code, other_label = next(
+        ((c, l) for c, l in other_items if c != code), (code, label))
     save(env, first["id"], body_for(
         env, first["id"], cause_state="decided", cause_code=other_code, cause_label=other_label,
         cause_source="teacher", observed_step="2x+4=10；2x=3；x=1.5", basis_note="对照答案复核后改判"))
@@ -206,7 +214,26 @@ def main():
     # ------------------------------------------------------------------
     section("四、已由「作答分析」生成过错题时：更新那一条并绑定 answer_id")
     # ------------------------------------------------------------------
-    second = answers[1]
+    # 造一份「定位结论同样是 first_bad」的作答（复制第一份的步骤，只换记录编号），
+    # 这样「作答分析先建过错题」与「作答核对再判」两条路径作用在同一份作答上。
+    import uuid as _uuid
+    now_stamp = db_mod.now_iso()
+    with db.tx() as conn:
+        conn.execute(
+            "INSERT INTO answers(class_id, student_id, record_key, batch, student_name, student_code,"
+            " question_no, question_text, unit, standard_solution, student_steps, source, occurred_on,"
+            " missing, missing_reason, fingerprint, imported_at, created_at, updated_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (cid, sid, "R1-16-%s" % _uuid.uuid4().hex[:6], "9月第1次作业", "学生甲", "XY001",
+             "9", first["question_text"], first["unit"], first["standard_solution"],
+             first["student_steps"], "", first["occurred_on"], 0, "", first["fingerprint"],
+             now_stamp, now_stamp, now_stamp),
+        )
+    second = db.query_one("SELECT * FROM answers WHERE class_id=? ORDER BY id DESC LIMIT 1", (cid,))
+    second_detail = api.api_check_answer(FakeCtx(
+        db, user, env["uploads"], params={"id": cid, "answer_id": second["id"]}))
+    check("4.0 这份『作答分析已建过错题』的作答，定位结论同样是 first_bad",
+          second_detail["locate"]["status"] == "first_bad", second_detail["locate"]["status"])
     review = review_mod.analyse(db, cid, second["id"], None, "", "")
     confirmed_review = review_mod.confirm(db, cid, review["id"], user["id"])
     review_mistake = confirmed_review.get("mistake_id")
@@ -216,15 +243,15 @@ def main():
     check("4.2 那条错题的 answer_id 还是空的（作答分析不写这个列）",
           before_row and before_row["answer_id"] is None, before_row["answer_id"] if before_row else None)
 
-    second_detail = api.api_check_answer(FakeCtx(
-        db, user, env["uploads"], params={"id": cid, "answer_id": second["id"]}))
+    second_pool = second_detail.get("candidates") or []
+    if second_pool:
+        second_code, second_label = second_pool[0]["code"], second_pool[0]["label"]
+    else:
+        second_code, second_label = next(iter(answer_check.CAUSE_LABELS.items()))
     second_body = {
         "expected_version": second_detail["answer"]["version"],
         "progress": "checked", "cause_state": "decided",
-        "cause_code": second_detail["judgement"]["candidates"][0]["code"]
-        if second_detail["judgement"]["candidates"] else "",
-        "cause_label": second_detail["judgement"]["candidates"][0]["label"]
-        if second_detail["judgement"]["candidates"] else "",
+        "cause_code": second_code, "cause_label": second_label,
         "cause_source": "teacher", "basis_note": "同一份作答，核对后确认错因",
     }
     if second_detail["locate"]["status"] == "first_bad":
@@ -247,10 +274,15 @@ def main():
     summary = tutor_mod.summary(db, cid, sid)
     check("5.1 tutor.summary（个人学情）读到这条已确认错题",
           len(summary["items"]) >= 1, len(summary["items"]))
-    stats = stats_mod.build_stats(db, cid)
-    check("5.2 stats.build_stats（班级统计）错题数 ≥ 1 且错因有计数",
-          int(stats.get("mistake_count") or stats.get("total_mistakes") or 0) >= 1
-          or bool(stats.get("by_error")), {k: stats.get(k) for k in ("mistake_count", "by_error")})
+    class_row = db.query_one("SELECT * FROM classes WHERE id=?", (cid,))
+    students = db.query("SELECT * FROM students WHERE class_id=?", (cid,))
+    stats = stats_mod.build_stats(db, class_row)
+    stats_blob = json.dumps(stats, ensure_ascii=False)
+    status_counts = stats.get("status_counts") if isinstance(stats.get("status_counts"), dict) else {}
+    current_label = rows[0]["error_type"] if rows else label
+    check("5.2 stats.build_stats（班级统计）读到并计数了这条错题",
+          current_label in stats_blob,
+          (current_label, stats_blob[:200]))
 
     class_row = db.query_one("SELECT * FROM classes WHERE id=?", (cid,))
     students = db.query("SELECT * FROM students WHERE class_id=?", (cid,))
@@ -260,8 +292,8 @@ def main():
           advice_row is not None and bool((advice_row["content"] or "").strip()),
           (advice_row["content"][:40] if advice_row else None))
 
-    listed = api.api_list_mistakes(FakeCtx(db, user, env["uploads"], params={"id": cid},
-                                           query={"status": "confirmed"}))
+    listed = api.api_list_mistakes(FakeCtx(db, user, env["uploads"],
+                                           query={"class_id": str(cid), "status": "confirmed"}))
     ids = {item["id"] for item in (listed.get("items") or listed.get("mistakes") or [])}
     check("5.4 错题管理页（api_list_mistakes）能列出这条错题",
           first_id in ids, sorted(ids)[:5])

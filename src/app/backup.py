@@ -944,6 +944,8 @@ def apply_staged(staging_dir, data_dir, user_id, app_version=VERSION, mode="rest
             # 语义与班级一致：恢复 = 用备份里的状态替换这个账号的这份数据，重复恢复不叠加。
             # 注意：这段必须在 `finally: src.close()` **之前**执行 —— 它要读备份库。
             if "ai_egress_audit" in src_tables and "ai_egress_audit" in _table_names(conn):
+                # 故障注入点：证明审计步骤也在同一个事务里（失败时 DELETE 与插入一起回滚）。
+                _fault("audit_restore")
                 conn.execute("DELETE FROM ai_egress_audit WHERE user_id=?", (user_id,))
                 for audit in src.execute("SELECT * FROM ai_egress_audit ORDER BY id"):
                     _insert(conn, "ai_egress_audit",

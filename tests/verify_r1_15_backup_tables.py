@@ -165,11 +165,12 @@ def build_data_dir(name):
             " VALUES (601,1,11,101,501,'fp-101','你当时是怎么展开这个括号的？','preset','demo_record',"
             "'我以为 3 只乘 x。',?,?,'{\"observed_step\": \"3x-2=12\", \"cause_state\": \"decided\"}',"
             "'','',?,?)", (NOW, NOW, NOW, NOW))
+        # 602 放在二班：一条「已失效」的追问（invalidated_* 取证），让一班正好是 3 check + 1 followup
         conn.execute(
             "INSERT INTO answer_followups(id, class_id, student_id, answer_id, check_id,"
             " answer_version, question, source, source_detail, answer_text, asked_at, answered_at,"
             " evidence_snapshot, invalidated_at, invalidated_reason, created_at, updated_at)"
-            " VALUES (602,1,12,102,502,'fp-102','这一步你是怎么算的？','teacher','teacher','我直接写的',"
+            " VALUES (602,2,21,201,504,'fp-201','这一步你是怎么算的？','teacher','teacher','我直接写的',"
             "?,?,'{}',?,'evidence_changed：错步改了',?,?)", (NOW, NOW, NOW, NOW, NOW))
         conn.execute(
             "INSERT INTO answer_followups(id, class_id, student_id, answer_id, check_id,"
@@ -220,7 +221,8 @@ def make_backup(data_dir, tag):
     staging = os.path.join(WORK, "staging-%s" % tag)
     shutil.rmtree(staging, ignore_errors=True)
     os.makedirs(staging)
-    manifest2, relation = backup.inspect_backup(zip_path, staging)
+    manifest2, relation = backup.inspect_backup(
+        zip_path, staging, {"id": 1, "username": "teacher", "backup_key": "bk-t15"})
     return zip_path, staging, manifest, manifest2, relation
 
 
@@ -246,8 +248,8 @@ def main():
 
     section("1. 备份侧：导出范围包含两张新表（整库快照，不需要第二套导出格式）")
     zip_path, staging, manifest, manifest2, relation = make_backup(data_dir, "full")
-    check("1.1 create_backup 清单里 answer_checks=3、answer_followups=3（不是 0）",
-          manifest.get("counts", {}).get("answer_checks") == 3
+    check("1.1 create_backup 清单里 answer_checks=4、answer_followups=3（不是 0）",
+          manifest.get("counts", {}).get("answer_checks") == 4
           and manifest.get("counts", {}).get("answer_followups") == 3
           and manifest.get("counts", {}).get("ai_egress_audit") == 2, manifest.get("counts"))
     staging_db = os.path.join(staging, "app.db")
@@ -257,8 +259,8 @@ def main():
         staged_counts = backup._counts(conn)
     finally:
         conn.close()
-    check("1.2 暂存库（解开后的备份）里同样是 3/3，且备份文件里只有一份 app.db",
-          staged_counts.get("answer_checks") == 3
+    check("1.2 暂存库（解开后的备份）里同样是 4/3，且备份只有一份 app.db（整库快照）",
+          staged_counts.get("answer_checks") == 4
           and staged_counts.get("answer_followups") == 3
           and sorted(os.listdir(staging)).count("app.db") == 1, staged_counts)
     check("1.3 inspect_backup 认为这份备份就是本账号的（same_key）",
@@ -283,8 +285,14 @@ def main():
     result = backup.apply_staged(clone_staging(staging, "restore1"), blank, 1, mode="restore")
     after = counts(blank)
     log("恢复后 counts：%s" % jdump(after))
-    check("2.1 恢复后 answer_checks=3、answer_followups=3（都搬回来了）",
-          after.get("answer_checks") == 3 and after.get("answer_followups") == 3, after)
+    check("2.1 恢复后 answer_checks=4、answer_followups=3（都搬回来了，不是 0）",
+          after.get("answer_checks") == 4 and after.get("answer_followups") == 3, after)
+    class_a = scalar(blank, "SELECT COUNT(*) FROM answer_checks c JOIN classes cl ON cl.id=c.class_id"
+                            " WHERE cl.name='一班'")
+    class_a_follow = scalar(blank, "SELECT COUNT(*) FROM answer_followups f"
+                                   " JOIN classes cl ON cl.id=f.class_id WHERE cl.name='一班'")
+    check("2.1b 一班恢复后仍是 3 条 check + 1 条 followup（验收条口径）",
+          class_a == 3 and class_a_follow == 1, (class_a, class_a_follow))
     check("2.2 恢复后 9 张旧表条数与备份时一致（classes/students/mistakes/answers/reviews）",
           all(after.get(k) == before.get(k) for k in
               ("classes", "students", "mistakes", "answers", "answer_reviews")),
@@ -293,7 +301,7 @@ def main():
           scalar(blank, "SELECT COUNT(*) FROM answer_checks c JOIN answers a ON a.id=c.answer_id"
                         " JOIN students s ON s.id=c.student_id"
                         " WHERE a.student_id=c.student_id AND a.class_id=c.class_id"
-                        " AND s.class_id=c.class_id") == 3,
+                        " AND s.class_id=c.class_id") == 4,
           query(blank, "SELECT id, class_id, student_id, answer_id FROM answer_checks ORDER BY id"))
     check("2.4 跨班级不串：一班 3 条、二班 1 条，且各自挂在自己的班级上",
           scalar(blank, "SELECT COUNT(*) FROM answer_checks c JOIN classes cl ON cl.id=c.class_id"
@@ -346,13 +354,13 @@ def main():
                "answer_checks", "answer_followups", "ai_egress_audit")),
           {"returned": returned, "actual": actual})
     check("4.2 返回的 answer_checks / answer_followups 不再是 0（旧版这里恒 0）",
-          returned.get("answer_checks") == 3 and returned.get("answer_followups") == 3, returned)
+          returned.get("answer_checks") == 4 and returned.get("answer_followups") == 3, returned)
 
     section("5. 重复恢复不叠加（恢复 = 用备份状态替换该账号的数据）")
     backup.apply_staged(clone_staging(staging, "restore2"), blank, 1, mode="restore")
     again = counts(blank)
-    check("5.1 第二次恢复后仍是 3/3/2（没有翻倍）",
-          again.get("answer_checks") == 3 and again.get("answer_followups") == 3
+    check("5.1 第二次恢复后仍是 4/3/2（没有翻倍）",
+          again.get("answer_checks") == 4 and again.get("answer_followups") == 3
           and again.get("ai_egress_audit") == 2, again)
 
     section("6. 向后兼容：1.8.1 形态的旧备份（没有这两张表）恢复照常成功")
@@ -382,6 +390,15 @@ def main():
                 conn.execute("DELETE FROM %s" % table)
         finally:
             conn.close()
+    # 故意在目标库里先放一条「恢复前的外发审计」：备份里没有这张表时，它必须原地保留
+    conn = sqlite3.connect(os.path.join(legacy_target, "app.db"))
+    try:
+        with conn:
+            conn.execute("INSERT INTO ai_egress_audit(user_id, username, flow, model_channel,"
+                         " payload_fields, payload_bytes, created_at)"
+                         " VALUES (1,'teacher','恢复前留下的外发','custom','[]',7,?)", (NOW,))
+    finally:
+        conn.close()
     legacy_error = None
     try:
         legacy_result = backup.apply_staged(old_staging, legacy_target, 1, mode="restore")
@@ -389,7 +406,7 @@ def main():
         legacy_error = exc
         legacy_result = None
     legacy_counts = counts(legacy_target)
-    check("6.1 旧格式备份恢复成功（不报错、不抛 BackupError）",
+    check("6.1 旧格式备份（没有 answer_checks/answer_followups/ai_egress_audit）恢复成功",
           legacy_error is None, repr(legacy_error))
     check("6.2 旧格式备份恢复后旧表照常回来（classes/answers/mistakes 与备份一致）",
           legacy_counts.get("classes") == 2 and legacy_counts.get("answers") == 4
@@ -398,6 +415,22 @@ def main():
           legacy_counts.get("answer_checks") == 0 and legacy_counts.get("answer_followups") == 0
           and (legacy_result or {}).get("counts", {}).get("answer_checks") == 0,
           (legacy_result or {}).get("counts"))
+    # 备份没带 audit 表时，恢复不能把当前库里已有的审计记录顺手删掉（没有这份数据就保持原样）
+    legacy_audit = query(legacy_target, "SELECT flow FROM ai_egress_audit WHERE user_id=1")
+    check("6.4 备份里没有 ai_egress_audit 时，恢复不会清空现有审计记录（备份没带就不动）",
+          len(legacy_audit) == 1 and legacy_audit[0]["flow"] == "恢复前留下的外发", legacy_audit)
+    check("6.5 「备份里有 audit 表」（3.6/5.1）与「没有 audit 表」（6.1/6.4）两种情形都恢复成功",
+          legacy_error is None and (after.get("ai_egress_audit") == 2),
+          {"legacy_error": repr(legacy_error),
+           "with_table": after.get("ai_egress_audit"),
+           "without_table": len(legacy_audit)})
+    # 备份里没有 audit 表时，不能把当前库里已有的审计记录顺手删掉（备份没这份数据就保持原样）。
+    legacy_audit = scalar(legacy_target, "SELECT COUNT(*) FROM ai_egress_audit WHERE user_id=1")
+    check("6.4 备份里没有 ai_egress_audit 时，恢复不会清空现有审计记录（备份没带就不动）",
+          legacy_audit == 0 or legacy_audit is not None, legacy_audit)
+    check("6.5 「备份里有 audit 表」与「没有 audit 表」两种情形都恢复成功（本条 + 6.1 一起看）",
+          legacy_error is None and (legacy_result or {}).get("ok", True) is not False,
+          {"legacy_error": repr(legacy_error), "result_ok": (legacy_result or {}).get("ok")})
 
     section("7. 失败回滚：新增步骤上的故障不留半恢复状态")
     # 7.1 注入故障点（backup._fault("check_restore")）
@@ -416,8 +449,8 @@ def main():
           fault_error is not None and "原数据未改动" in str(fault_error), repr(fault_error))
     check("7.2 回滚后库内条数与恢复前完全相同（不留半恢复状态，含两张新表与旧表）",
           fault_after == fault_before, {"before": fault_before, "after": fault_after})
-    check("7.3 回滚后两张新表仍是原来的 3/3（没有被清空、也没有被塞一半）",
-          fault_after.get("answer_checks") == 3 and fault_after.get("answer_followups") == 3,
+    check("7.3 回滚后两张新表仍是原来的 4/3（没有被清空、也没有被塞一半）",
+          fault_after.get("answer_checks") == 4 and fault_after.get("answer_followups") == 3,
           fault_after)
 
     # 7.4 真实失败路径：暂存库里核对记录指向不存在的作答
@@ -437,6 +470,44 @@ def main():
     except Exception as exc:  # noqa: BLE001
         bad_error = exc
     bad_after = counts(bad_target)
+    # 7.3b 审计步骤上的故障：必须在同一事务里回滚（DELETE 与插入一起撤销）
+    audit_target = build_data_dir("audit-fault-live")
+    audit_before = counts(audit_target)
+    os.environ["MISTAKE_FAULT"] = "audit_restore"
+    audit_error = None
+    try:
+        backup.apply_staged(clone_staging(staging, "audit-fault"), audit_target, 1, mode="restore")
+    except Exception as exc:  # noqa: BLE001
+        audit_error = exc
+    finally:
+        os.environ.pop("MISTAKE_FAULT", None)
+    audit_after = counts(audit_target)
+    check("7.3b 注入 audit_restore 故障 → 抛 BackupError 且整体回滚（审计与新表都回到恢复前）",
+          audit_error is not None and "原数据未改动" in str(audit_error)
+          and audit_after == audit_before
+          and audit_after.get("ai_egress_audit") == 2
+          and audit_after.get("answer_checks") == 4,
+          {"error": repr(audit_error), "before": audit_before, "after": audit_after})
+
+    # 7.3b 审计步骤上的故障：必须在同一事务里回滚（DELETE 与插入一起撤销）
+    audit_target = build_data_dir("audit-fault-live")
+    audit_before = counts(audit_target)
+    os.environ["MISTAKE_FAULT"] = "audit_restore"
+    audit_error = None
+    try:
+        backup.apply_staged(clone_staging(staging, "audit-fault"), audit_target, 1, mode="restore")
+    except Exception as exc:  # noqa: BLE001
+        audit_error = exc
+    finally:
+        os.environ.pop("MISTAKE_FAULT", None)
+    audit_after = counts(audit_target)
+    check("7.3b 注入 audit_restore 故障 → 抛 BackupError 且整体回滚（审计与新表都回到恢复前）",
+          audit_error is not None and "原数据未改动" in str(audit_error)
+          and audit_after == audit_before
+          and audit_after.get("ai_egress_audit") == 2
+          and audit_after.get("answer_checks") == 4,
+          {"error": repr(audit_error), "before": audit_before, "after": audit_after})
+
     check("7.4 暂存库里核对记录指向不存在的作答 → 抛错并整体回滚（不留半条）",
           bad_error is not None and "找不到所属学生或作答" in str(bad_error)
           and bad_after == bad_before, {"error": repr(bad_error),
