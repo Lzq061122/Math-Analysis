@@ -1,0 +1,47 @@
+数学错题学情分析 · 桌面测试版 · 第三方组件与许可
+
+本目录（随包 licenses）列出桌面测试版用到的开源组件及其许可，供分发时一并携带。
+本文件是说明性清单，不是法律意见；正式对外发布前请按下面「待办」把许可义务补齐。
+
+一、随包分发的组件
+
+1. PySide6 6.6.3.1（Qt for Python 绑定，Essentials + Addons）
+   - 许可：LGPL v3（可选商业许可）
+   - 许可证原文：licenses\LGPL-3.0.txt、licenses\GPL-3.0.txt
+   - 上游：https://www.qt.io/qt-for-python
+
+2. Qt 6.6.3（界面库，PySide6 轮子内附带的 Qt DLL）
+   - 许可：LGPL v3（本测试包只用到 QtCore / QtGui / QtWidgets 等 LGPL 模块）
+   - 许可证原文：同上
+   - 上游：https://www.qt.io/
+
+3. shiboken6 6.6.3.1（PySide6 的 C++ 绑定生成器运行时）
+   - 许可：LGPL v3
+   - 许可证原文：同上
+   - 上游：https://github.com/qtproject/pyside-pyside-setup
+
+4. Python 3.11.15（解释器运行时）
+   - 许可：PSF License Agreement
+   - 上游：https://www.python.org/
+
+5. PyInstaller 6.22.3（打包工具，其引导程序被打进 exe）
+   - 许可：GPL v2 附「打包非 GPL 程序」例外条款（Bootloader Exception），
+     据此本程序可以按自有条款分发
+   - 上游：https://pyinstaller.org/
+
+二、LGPL v3 义务与本包现状
+
+LGPL v3 允许以动态链接方式使用库，并要求：
+  a) 告知使用者程序中使用了该库及其许可（本文件 + 包内 licenses 目录）；
+  b) 随附 LGPL v3 与 GPL v3 原文（已随包）；
+  c) 允许使用者替换库文件（本包是 onedir 目录形式，Qt 的 DLL 直接放在
+     程序目录里，替换同名 DLL 即可生效，满足可替换要求）；
+  d) 若修改了 Qt/PySide6 本身，需要提供修改后的源码（本包未做任何修改）。
+
+三、待办（本轮未完成，不能宣称已满足发布合规）
+
+- 尚未把许可清单做成安装界面或首次启动时的「关于」页面，仅在包内附带文件。
+- 尚未由法务或发布负责人确认最终分发条款；如需闭源商业分发，应另行评估
+  Qt 商业许可。
+- 若后续改成 onefile 单文件打包，Qt DLL 会被压进 exe，替换库文件将变得困难，
+  需要重新评估 LGPL 的「可替换」义务。

@@ -1,0 +1,13 @@
+﻿# 打包产物与运行期数据，不纳入版本库
+数智伴学/
+data/
+**/__pycache__/
+tests/.tmp-*/
+tests/.venv/
+.venv/
+.agent-teams/
+.workbuddy/
+src/last-data-dir.txt
+*.pyc
+*.log
+docs/screenshots/

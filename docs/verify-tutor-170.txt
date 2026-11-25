@@ -1,0 +1,126 @@
+时间：2026-11-25T18:20:18+08:00
+命令：python.exe tests\verify_tutor_170.py
+目录：E:\Agent\小挑
+环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
+
+
+== 一、数据结构与迁移 ==
+PASS 新库有 tutor_advice 表
+PASS 按学生唯一（一人一份建议）
+PASS 有按班级查的索引
+PASS tutor_advice 有 class_id 列
+PASS tutor_advice 有 student_id 列
+PASS tutor_advice 有 content 列
+PASS tutor_advice 有 ai_content 列
+PASS tutor_advice 有 evidence 列
+PASS tutor_advice 有 fingerprint 列
+PASS tutor_advice 有 teacher_edited 列
+PASS tutor_advice 有 mode 列
+PASS tutor_advice 有 generated_at 列
+PASS tutor_advice 有 updated_at 列
+PASS 数据库结构版本为 4
+PASS 模拟旧库：迁移前没有辅导建议表
+PASS 旧库自动补建辅导建议表
+PASS 迁移前留下备份文件
+PASS 重复迁移是空操作
+PASS 开始事务失败时明确报错
+PASS 失败后没有留下半张表
+PASS 失败回滚后原有数据还在
+
+== 二、汇总只算这名学生的已确认错题 ==
+PASS 只出现这名学生的问题
+PASS 移项出现 3 次
+PASS 移项加权分 3+2+1=6
+PASS 最近发生日期取最近一条
+PASS 可以追溯到错题编号
+PASS 页面显示当前学生
+PASS 空的学生没有问题
+PASS 待核对与已退回不进入汇总
+PASS 已确认条数不含待核对
+PASS 班级学情统计仍然可用
+
+== 三、权重与日期边界 ==
+PASS 边界日期权重 3/3/2/2/1
+PASS 边界日期次数 5 次
+PASS 权重函数单独可用
+PASS 没有日期的单独列出
+PASS 未来日期提示数据异常
+PASS 无法识别的日期也提示
+PASS 异常日期不参与加权
+PASS 没有任何知识点的归入未分类
+PASS 同一条错题里的重复知识点只算一次
+PASS 一条错题涉及两个知识点时两边都计
+PASS 没有知识点时标为未分类
+
+== 四、发送内容不含身份字段 ==
+PASS 提示词不含 张三
+PASS 提示词不含 XY001
+PASS 提示词不含 七年级 1 班
+PASS 提示词不含 teacher
+PASS 提示词带个人学情标记
+PASS 提示词带题目原文
+PASS 提示词带学生步骤原文
+PASS 提示词写明计分规则
+PASS 真实模式没有确认就不发送
+PASS 没有确认时一条请求都没发
+
+== 五、生成建议（本地桩） ==
+PASS 生成成功
+PASS 桩收到一条辅导建议请求
+PASS 请求标为 tutor
+PASS 请求带个人学情标记
+PASS 请求不含 张三
+PASS 请求不含 XY001
+PASS 请求不含 七年级 1 班
+PASS 请求不含 teacher
+PASS 建议只针对最优先的问题
+PASS 建议写明排序依据
+PASS 建议引用了原文证据
+PASS 建议里有具体做法
+PASS 建议声明不是成绩或能力评级
+PASS 建议记录生成来源
+PASS 生成后仍可追溯到证据
+
+== 六、编造的问题与证据会被丢弃 ==
+PASS 编造的问题名被忽略
+PASS 说明里写明问题名被忽略
+PASS 编造的证据被忽略
+PASS 说明里写明证据找不到
+PASS 留下的仍是有效建议
+
+== 七、证据不足时不强行下结论 ==
+PASS 证据不足时写明不确定
+PASS 没有编出具体问题编号
+PASS 模型没给问题时明确说明
+
+== 八、老师编辑、保存、重开与过期提示 ==
+PASS 保存后以老师版本为准
+PASS 记录按老师修改保存
+PASS 重开后还能看到老师的版本
+PASS 重开后改动标记还在
+PASS 数据没变时不提示过期
+PASS 新增已确认错题后提示可能需要更新
+PASS 重新生成后不再提示过期
+PASS 重新生成会覆盖老师的改动
+
+== 九、空状态与隔离 ==
+PASS 没有已确认错题时不能生成
+PASS 空状态不写建议行
+PASS 学生不属于这个班级时拒绝
+PASS 另一个账号看不到这个学生的学情
+
+== 十、旧版本数据与备份 ==
+PASS 旧库升级后补上建议表
+PASS 旧库里的学生能打开个人学情
+PASS 旧库已确认错题进入汇总
+PASS 备份格式为 6
+PASS 备份清单里有辅导建议条数
+PASS 备份里带数据库与清单
+PASS 恢复后辅导建议条数一致
+PASS 恢复后建议内容还在
+PASS 跨电脑导入带上辅导建议
+PASS 导入后仍能打开这个学生的建议
+PASS 旧版本读 1.8 备份时给出提示
+
+合计 98 项，通过 98，失败 0
+退出码：0

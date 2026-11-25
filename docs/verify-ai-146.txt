@@ -1,0 +1,216 @@
+时间：2026-11-25T18:20:23+08:00
+命令：python.exe tests\verify_ai_146.py
+目录：E:\Agent\小挑
+环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
+
+== 一、地址、模式与请求地址拼接
+  OK    版本号为当前版本
+  OK    没有配置时默认模拟
+  OK    默认不读取任何密钥
+  OK    Go 的 qwen3.8-max 走 Anthropic Messages 基底
+  OK    Go 的 qwen3.8-max 完整地址是 /messages
+  OK    Go 的 qwen3.8-max 使用 messages 请求体
+  OK    Go 的 kimi-k3 走 OpenAI 兼容基底
+  OK    Go 的 kimi-k3 完整地址是 /chat/completions
+  OK    基底已带 /messages 时不重复拼接
+  OK    基底已带 /chat/completions 时不重复拼接
+  OK    基底带尾斜杠也能正确拼接
+  OK    选了 Go 但没密钥时仍是 go，不回退模拟
+  OK    没密钥时说明会停止并提示
+  OK    Console 模式仍保持原有 chat 地址
+  OK    Console 模式不带 Go 会话标识
+== 二、请求体、认证头与会话标识
+  OK    Anthropic 请求体带 system
+  OK    Anthropic 图片块放在 text 之前
+  OK    Anthropic 图片用 base64 + media_type
+  OK    Anthropic 请求带 max_tokens
+  OK    试分析提示写明不含学生身份
+  OK    Go 请求带 X-OpenCode-Session
+  OK    User-Agent 是真实软件名与当前版本
+  OK    认证使用 Bearer
+  OK    Console 请求不带 Go 会话标识
+  OK    OpenAI 兼容请求把图片包成 data URL
+  OK    Go 缺少会话标识时拒绝发送
+== 三、用量与订阅来源归一化
+  OK    Anthropic 用量映射到 prompt/completion
+  OK    缺少 total 时按两项相加
+  OK    订阅来源取 opencode.billing_source
+  OK    额度计入取 opencode.allowance
+  OK    服务未提供用量时保持 None
+  OK    用量为 0 时保留 0 而不是缺失
+== 四、桌面服务：默认模拟、保存 Go、试分析与发送内容
+  OK    新建数据后默认模拟
+  OK    默认没有发过任何请求
+  OK    保存后模式为 go
+  OK    服务名显示 OpenCode Go（订阅）
+  OK    保存后算出的完整地址是 Anthropic Messages
+  OK    密钥配置状态可见但不回显
+  OK    meta 报告 go 模式
+  OK    meta 报告 Go 服务名
+  OK    meta 给出真实请求地址
+  OK    meta 不包含密钥
+  OK    保存设置本身不发送请求
+  OK    Go 未同意时拒绝发送
+  OK    未同意时没有请求
+  OK    Go 试分析成功
+  OK    试分析报告 go 模式
+  OK    试分析报告服务名与请求地址
+  OK    试分析回传订阅来源 go
+  OK    试分析回传零费用
+  OK    试分析回传额度计入
+  OK    试分析原始响应用于核对
+  OK    请求走 Anthropic Messages 路径
+  OK    请求带本次会话标识
+  OK    会话标识含软件名和版本
+  OK    请求带真实 User-Agent
+  OK    请求用 Bearer 认证
+  OK    请求体不含学生姓名
+  OK    请求体实际带题图 base64
+  OK    试分析成功后状态为已配置并验证
+  OK    试分析不创建新错题
+== 五、失败原因、计费异常与不自动切换 Console
+  OK    Go payment 映射为 payment
+  OK    Go 额度不足不再要求 Console 充值
+  OK    Go payment 失败后仍走 Go 路径
+  OK    Go auth 映射为 auth
+  OK    Go 权限错误提到用途限制
+  OK    Go auth 失败后仍走 Go 路径
+  OK    Go quota 映射为 quota
+  OK    Go quota 失败后仍走 Go 路径
+  OK    Go request 映射为 request
+  OK    Go request 失败后仍走 Go 路径
+  OK    Go server 映射为 server
+  OK    Go server 失败后仍走 Go 路径
+  OK    Go malformed 映射为 format
+  OK    非 JSON 响应说明不是兼容接口
+  OK    Go malformed 失败后仍走 Go 路径
+  OK    Go truncated 映射为 format
+  OK    截断明确提示没有可用结果
+  OK    Go truncated 失败后仍走 Go 路径
+  OK    服务不返回用量时仍成功
+  OK    服务不返回用量时界面可判为尚未确认
+  OK    Go 超时映射为 timeout
+== 五之二、计费来源异常时停止后续发送
+  OK    非订阅计费来源时试分析失败
+  OK    非订阅来源提示核对账户设置
+  OK    出现异常后设置页记录已停止发送
+  OK    阻断期间不再发出请求
+  OK    阻断期间仍提示先核对设置
+  OK    重新保存设置后解除阻断
+  OK    Go 订阅也出现额外费用时失败
+  OK    正式分析同样拒绝非订阅计费来源
+  OK    正式分析确实发出了这次请求
+  OK    正式分析异常后记录已停止发送
+  OK    阻断后正式分析不再发出请求
+  OK    阻断后正式分析仍提示先核对设置
+== 六、OpenAI 兼容模型的图片分析
+  OK    chat 模型试分析成功
+  OK    chat 模型走 /chat/completions
+  OK    chat 模型仍读取题图
+  OK    chat 模型用量仍标 go
+== 七、正式分析失败保留内容、老师确认与重开
+  OK    正式分析失败不产生建议
+  OK    失败后题目文字保留
+  OK    失败后解题过程保留
+  OK    失败后照片保留
+  OK    失败后记录仍待核对
+  OK    失败原因写入记录但不改内容
+  OK    重试成功生成待核对建议
+  OK    预览阶段不直接改记录
+  OK    采用建议后进入待核对
+  OK    采用建议后知识点写入
+  OK    老师确认后状态为已确认
+  OK    重开程序后状态仍为已确认
+  OK    重开程序后分析内容仍在
+== 八、账号隔离、退出清密钥与迟到结果
+  OK    换账号后旧建议不能采用
+  OK    另一个账号默认模拟
+  OK    另一个账号没有沿用前一个账号的密钥
+  OK    另一个账号可以独立试分析
+  OK    另一个账号的会话标识不同
+  OK    回到原账号模式仍是 go
+  OK    回到原账号本次登录密钥已清
+  OK    回到原账号会话标识重新生成
+  OK    回到原账号提示未配置密钥会停止
+== 九、密钥不落库
+  OK    数据库没有保存密钥
+  OK    数据库没有保存第二个账号的密钥
+== 十、从 1.4.4 升级不自动上云
+  OK    旧版只留地址和模型时升级后默认模拟
+  OK    升级后模式显示为模拟分析
+  OK    升级后没有密钥
+  OK    升级后试分析不发送请求
+  OK    升级后 meta 报告模拟
+== 十一、保留旧 Console 环境变量时选择 Go
+  OK    有旧 Console 环境变量时首次启动仍是模拟
+  OK    旧环境变量密钥不被采用
+  OK    无账号设置时旧 MISTAKE_AI_MODE=real 不生效
+  OK    Go 不采用传入的 Console 基底
+  OK    Go 完整地址没有继承 Console
+  OK    保存 Go 不把旧 Console 地址写进账号
+  OK    旧环境变量存在时 Go 试分析仍走测试 Go 路径
+  OK    请求密钥用本次登录输入而不是环境变量
+  OK    Go 解析结果仍固定为 Go 地址
+  OK    Go 指向 Console 地址时停止发送
+  OK    地址冲突时没有发出请求
+  OK    换账号后模式回到模拟
+  OK    换账号后环境变量密钥仍不被采用
+  OK    换回原账号仍是 go
+  OK    换回原账号密钥已清除
+== 十二、自定义 AI 服务（OpenAI 兼容 Chat Completions）
+  OK    自定义服务末尾斜杠不会重复拼接
+  OK    自定义服务填完整请求路径也不重复拼接
+  OK    自定义服务地址带查询参数时拒绝
+  OK    自定义服务不能使用 Go 订阅地址
+  OK    自定义服务缺密钥时仍是 custom，不回退模拟
+  OK    保存自定义服务后模式为 custom
+  OK    界面显示自定义服务名称
+  OK    界面显示最终请求地址
+  OK    自定义模式固定 chat 接口
+  OK    meta 报告自定义服务名
+  OK    meta 给出实际请求地址
+  OK    meta 不含密钥
+  OK    自定义服务未同意时拒绝发送
+  OK    未同意时没有请求
+  OK    自定义服务试分析成功
+  OK    试分析走自定义 chat 路径
+  OK    请求用 Bearer 认证
+  OK    自定义请求不带 Go 会话标识
+  OK    自定义请求带真实 User-Agent
+  OK    请求体实际带题图
+  OK    试分析回传用量
+  OK    服务不返回用量时仍能成功
+  OK    服务不返回用量时不推断费用
+  OK    服务不返回用量时状态标尚未确认
+  OK    自定义服务正式分析成功
+  OK    自定义建议可以进入待核对
+  OK    自定义分析确认后重开仍已确认
+  OK    自定义分析内容已保存
+  OK    自定义 auth 映射为 auth
+  OK    自定义 auth 失败后仍走自定义路径
+  OK    自定义 payment 映射为 payment
+  OK    自定义 payment 失败后仍走自定义路径
+  OK    自定义额度不足不再提示 Console 充值
+  OK    自定义 request 映射为 request
+  OK    自定义 request 失败后仍走自定义路径
+  OK    自定义 quota 映射为 quota
+  OK    自定义 quota 失败后仍走自定义路径
+  OK    自定义 slow 映射为 timeout
+  OK    自定义 slow 失败后仍走自定义路径
+  OK    自定义指向 Go 地址时停止发送
+  OK    自定义地址冲突时没有发出请求
+  OK    保存 Console 不影响自定义配置
+  OK    保存 Console 不影响自定义模型
+  OK    保存 Go 不覆盖 Console 地址
+  OK    保存 Go 不覆盖 Console 模型
+  OK    保存 Go 单独记录 Go 模型
+  OK    切回自定义仍保留本次登录密钥
+  OK    切回自定义后仍用自己的密钥
+  OK    自定义地址变化后清除该服务密钥
+  OK    换账号后自定义配置为空
+  OK    换账号后自定义密钥为空
+  OK    换回原账号自定义配置仍在
+  OK    换回原账号自定义密钥已清除
+
+合计 195 项，通过 195 项，失败 0 项
+退出码：0

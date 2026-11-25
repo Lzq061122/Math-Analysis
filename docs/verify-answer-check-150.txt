@@ -1,0 +1,189 @@
+数智伴学｜作答核对与追问（第一轮 A1–A7）源码级验收
+时间：2026-11-25T18:19:26+08:00
+命令：python.exe tests\verify_answer_check_150.py
+目录：E:\Agent\小挑
+环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
+临时库：E:\Agent\小挑\tests\.tmp-answer-check
+网络：只用 127.0.0.1 随机端口环回，无任何外部请求
+被测文件 src/web/app.js sha256=BBE645D730A6 mtime=2026-11-24 15:26:30 size=125832
+被测文件 src/web/styles.css sha256=7967232F428F mtime=2026-11-24 15:26:43 size=16761
+被测文件 src/app/equation_steps.py sha256=7F547418762B mtime=2026-11-24 15:24:04 size=17379
+被测文件 src/app/demo_answers.py sha256=17525F89B107 mtime=2026-11-24 14:38:45 size=26275
+被测文件 src/app/answer_check.py sha256=F97F1A5DDCE3 mtime=2026-11-24 13:57:24 size=26918
+被测文件 src/app/stats.py sha256=7844D2A7363D mtime=2026-11-24 13:49:11 size=11174
+被测文件 src/app/api.py sha256=E5D7532F0CD8 mtime=2026-11-24 13:50:02 size=84010
+
+== 1. 确定位：5 种 status（correct / first_bad / missing_steps / missing / out_of_scope）+ 正确作答不标错 + 只有答案不猜行 ==
+PASS 1.1 案例A status=first_bad
+PASS 1.2 案例A first_bad_index=1（指向 3x-2=12）
+PASS 1.3 案例A underline={start:2,end:4}，hint_text='-2' 逐字取自该行
+PASS 1.4 案例A contrast.expected 含 3x-6
+PASS 1.5 案例A 对照句=单括号模板（原文用语不冒充学生写法）
+PASS 1.6 案例A reason_note 固定句
+PASS 1.7 案例A 只有 bad 行被标记
+PASS 1.8 案例A lines 逐行保留原文
+PASS 1.9 案例A source=rule
+PASS 1.10 正确作答 status=correct 且 first_bad_index=None
+PASS 1.11 正确作答不标错：没有任何 bad 行、没有 hint_text
+PASS 1.12 只有答案 status=missing_steps 且 first_bad_index=None（不猜行）
+PASS 1.13 只有答案 不标错、manual_note 提示缺少步骤
+PASS 1.14 缺测 status=missing、source=none、不标错
+PASS 1.15 缺测 reason_note 说明缺测且不猜原因
+PASS 1.16 超范围 status=out_of_scope、manual_note=已转人工
+PASS 1.17 超范围 原步骤照常完整显示、不标错
+PASS 1.18 全角/数学减号能吃下：仍定位到第 2 行，hint 逐字=「－2」（规范化 -2）
+PASS 1.19 3*(x-2) 与 3(x-2) 同解：status=correct
+PASS 1.20 案例B first_bad_text 逐字出现在对照句里（§2.1 第 1 条）
+PASS 1.21 案例B contrast.actual == first_bad_text（不拿化简式冒充学生原文，§2.1 第 2 条）
+PASS 1.22 案例B 对照句两端都是原文行
+PASS 1.23 定位返回不含「为什么」式推断用词（案例A/B/正确/缺测）
+PASS 1.24 案例D 负系数：first_bad_index=1、hint='-6' 逐字取自该行
+PASS 1.25 案例D 对照句保留括号外系数的负号（括号外的 -2 也要乘以 -3）
+PASS 1.26 案例D contrast.actual 与 hint 同形态（都是 -6）
+PASS 1.27 status 只能取契约 §2 的 5 个值之一
+PASS 1.28 source 只有 rule / none 两个取值
+PASS 1.29 status→source 映射符合契约（first_bad/correct/missing_steps→rule，missing/out_of_scope→none）
+PASS 1.30 R-07：四种减号 hint_text == contrast.actual == 原文切片（逐字符相同）
+
+== 2. 案例A 的三项具体断言（走接口）+ 预置候选单一来源 + 真实导入必须走 rule ==
+PASS 2.1 合成演示 seed 成功且写入 4 份作答
+PASS 2.2 详情 locate.status=first_bad 且 source=preset（合成演示只给预置定位）
+PASS 2.3 first_bad_index 指向 3x-2=12 那一行
+PASS 2.4 hint_text 逐字出现在该行原文里
+PASS 2.5 underline 精确覆盖 -2
+PASS 2.6 contrast.expected 含 3x-6
+PASS 2.7 详情返回不含任何「为什么」式推断（locate+judgement）
+PASS 2.8 详情标合成演示数据
+PASS 2.9 候选唯一来源：接口 candidates == demo_answers.preset_causes(同题)
+PASS 2.10 候选不超过 3 条且每条带 支持/削弱/待补
+PASS 2.11 causes_source=preset 且 causes_note 说明本轮未接已审错因库
+PASS 2.12 案例A 默认问句用预置那条
+PASS 2.13 真实导入作答 locate.source=rule（不得出现 preset）
+PASS 2.14 真实导入与预置同题同步骤：定位四项一致（说明预置没被冒充）
+PASS 2.15 真实导入 data_source=imported / 真实导入
+PASS 2.16 真实导入仍拿同一份预置候选（候选是预置库、定位是规则，二者分离）
+PASS 2.17 demo_answers 不可用时 candidates_for 退化为 []、不抛异常、说明用兜底句
+
+== 3. 确定性：同进程两次一致 + 跨进程一致 ==
+PASS 3.1 同进程两次调用完全一致
+PASS 3.2 子进程运行成功（退出码 0）
+PASS 3.3 跨进程结果与本地一致（含 status / first_bad_index / hint / contrast）
+
+== 4. 两轴独立：progress=checked 与 cause_state=undecided 同时成立；关掉重开库后仍然成立 ==
+PASS 4.1 保存前两轴都是待：pending / undecided
+PASS 4.2 主按钮保存成功（200 ok）
+PASS 4.3 progress=checked 与 cause_state=undecided 同时成立
+PASS 4.4 两个标签分开给：progress_label=已核对 / cause_label=原因待判断
+PASS 4.5 回执 status_line=「已核对 · 原因待判断」
+PASS 4.6 库里两条轴是两列、各自独立取值
+PASS 4.7 关闭并重开数据目录后，直接读库仍是 checked / undecided
+PASS 4.8 重开后详情仍显示「已核对 · 原因待判断」
+
+== 5. 队列：待核对数与「查看下一份」同一队列；乱序核对；保存后仍能找回；最后一份收尾 ==
+PASS 5.1 三份待核对：待核对数=3，与队列 total 一致
+PASS 5.2 「查看下一份」与总览 next 同一队列（第 1 份 = 队列第 1/3）
+PASS 5.3 先保存中间那份：next 指向 id 最小的待核对项（第 1 份）
+PASS 5.4 中间那份保存后 remaining=2、is_last=false、total 把自己算回来=3
+PASS 5.5 总览待核对数同步变 2，且 next 与「查看下一份」仍是同一队列
+PASS 5.6 已保存那份退出队列但仍按原位置显示第 2/3（不是第 1/2）
+PASS 5.7 再保存第 1 份：next 指向第 3 份
+PASS 5.8 保存最后一份：next_answer_id=null 且 is_last=true、remaining=0
+PASS 5.9 全部保存后 state=all_checked、pending=0、next=null
+PASS 5.10 保存后退出队列，但 check/records 仍能找回三条
+PASS 5.11 records 里每条 progress=checked、cause_state=undecided
+PASS 5.12 cause_state=all 也给出同样三条
+
+== 6. 改判：旧原因进 cause_history，当前结论只显示新原因；decided 必须带编码与说明 ==
+PASS 6.1 采纳第一条：cause_state=decided 且 cause_code 有值
+PASS 6.2 当前结论显示新原因说明
+PASS 6.3 改判后 cause_history 长度 +1，装的是旧原因
+PASS 6.4 当前结论只显示新原因（cause_code / cause_label_text 都是新的）
+PASS 6.5 改判不新增重复行：这一份仍然只有 1 条 check
+PASS 6.6 记录列表里也只显示新原因
+PASS 6.7 decided 但缺 cause_code/label → 400 cause_required 且不写库
+
+== 7. 缺测/正确/只有答案：点保存不产生错题、不计 original_errors、cause_state 强制回 undecided ==
+PASS 7.1 正确/只有答案/缺测 三份都能保存处理进度，但原因被强制回 undecided
+PASS 7.2 真的错步那份保存成功
+说明（R-10）：7.3 属不变量（核对链路不写 mistakes）；该口径的证据由 7.4 / 7.7 承担。
+PASS 7.3 点保存没有生成任何错题（mistakes 表仍为 0；不变量，证据见 7.4/7.7）
+PASS 7.4 original_errors 只数错步那一份（=1），缺测与正确不计入
+PASS 7.5 cause_decided=0：三份被强制待判断，只有错步那份手动保存也是 undecided
+PASS 7.6 checked=4 / pending=0 / missing=1
+PASS 7.7 四行 check 的 cause_state 全是 undecided，locate_status 各自如实
+
+== 8. 版本失效：改 student_steps + 更新 fingerprint 模拟重导 → 旧 check 退出队列与统计、stale=true、回待核对 ==
+PASS 8.1 重导前：checked=1 / pending=1
+PASS 8.2 造数自检：新 fingerprint 与旧的不同
+PASS 8.3 stale=true 且旧结论不再作为当前结论（progress=pending、saved_at 空）
+PASS 8.4 旧 check 退出队列：pending 回到 2、next 回到这一份
+PASS 8.5 旧 check 退出统计：checked=0 / pending=2 / original_errors=0
+PASS 8.6 记录找回里也不列旧版本 check
+PASS 8.7 历史仍保留：库里那条旧 check 没被删
+PASS 8.8 断言非恒真自检：pending 重导前=1、重导后=2（同一表达式变了）
+
+== 9. 保存失败：expected_version 不匹配→409 version_conflict；注入异常→500 save_failed；两者都不写库 ==
+PASS 9.1 版本不一致 → 409 version_conflict
+PASS 9.2 409 时库无新增行
+PASS 9.3 注入异常 → 500 save_failed
+PASS 9.4 500 时库无新增行（半条记录都不留）
+PASS 9.5 500 的错误说明面向老师（提到「没有写入」「重试」）
+PASS 9.6 故障移除后同一请求保存成功（说明是注入而不是永久坏）
+PASS 9.7 跨班级读他人作答 → 404 not_found（班级归属校验）
+
+== 10. 统计口径：10 条造数（6 对 / 2 错 / 1 缺测 / 1 待核对）逐项复算 ==
+人工复算：应交10 = 6对+2错+1缺测+1未核对；有效9 = 10-1缺测；已核对9；待核对1；原题错误2（只有 first_bad 计数）；原因已判断1（仅 bad0 采纳）
+PASS 10.1 GET /api/classes/{id} 的 answer_check 块七项与人工复算一致
+PASS 10.2 GET /api/classes/{id}/stats 同一口径同一数字
+PASS 10.3 basis 说明两套口径不同
+PASS 10.4 统计批次数=10
+PASS 10.5 断言非恒真自检：直接数作答=10，而 checked=9（两个数字不同，说明不是同一个计数）
+
+== 11. 追问：answer_text 为空不写记录；有回答则写入并关联 answer_id + answer_version ==
+PASS 11.1 answer_text 全是空白 → 不写追问记录
+PASS 11.2 请求里没有 followup 字段（相当于「暂时跳过」）→ 不写追问记录
+PASS 11.3 有回答 → 写入 1 条追问记录
+PASS 11.4 追问挂到 answer_id + answer_version（当前版本）
+PASS 11.5 追问关联本次 check，原话逐字保存
+PASS 11.6 预置问句记 source=preset
+PASS 11.7 同一问句同一原话重复保存不重复插入（§3.7 第 5 条）
+PASS 11.8 老师自己写的问句 → source=teacher
+PASS 11.9 详情 followup.recorded=true 且回显最新原话
+
+== 12. 断言非恒真：把实现反向改错后，同一断言必须失败（4 个变异体） ==
+PASS 12.1 变异体1 补丁命中唯一位置
+PASS 12.2 变异体1 让 hint_text 变空 → 第 1.3/2.4 条断言不再成立
+PASS 12.3 对照：真实实现 hint_text 非空（同一断言在原实现上成立）
+PASS 12.4 变异体2 补丁命中唯一位置
+PASS 12.5 变异体2 让案例A 变成 correct → 第 1.1/1.2/2.2 条断言不再成立
+PASS 12.6 变异体3 补丁命中唯一位置
+PASS 12.7 变异体3 让「正确/只有答案/缺测强制待判断」失效 → 第 7.1 条断言不再成立
+PASS 12.8 对照：真实实现三种情形都强制待判断
+PASS 12.9 变异体4 补丁命中唯一位置
+PASS 12.10 变异体4 让「已核对数」恒 0 → 队列待核对数/状态断言不再成立
+PASS 12.11 对照：真实实现在同一份库上是 [0, 3, all_checked]（已全部核对）
+
+== 13. 防漂移不变式：demo_answers 预置 locate 与 equation_steps.locate 逐字段相等 ==
+PASS 13.1 demo build() 里带 locate 的作答都被复核到（至少 4 份）
+PASS 13.2 预置 locate 与规则引擎逐字段一致（4 份）
+PASS 13.3 案例A：预置与规则除了 source 之外完全一致
+
+== 15. 合成演示数据：seed → 再 seed（幂等）→ reset；真实导入一律不动（R-05） ==
+PASS 15.1 先造一条真实导入作答并保存判断（用于验证 reset 不动它）
+PASS 15.2 首次 seed 写入 4 份合成作答
+PASS 15.3 再次 seed 幂等：新增 0、跳过已存在 4、总数仍 5
+PASS 15.4 reset 删除 4 份合成作答、kept.imported_answers=1
+PASS 15.5 reset 后 source='合成演示' 归零，只剩真实导入那一条
+PASS 15.6 reset 不动真实作答的判断（check 仍在、详情仍显示已核对）
+
+== 14. 三条既有回归线（如实记录，含已知失败） ==
+回归 verify_answers_150.py：退出码 0，用时 1.0s，合计 60 项，通过 60，失败 0
+PASS 14.1 verify_answers_150.py 合计 60 项、通过 60、失败 0（无失败）
+回归 verify_followup_180.py：退出码 0，用时 3.7s，合计 126 项，通过 126，失败 0
+PASS 14.2 verify_followup_180.py 合计 126 项、通过 126、失败 0（无失败）
+回归 verify_review_160.py：退出码 1，用时 3.8s，合计 135 项，通过 134，失败 1
+PASS 14.3 verify_review_160.py 合计 135 项、通过 134、失败 1（已知失败：FAIL 1.8.0 版本号 1.8.1）
+PASS 14.4 verify_review_160.py 的唯一失败是已知的历史版本号断言
+
+合计 137 项，通过 137，失败 0（另：未验证 0 项）
+退出码：0
