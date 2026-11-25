@@ -337,17 +337,83 @@ def _locate(answer):
     )
 
 
-def candidates_for(answer):
-    """候选错因：**只有**与当前演示内容五项全匹配的合成演示记录才有候选。
+def candidates_for(answer, db=None):
+    """候选错因：合成演示的预置候选 + **第一轮遗留的 `answer_reviews` 候选（只读桥）**。
 
-    真实作答一律返回空列表 —— 已审错因库属于 B2，本轮没有库可查；不许拿演示预置条目
-    顶替（那会把演示学生的原话当成本条作答的证据）。候选由 `_demo_record` 同一道闸门
-    放行，与预置定位同源同闸。
+    真实作答仍然没有「已审错因库」（那是 B2），但升级老师在第一轮做过的分析记录不该白丢：
+    `answer_reviews.causes` 里就是当时的候选错因与教师确认结果，这里把它们**只读**读出来，
+    标 `source="answer_review"`（演示预置标 `source="preset"`），并带上当时的 status。
+
+    只 SELECT：本函数不写 `answer_reviews`（R1-T22 第 3 条），也不允许拿演示条目顶替真实作答。
     """
+    rows = []
     record = _demo_record(answer)
-    if not record:
+    if record:
+        # 演示预置的行**保持原样**（既有套件逐字比对 preset_causes，不能加字段）；
+        # 它的来源由详情顶层的 causes_source / candidate_sources 标明为 preset。
+        rows.extend(_candidate_rows(record))
+    rows.extend(_review_candidates(db, answer))
+    return rows[:MAX_CANDIDATES]
+
+
+def _review_candidates(db, answer):
+    """第一轮 `answer_reviews` 里的候选错因（只读）。按 answer_id 精确关联，再按 class/student 兜底核验。"""
+    if db is None or not answer:
         return []
-    return _candidate_rows(record)
+    tables = {row["name"] for row in db.query(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    if "answer_reviews" not in tables:
+        return []
+    records = db.query(
+        "SELECT * FROM answer_reviews WHERE answer_id=? AND class_id=? AND student_id=?"
+        " ORDER BY id DESC",
+        (answer["id"], answer["class_id"], answer["student_id"]),
+    )
+    rows = []
+    for record in records:
+        try:
+            causes = json.loads(record.get("causes") or "[]")
+        except (TypeError, ValueError):
+            causes = []
+        if not isinstance(causes, list):
+            continue
+        for item in causes:
+            if not isinstance(item, dict):
+                continue
+            label = (item.get("label") or item.get("cause_label") or "").strip()
+            code = (item.get("code") or item.get("cause_code") or "").strip()
+            if not label and not code:
+                continue
+            rows.append({
+                "code": code,
+                "label": label or code,
+                "evidence": [text for text in (item.get("evidence") or ())
+                             if text and text in (answer.get("student_steps") or "")],
+                "source": "answer_review",
+                "review_status": record.get("status") or "",
+                "review_note": record.get("note") or "",
+                "recorded_at": record.get("created_at") or "",
+                "uncertain": bool(record.get("uncertain")),
+            })
+    return rows
+
+
+def candidate_sources(candidates):
+    """每个候选的来源标记：演示预置行没有 source 字段 → preset；旧数据行自带 answer_review。"""
+    marks = []
+    for row in candidates or ():
+        mark = (row.get("source") or "preset") if isinstance(row, dict) else "preset"
+        if mark not in marks:
+            marks.append(mark)
+    return marks
+
+
+def candidates_note(candidates):
+    """候选为空时的明确文案（不许用空数组糊弄，要求 1 的后半句）。"""
+    if candidates:
+        return ""
+    return ("暂无候选：这条作答在第一轮「作答分析」里没有留下候选错因，"
+            "也不是合成演示数据；请按规则定位与自己的判断填写原因。")
 
 
 def _candidate_rows(record):
@@ -1147,6 +1213,71 @@ def _review_reason_text(reason):
     return reason
 
 
+def _legacy_followups(db, answer):
+    """只读桥（R1-T22 S2）：把第一轮「原版追问」表里的记录读出来给作答核对的追问卡。
+
+    只 SELECT，绝不写 ollowups / ollowup_updates（同一张库、另一套表，谁写谁负责）。
+    关联口径（从强到弱，逐条标在 link 上，页面据此说明「凭什么认为这条属于这份作答」）：
+      mistake → ollowups.mistake_id 指向这份作答的错题；
+      review  → ollowups.review_id 指向这份作答的分析记录；
+      problem → 原版记录的 problem 与这份作答的单元/题号一致。
+    """
+    tables = {row["name"] for row in db.query(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    if "followups" not in tables:
+        return {"items": [], "note": "暂无原版追问记录（这个库里没有原版追问表）"}
+    mistake = db.query_one("SELECT id FROM mistakes WHERE answer_id=?", (answer["id"],))
+    review_ids = {row["id"] for row in db.query(
+        "SELECT id FROM answer_reviews WHERE answer_id=?", (answer["id"],))}
+    rows = db.query(
+        "SELECT * FROM followups WHERE class_id=? AND student_id=? ORDER BY id DESC",
+        (answer["class_id"], answer["student_id"]),
+    )
+    unit = (answer.get("unit") or "").strip()
+    no = (answer.get("question_no") or "").strip()
+    items = []
+    for row in rows:
+        link = ""
+        if mistake and row.get("mistake_id") == mistake["id"]:
+            link = "mistake"
+        elif row.get("review_id") in review_ids:
+            link = "review"
+        elif (row.get("problem") or "").strip() and (row.get("problem") or "").strip() in (unit, no):
+            link = "problem"
+        if not link:
+            continue
+        updates = []
+        if "followup_updates" in tables:
+            for upd in db.query(
+                "SELECT * FROM followup_updates WHERE followup_id=? ORDER BY id", (row["id"],)
+            ):
+                try:
+                    causes = json.loads(upd.get("causes") or "[]")
+                except (TypeError, ValueError):
+                    causes = []
+                updates.append({
+                    "causes": causes,
+                    "note": upd.get("note") or "",
+                    "status": upd.get("status") or "",
+                    "created_at": upd.get("created_at") or "",
+                })
+        items.append({
+            "id": row["id"],
+            "question": row.get("question") or "",
+            "answer_text": row.get("answer") or "",
+            "asked_at": row.get("asked_at") or "",
+            "answered_at": row.get("answered_at") or "",
+            "status": row.get("status") or "",
+            "problem": row.get("problem") or "",
+            "link": link,
+            "source": "原版追问记录",
+            "source_label": "原版追问记录（第一轮 · 只读）",
+            "updates": updates,
+        })
+    note = "" if items else "暂无原版追问记录：第一轮追问模块里没有与这份作答对得上的记录。"
+    return {"items": items[:10], "note": note}
+
+
 def _followup_state(db, answer, locate=None, check=None):
     """追问卡的全部口径：建议问句（无依据=暂无）、已记录的原话、失效与待复核、历史。
 
@@ -1154,6 +1285,7 @@ def _followup_state(db, answer, locate=None, check=None):
     证据一变，旧确认就不再生效（R1-06 第 5 条），而不是继续显示成已记录。
     """
     suggestion = followup_suggestion(answer, locate)
+    legacy = _legacy_followups(db, answer)
     empty = {
         "question": suggestion["question"],
         "available": suggestion["available"],
@@ -1172,6 +1304,9 @@ def _followup_state(db, answer, locate=None, check=None):
         "needs_review": False,
         "review_note": "",
         "history": [],
+        # R1-T22：原版追问记录（只读桥）与 answer_followups 并列展示，各自标来源。
+        "legacy_items": legacy["items"],
+        "legacy_note": legacy["note"],
     }
     if not table_ready(db):
         return empty
@@ -1235,8 +1370,7 @@ def detail(db, class_row, answer_id):
     answer = _answer(db, class_row["id"], answer_id)
     locate = _locate_view(_locate(answer))
     check = current_check(db, answer)
-    record = _demo_record(answer)
-    candidates = _candidate_rows(record)
+    candidates = candidates_for(answer, db)
     retracted = _retracted_of(db, answer) if check is None else None
 
     return {
@@ -1247,6 +1381,8 @@ def detail(db, class_row, answer_id):
         "headline": locate_headline(locate),
         # 候选与证据的适用范围（要求 5）：只有五项全匹配的合成演示记录才可能是 preset。
         "candidates": candidates,
+        "candidates_note": candidates_note(candidates),
+        "candidate_sources": candidate_sources(candidates),
         "causes_source": CAUSES_PRESET if candidates else CAUSES_NO_LIBRARY,
         "causes_scope": causes_scope(answer),
         "causes_note": causes_note(answer),
@@ -2095,6 +2231,8 @@ def _save_response(db, class_row, answer, check, adjustments, action, extra=None
         "headline": locate_headline(view),
         "applicability": _applicability(answer, view),
         "candidates": candidates,
+        "candidates_note": candidates_note(candidates),
+        "candidate_sources": candidate_sources(candidates),
         "causes_source": CAUSES_PRESET if candidates else CAUSES_NO_LIBRARY,
         "causes_scope": causes_scope(answer),
         "causes_note": causes_note(answer),
