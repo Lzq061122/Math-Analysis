@@ -1,4 +1,4 @@
-时间：2026-11-25T14:20:50+08:00
+时间：2026-11-25T18:08:43+08:00
 命令：python.exe tests\verify_core_150.py
 目录：E:\Agent\Math-Analysis-r1\数智伴学
 环境：Python 3.14.7 / Windows-11-10.0.26300-SP0

@@ -1305,6 +1305,84 @@ def stage_manual_cause(cdp, ctx):
     check("13.14.4 人工判断截图已保存且尺寸正确", size == VIEWPORT, "%s %s" % (path, size))
 
 
+def stage_basis_required(cdp, ctx):
+    """T11：规则判不了的作答（out_of_scope）人工改判必须先写判断依据。
+
+    真正的闸门在服务端（400 basis_required，见 150 套件 11b）；这里证界面把「必填」说清楚、
+    同一页对应的保存真的会被拒、且 first_bad 页不受打扰（A5 快路径不显示必填）。
+    """
+    section("13.16 T11 依据必填：out_of_scope 页提示必填，first_bad 页保持可选")
+
+    status, created = ctx["http"].post("/api/classes", {"name": "七年级 4 班（依据必填取证）"})
+    class4 = created.get("id") if status == 200 else None
+    check("13.16.0 造一个取证班级（测试夹具，不是产品路径）", bool(class4), created)
+    if not class4:
+        return
+    scope_id = insert_scope_answer(class4)
+    detail = ctx["http"].get("/api/classes/%d/check/answers/%d" % (class4, scope_id))[1]
+    check("13.16.0b 造数自检：这份作答 applicability=optional（规则判不了）",
+          bool(scope_id) and detail.get("applicability") == "optional"
+          and (detail.get("locate") or {}).get("status") == "out_of_scope",
+          (scope_id, detail.get("applicability"), (detail.get("locate") or {}).get("status")))
+
+    cdp.navigate("http://127.0.0.1:%d/#/class/%d/check/%d" % (PORT, class4, scope_id))
+    cdp.wait_selector(".judge-card", 25)
+    page = cdp.evaluate(
+        "(() => { const card = document.querySelector('.judge-card');"
+        " const labels = Array.from(card.querySelectorAll('.lab')).map((el) => el.textContent.trim());"
+        " const hint = card.querySelector('.basis-hint');"
+        " const area = card.querySelector('textarea[placeholder]');"
+        " return {labels: labels, hint: hint ? hint.textContent.trim() : '',"
+        "         placeholder: area ? area.getAttribute('placeholder') : '',"
+        "         scrollWidth: document.documentElement.scrollWidth,"
+        "         innerWidth: window.innerWidth}; })()")
+    check("13.16.1 out_of_scope 页：「判断依据」标签写明必填 + 有一句解释提示",
+          any("必填" in label for label in page["labels"])
+          and "basis_required" in (page["hint"] or "")
+          and "必填" in (page["placeholder"] or ""), page)
+    check("13.16.2 提示不改变布局约束（1366 宽无横向滚动）",
+          page["scrollWidth"] <= page["innerWidth"] == 1366,
+          (page["scrollWidth"], page["innerWidth"]))
+    status_bad, payload = ctx["http"].post(
+        "/api/classes/%d/check/answers/%d/save" % (class4, scope_id),
+        {"expected_version": (detail.get("answer") or {}).get("version", ""),
+         "observed_step": "", "first_bad_index": None,
+         "cause_state": "decided", "cause_label": "人工判断：不等式方向写反"})
+    check("13.16.3 同一页对应的保存真的被拒（400 basis_required，提示不是装饰）",
+          status_bad == 400 and (payload or {}).get("code") == "basis_required",
+          (status_bad, (payload or {}).get("code")))
+
+    # 记成「无需判断」之后不该再要求依据（老师并没有形成原因判断）
+    status_na, payload_na = ctx["http"].post(
+        "/api/classes/%d/check/answers/%d/save" % (class4, scope_id),
+        {"expected_version": (detail.get("answer") or {}).get("version", ""),
+         "observed_step": "", "first_bad_index": None, "cause_state": "undecided"})
+    cdp.navigate("http://127.0.0.1:%d/#/class/%d/check/%d" % (PORT, class4, scope_id))
+    cdp.wait_selector(".judge-card", 25)
+    after_na = cdp.evaluate(
+        "(() => { const card = document.querySelector('.judge-card');"
+        " const labels = Array.from(card.querySelectorAll('.lab')).map((el) => el.textContent.trim());"
+        " return {hint: !!card.querySelector('.basis-hint'), labels: labels}; })()")
+    check("13.16.4 记成「无需判断」后不再要求依据（提示消失，标签回到可选）",
+          status_na == 200
+          and ((payload_na.get("judgement") or {}).get("cause_state") == "not_applicable")
+          and after_na["hint"] is False
+          and any("可选" in label for label in after_na["labels"]),
+          {"save": status_na, "judgement": (payload_na.get("judgement") or {}).get("cause_state"),
+           "page": after_na})
+
+    long_id = ctx["long_answer"]
+    cdp.navigate("http://127.0.0.1:%d/#/class/%d/check/%d" % (PORT, ctx["class2_id"], long_id))
+    cdp.wait_selector(".judge-card", 25)
+    bad_page = cdp.evaluate(
+        "(() => { const card = document.querySelector('.judge-card');"
+        " const labels = Array.from(card.querySelectorAll('.lab')).map((el) => el.textContent.trim());"
+        " return {labels: labels, hint: !!card.querySelector('.basis-hint')}; })()")
+    check("13.16.5 first_bad 页不显示必填（A5 快路径保持可选）",
+          bad_page["hint"] is False
+          and any("可选" in label for label in bad_page["labels"]), bad_page)
+
+
 def stage_other_status(cdp, ctx):
     section("13.13 A2 补充：正确作答不标错；只有答案显示「缺少步骤」且不猜行")
 
@@ -1758,6 +1836,53 @@ def insert_long_answer(class_id, lines=15):
         conn.close()
 
 
+def insert_scope_answer(class_id):
+    """T11：直接往库里放一份「规则判不了」的作答（1 时不等式），用于依据必填提示取证。
+
+    真实导入接口本轮不造这种数据；这里只为「out_of_scope 页面的必填提示」取证，
+    与 insert_long_answer 同一套写法（自己算内容指纹，保证保存时版本一致）。
+    """
+    import hashlib
+    from datetime import datetime
+
+    conn = sqlite3.connect(DB_PATH, timeout=15)
+    conn.row_factory = sqlite3.Row
+    try:
+        stamp = datetime.now().astimezone().isoformat(timespec="seconds")
+        with conn:
+            cur = conn.execute(
+                "INSERT INTO students(class_id, name, code, note, active, created_at, updated_at)"
+                " VALUES (?,?,?,?,1,?,?)", (class_id, "学生己", "", "", stamp, stamp))
+            student_id = cur.lastrowid
+        steps = "2x+1>3\n2x>2\nx<1"
+        payload = {
+            "student_id": int(student_id),
+            "question_no": "10",
+            "question_text": "2x+1>3",
+            "unit": "不等式",
+            "standard_solution": "x>1",
+            "student_steps": steps,
+            "occurred_on": "2026-11-24",
+            "missing": 0,
+            "missing_reason": "",
+        }
+        fingerprint = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True)
+                                     .encode("utf-8")).hexdigest()
+        with conn:
+            cur = conn.execute(
+                "INSERT INTO answers(class_id, student_id, record_key, batch, student_name,"
+                " student_code, question_no, question_text, unit, standard_solution, student_steps,"
+                " source, occurred_on, missing, missing_reason, fingerprint, imported_at,"
+                " created_at, updated_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (class_id, student_id, "SCOPE-1", "核验范围作业", "学生己", "", "10",
+                 "2x+1>3", "不等式", "x>1", steps, "真实导入",
+                 "2026-11-24", 0, "", fingerprint, stamp, stamp, stamp))
+            return cur.lastrowid
+    finally:
+        conn.close()
+
+
 def main():
     reset_work()
     os.makedirs(SHOTS, exist_ok=True)
@@ -1870,7 +1995,8 @@ def main():
                             ("R1-02 人工判断", lambda: stage_manual_cause(cdp, ctx)),
                             ("T11 聚焦复验", lambda: stage_reverify(cdp, ctx)),
                             ("A2 其余状态", lambda: stage_other_status(cdp, ctx)),
-                            ("旧五 tab 回归", lambda: stage_old_tabs(cdp, ctx))]:
+                            ("旧五 tab 回归", lambda: stage_old_tabs(cdp, ctx)),
+                            ("T11 依据必填", lambda: stage_basis_required(cdp, ctx))]:
             try:
                 stage()
             except Exception:

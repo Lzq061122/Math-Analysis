@@ -1,13 +1,13 @@
 数智伴学｜作答核对网页：浏览器端到端（Edge headless + CDP，1366×768）
-时间：2026-11-25T16:20:51+08:00
+时间：2026-11-25T18:11:18+08:00
 命令：python.exe tests\verify_answer_check_ui.py
 目录：E:\Agent\Math-Analysis-r1\数智伴学
 环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
-被测文件 src/web/app.js sha256=0461E0B8A2D5 mtime=2026-11-25 16:17:22 size=139689
+被测文件 src/web/app.js sha256=1003A5F9039A mtime=2026-11-25 17:42:58 size=140752
 被测文件 src/web/styles.css sha256=9D1454513298 mtime=2026-11-25 15:04:47 size=17331
 被测文件 src/app/equation_steps.py sha256=11D90941D317 mtime=2026-11-25 14:08:53 size=36183
 被测文件 src/app/demo_answers.py sha256=E9B96DDC2F50 mtime=2026-11-25 14:08:15 size=37655
-被测文件 src/app/answer_check.py sha256=4044A905E3E3 mtime=2026-11-25 16:20:14 size=105009
+被测文件 src/app/answer_check.py sha256=B51C777452C3 mtime=2026-11-25 17:13:54 size=106009
 服务：http://127.0.0.1:8899（数据目录 E:\Agent\Math-Analysis-r1\数智伴学\tests\.tmp-e2e-web）
 截图目录：E:\Agent\Math-Analysis-r1\数智伴学\docs\screenshots
 PASS 13.0 服务在 127.0.0.1:8899 上启动（演示数据已种）
@@ -247,6 +247,15 @@ PASS 13.12.3 旧 tab mistakes 正常渲染（关键词 全部/已确认 都在�
 PASS 13.12.4 旧 tab stats 正常渲染（关键词 统计 都在，console 无未捕获异常）
 PASS 13.12.5 旧 tab advice 正常渲染（关键词 建议 都在，console 无未捕获异常）
 
-合计 184 项，通过 184，失败 0（另：未验证 0 项；已知缺口 0 项，见上面「未通过（缺口）」行）
+== 13.16 T11 依据必填：out_of_scope 页提示必填，first_bad 页保持可选 ==
+PASS 13.16.0 造一个取证班级（测试夹具，不是产品路径）
+PASS 13.16.0b 造数自检：这份作答 applicability=optional（规则判不了）
+PASS 13.16.1 out_of_scope 页：「判断依据」标签写明必填 + 有一句解释提示
+PASS 13.16.2 提示不改变布局约束（1366 宽无横向滚动）
+PASS 13.16.3 同一页对应的保存真的被拒（400 basis_required，提示不是装饰）
+PASS 13.16.4 记成「无需判断」后不再要求依据（提示消失，标签回到可选）
+PASS 13.16.5 first_bad 页不显示必填（A5 快路径保持可选）
+
+合计 191 项，通过 191，失败 0（另：未验证 0 项；已知缺口 0 项，见上面「未通过（缺口）」行）
 截图清单：ui-a1-all-checked-1366x768.png, ui-a1-empty-primary-1366x768.png, ui-a1-no-answers-1366x768.png, ui-a2-missing-steps-1366x768.png, ui-a5-adopt-receipt-1366x768.png, ui-a5-receipt-1366x768.png, ui-a6-first-bad-1366x768.png, ui-a6-long-answer-expanded-1366x768.png, ui-a6-receipt-first-screen-1366x768.png, ui-a7-demo-reset-1366x768.png, ui-a7-demo-seeded-1366x768.png, ui-fix-empty.png, ui-fix-receipt.png, ui-r1-02-manual-cause-1366x768.png, ui-save-failed-500-1366x768.png, walkthrough-0-classlist.png, walkthrough-1.png, walkthrough-2.png, walkthrough-3.png, walkthrough-4.png
 退出码：0

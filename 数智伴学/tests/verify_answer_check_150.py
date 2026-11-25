@@ -72,6 +72,12 @@ CASE_OK = {
     "standard": "2(x+3)=10；2x+6=10；2x=4；x=2",
     "steps": "2(x+3)=10\n2x+6=10\n2x=4\nx=2",
 }
+# T11 用：规则判不了的作答（不等式超出本轮核验范围，applicability=optional）。
+CASE_OOS = {
+    "question": "2x+1>3",
+    "standard": "x>1",
+    "steps": "2x+1>3\n2x>2\nx>1",
+}
 
 # 「为什么」式推断的禁用词：定位结果、判断与回执里都不许出现。
 INFERENCE_WORDS = ("可能", "因为", "大概", "也许", "似乎", "估计", "应该是", "判断为", "推测", "学生想")
@@ -299,8 +305,11 @@ def save(env, class_id, answer_id, body):
 
 
 def save_body(data, *, cause_state="undecided", cause_code="", cause_label="",
-              followup=None, observed=None, note="", index=None):
-    """照契约 §3.3 组请求体；没给的字段按「老师什么也不改直接点主按钮」取默认值。"""
+              followup=None, observed=None, note="", index=None, basis=None):
+    """照契约 §3.3 组请求体；没给的字段按「老师什么也不改直接点主按钮」取默认值。
+
+    `basis`（判断依据）默认不出现——T11 的断言要看「没填依据」这一档，所以只有显式给了才写进请求体。
+    """
     locate = data.get("locate") or {}
     body = {
         "expected_version": (data.get("answer") or {}).get("version", ""),
@@ -313,6 +322,8 @@ def save_body(data, *, cause_state="undecided", cause_code="", cause_label="",
     }
     if followup is not None:
         body["followup"] = followup
+    if basis is not None:
+        body["basis_note"] = basis
     return body
 
 
@@ -1183,8 +1194,86 @@ def _run_mutant(src_root, code):
         proc.stderr.decode("utf-8", "replace")[-300:]
 
 
-def group_12_mutants(envs, queue_env, queue_class_id):
-    section("12. 断言非恒真：把实现反向改错后，同一断言必须失败（4 个变异体）")
+def group_11b_basis_required(envs):
+    """T11：规则判不了的作答（applicability=optional），人工改判必须留判断依据。
+
+    依据（任务书 R1-02「证据不足的记录不得被直接确认为错误原因」「教师需补充足够证据后才能
+    形成对应判断」、船长裁定方案 A、契约 §3.3 规则 3 与 §3.10）：
+    - 只有 optional（out_of_scope）强制依据：这一档规则给不出错步，行里除了老师写的原因说明
+      什么都没有；first_bad 时 observed_step 默认已落错步原文，客观证据在行里，不强制。
+    - 闸门由 `_require_manual_evidence()` 承担（out_of_scope 上形成原因判断即记 verify_source=manual），
+      本轮不另写一套校验；这里验的是**行为**，不是实现细节。
+    """
+    section("11b. T11 依据必填：out_of_scope 改判必须有依据；first_bad 不强制；forbidden 仍拒")
+
+    env = Env("basis-required")
+    envs.append(env)
+    class_id = env.add_class("七年级 1 班")
+    student = env.add_student(class_id, "学生甲")
+    scope_id = env.add_answer(class_id, student, "OOS-1", CASE_OOS, question_no="1",
+                              student_name="学生甲")
+    bad_id = env.add_answer(class_id, student, "BAD-1", CASE_A, question_no="2",
+                            student_name="学生甲")
+    ok_id = env.add_answer(class_id, student, "OK-1", CASE_OK, question_no="3",
+                           student_name="学生甲")
+
+    scope_data = detail(env, class_id, scope_id)
+    check("11b.0 造数自检：这份作答 applicability=optional（规则判不了）",
+          scope_data["applicability"] == "optional"
+          and scope_data["locate"]["status"] == "out_of_scope",
+          (scope_data["applicability"], scope_data["locate"]["status"]))
+
+    before = env.checks_count()
+    status, payload = save(env, class_id, scope_id, save_body(
+        scope_data, cause_state="decided", cause_label="人工判断：不等式方向写反"))
+    check("11b.1 out_of_scope + decided + 无依据 → 400 basis_required",
+          status == 400 and payload.get("code") == "basis_required",
+          "%s %s" % (status, payload.get("code")))
+    check("11b.2 这一次一条都不写（answer_checks 行数不变）", env.checks_count() == before,
+          "%s vs %s" % (before, env.checks_count()))
+
+    status, payload = save(env, class_id, scope_id, save_body(
+        scope_data, cause_state="decided", cause_label="人工判断：不等式方向写反",
+        basis="作业本原图第 2 行是 2x>2，他把不等号方向写反成 x<1"))
+    j = payload.get("judgement") or {}
+    row = env.db.query_one("SELECT * FROM answer_checks WHERE answer_id=?", (scope_id,))
+    check("11b.3 out_of_scope + decided + 有依据 → 200，落库依据并记人工核验",
+          status == 200 and j.get("cause_source") == "teacher"
+          and row and row["basis_note"].startswith("作业本原图")
+          and row["verify_source"] == "manual",
+          jdump(row and {k: row[k] for k in ("basis_note", "verify_source", "cause_source")}))
+
+    bad_data = detail(env, class_id, bad_id)
+    status, payload = save(env, class_id, bad_id, save_body(
+        bad_data, cause_state="decided", cause_label="移项没变号"))
+    row = env.db.query_one("SELECT * FROM answer_checks WHERE answer_id=?", (bad_id,))
+    check("11b.4 first_bad + decided + 无依据 → 仍 200（A5 快路径不被卡）",
+          status == 200 and (payload.get("judgement") or {}).get("cause_state") == "decided"
+          and row and row["verify_source"] == "rule" and row["basis_note"] == "",
+          "%s %s %s" % (status, payload.get("code"), row and row["verify_source"]))
+
+    ok_data = detail(env, class_id, ok_id)
+    status, payload = save(env, class_id, ok_id, save_body(
+        ok_data, cause_state="decided", cause_label="错因", basis="依据"))
+    check("11b.5 forbidden（正确作答）+ decided → 仍 400 cause_not_applicable（回归）",
+          status == 400 and payload.get("code") == "cause_not_applicable",
+          "%s %s" % (status, payload.get("code")))
+
+    # 默认主按钮（不判原因）在 optional 上仍要能收口成「无需判断」，不能被依据闸门误伤
+    scope2 = env.add_answer(class_id, student, "OOS-2", CASE_OOS, question_no="4",
+                            student_name="学生甲")
+    data2 = detail(env, class_id, scope2)
+    status, payload = save(env, class_id, scope2, save_body(data2))
+    check("11b.6 out_of_scope 默认保存 → 200 且记「无需判断」（新闸门不误伤收口）",
+          status == 200
+          and (payload.get("judgement") or {}).get("cause_state") == "not_applicable",
+          "%s %s" % (status, (payload.get("judgement") or {}).get("cause_state")))
+    return env, class_id, scope2
+
+
+def group_12_mutants(envs, queue_env, queue_class_id, basis_env=None, basis_class_id=None,
+                     basis_answer_id=None):
+    section("12. 断言非恒真：把实现反向改错后，同一断言必须失败（5 个变异体）")
 
     base = os.path.join(WORK, "mutants")
 
@@ -1269,6 +1358,57 @@ def group_12_mutants(envs, queue_env, queue_class_id):
     check("12.11 对照：真实实现在同一份库上是 [0, 3, all_checked]（已全部核对）",
           real_ov["assignment"]["pending"] == 0 and real_ov["assignment"]["checked"] == 3
           and real_ov["state"] == "all_checked", jdump(real_ov["assignment"]))
+
+    # 变异体 5（T11 反向自证）：摘掉「人工改判必须有依据」的闸门 →
+    # 第 11b.1 条断言的同一调用必须从 400 basis_required 变成不报错。
+    root = _copy_app(os.path.join(base, "m5"))
+    patched = _patch(os.path.join(root, "app", "answer_check.py"),
+                     "    if not basis:", "    if False:")
+    check("12.12 变异体5（依据闸门）补丁命中唯一位置", patched)
+    code = ("import json,sys;sys.path.insert(0,%r);from app import answer_check as C;"
+            "print(json.dumps([C._require_manual_evidence({'verify_source':'manual'},"
+            "{'basis_note':''},False,None) or 'passed']))" % root)
+    rc, out, err = _run_mutant(root, code)
+    check("12.13 变异体5 摘掉依据闸门后同一调用不再报错 → 第 11b.1 条断言不再成立",
+          rc == 0 and out == '["passed"]', "%s %s" % (out, err))
+    real_guard = None
+    try:
+        C._require_manual_evidence({"verify_source": "manual"}, {"basis_note": ""}, False, None)
+    except C.AnswerCheckError as exc:
+        real_guard = (exc.status, exc.code)
+    check("12.14 对照：真实实现在同一调用上抛 basis_required（400）",
+          real_guard == (400, "basis_required"), real_guard)
+
+    # 变异体 5 的接口级对照：同一份 out_of_scope 作答，真实实现 400、变异体 200
+    if basis_env is not None:
+        data_dir = os.path.join(base, "m5data")
+        shutil.rmtree(data_dir, ignore_errors=True)
+        os.makedirs(data_dir)
+        src_conn = sqlite3.connect(os.path.join(basis_env.dir, "app.db"))
+        dst_conn = sqlite3.connect(os.path.join(data_dir, "app.db"))
+        with dst_conn:
+            src_conn.backup(dst_conn)
+        src_conn.close()
+        dst_conn.close()
+        code = (
+            "import json,sys;sys.path.insert(0,%r);"
+            "from app.db import Database;from app import answer_check as C;"
+            "db=Database(%r,create=False);"
+            "cls=db.query_one('SELECT * FROM classes WHERE id=?',(%d,));"
+            "ans=db.query_one('SELECT * FROM answers WHERE id=?',(%d,));"
+            "body={'expected_version':ans['fingerprint'],'observed_step':'',"
+            "'first_bad_index':None,'cause_state':'decided',"
+            "'cause_label':'人工判断：不等式方向写反'}\n"
+            "try:\n"
+            "    out=C.save(db,cls,1,%d,body)\n"
+            "    print(json.dumps(['ok',(out.get('judgement') or {}).get('cause_state')]))\n"
+            "except C.AnswerCheckError as exc:\n"
+            "    print(json.dumps(['err',exc.status,exc.code]))\n"
+        ) % (root, os.path.join(data_dir, "app.db"), basis_class_id, basis_answer_id,
+             basis_answer_id)
+        rc, out, err = _run_mutant(root, code)
+        check("12.15 变异体5 在接口层也不再拦（同一请求从 400 变 200 ok/not_applicable）",
+              rc == 0 and out.startswith('["ok"'), "%s %s" % (out, err))
 
 
 # --------------------------------------------------------------------------
@@ -1442,7 +1582,9 @@ def main():
         group_9_failures(envs)
         group_10_stats(envs)
         group_11_followup(envs)
-        group_12_mutants(envs, queue_env, queue_class)
+        # T11：依据必填（先跑，变异体 5 要拿它的库做接口级反向自证）
+        basis_env, basis_class, basis_answer = group_11b_basis_required(envs)
+        group_12_mutants(envs, queue_env, queue_class, basis_env, basis_class, basis_answer)
         group_13_demo_rule_invariant()
         group_15_demo_seed_reset(envs)
         group_14_regression()

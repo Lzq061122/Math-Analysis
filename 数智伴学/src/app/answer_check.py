@@ -389,7 +389,7 @@ def causes_note(answer=None):
 
 
 def _default_question(answer):
-    """兼容旧调用：等价于「这条作答的建议问句」，没有依据时是空串（不是写死的那句）。"""
+    """旧名字的兼容壳：等价于「这条作答的建议问句」，没有依据时是空串（不是写死的那句）。"""
     return followup_suggestion(answer)["question"]
 
 
@@ -1091,11 +1091,7 @@ def _followup_history(db, answer, current_snapshot):
     )
     items = []
     for row in rows:
-        snapshot = row.get("evidence_snapshot") or "{}"
-        try:
-            snapshot = json.loads(snapshot) if isinstance(snapshot, str) else dict(snapshot or {})
-        except (TypeError, ValueError):
-            snapshot = {}
+        snapshot = _load_snapshot(row.get("evidence_snapshot"))
         stale = bool(snapshot) and snapshot != current_snapshot
         items.append({
             "id": row["id"],
@@ -1111,6 +1107,25 @@ def _followup_history(db, answer, current_snapshot):
             "needs_review": bool(stale and not (row.get("invalidated_at") or "")),
         })
     return items
+
+
+def _load_snapshot(raw):
+    """读一行的 evidence_snapshot；坏数据/旧行一律当「没有快照」处理，不抛异常。"""
+    if isinstance(raw, dict):
+        return dict(raw)
+    try:
+        value = json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _review_reason_text(reason):
+    """把 `code：说明` 拆成给人看的说明（没有前缀就原样返回）。"""
+    for code in ("evidence_changed：", "conclusion_retracted：", "answer_updated："):
+        if reason.startswith(code):
+            return reason[len(code):]
+    return reason
 
 
 def _followup_state(db, answer, locate=None, check=None):
@@ -1159,21 +1174,14 @@ def _followup_state(db, answer, locate=None, check=None):
         return empty
     valid = next((row for row in rows if not (row.get("invalidated_at") or "")), None)
     latest = rows[0]
-    snapshot = {}
-    if valid:
-        try:
-            snapshot = json.loads(valid.get("evidence_snapshot") or "{}")
-        except (TypeError, ValueError):
-            snapshot = {}
-        if isinstance(snapshot, str):
-            snapshot = {}
+    snapshot = _load_snapshot(valid.get("evidence_snapshot")) if valid else {}
     stale = bool(valid) and bool(snapshot) and snapshot != current
+    needs_review = bool(stale) or (valid is None)
     reason = ""
-    needs_review = bool(stale and not (valid.get("invalidated_at") or "") or (not valid and rows))
     if stale:
         reason = "；".join(_evidence_reason(snapshot, current))
-    elif not valid:
-        reason = latest.get("invalidated_reason") or "这条追问已被失效"
+    elif valid is None:
+        reason = _review_reason_text(latest.get("invalidated_reason") or "") or "这条追问已被失效"
     source = (latest or {}).get("source") or ""
     state = {
         "question": suggestion["question"],
@@ -1337,7 +1345,7 @@ def followup_origin(question, answer, suggestion=None):
 
 
 def _followup_source(question, answer):
-    """兼容旧调用：只看来源值。"""
+    """旧名字的兼容壳：只返回来源值（写入规则见 `followup_origin`）。"""
     return followup_origin(question, answer)[0]
 
 
@@ -1555,12 +1563,12 @@ def _require_manual_evidence(manual, changes, clear_notes, existing):
     """
     if manual["verify_source"] != VERIFY_MANUAL:
         return
-    basis = changes.get("basis_note")
-    if basis is None:
-        basis = ((existing or {}).get("basis_note") or "")
+    # 与 teacher_note 同一口径：省略或空串都表示「这次不改这条依据」，所以要看旧值。
+    basis = (changes.get("basis_note") or "").strip() or (
+        ((existing or {}).get("basis_note") or "").strip())
     if clear_notes:
         basis = ""
-    if not (basis or "").strip():
+    if not basis:
         raise AnswerCheckError(
             "人工核验要留下判断依据：请填「判断依据」（例如「第 2 行把 −6 写成 −2，"
             "作业本原图上就是 −2」）。本次没有写入任何记录。",
@@ -1713,10 +1721,13 @@ def _write_check(db, conn, answer, existing, latest, view, changes, observed_ste
         teacher_note = ""
         basis_note = ""
     if existing:
-        # 省略（None）与空串都表示「这次不动这条备注」——绝不因为没填就静默清空（R1-02）。
-        if teacher_note is None:
+        # 省略（None）与空串都表示「这次不动这条备注」——绝不因为没填就静默清空（R1-02 契约 §3.3）。
+        # R1-05 补：空串也要按「不改」处理。旧代码只判了 None，界面每次都把（可能为空的）
+        # 判断依据原样回传，于是「只改错步」的一次保存会把上一次写下的核验依据清空——
+        # 人工核验的证据就是这么丢的（本文件 §3.3.1 的「不得绕过证据」要求它必须留住）。
+        if not (teacher_note or "").strip():
             teacher_note = existing.get("teacher_note") or ""
-        if basis_note is None:
+        if not (basis_note or "").strip():
             basis_note = existing.get("basis_note") or ""
     else:
         teacher_note = teacher_note or ""
@@ -1852,12 +1863,7 @@ def _invalidate_evidence_changed(db, conn, answer, check, now):
     )
     changed = 0
     for row in rows:
-        try:
-            snapshot = json.loads(row.get("evidence_snapshot") or "{}")
-        except (TypeError, ValueError):
-            snapshot = {}
-        if isinstance(snapshot, str) or not isinstance(snapshot, dict):
-            snapshot = {}
+        snapshot = _load_snapshot(row.get("evidence_snapshot"))
         if snapshot and snapshot == current:
             continue
         note = "；".join(_evidence_reason(snapshot, current))
@@ -2014,6 +2020,8 @@ def update_content(db, class_row, user_id, answer_id, body):
     4) 依据旧内容记录的追问原话一并标记失效（`answer_updated`），原话不删。
     """
     _require_tables(db)
+    if not isinstance(body, dict):
+        raise AnswerCheckError("请求内容不完整（应为 JSON 对象）。", 400, "invalid")
     answer = _answer(db, class_row["id"], answer_id)
     if (answer.get("source") or "") == DEMO_SOURCE:
         raise AnswerCheckError(
@@ -2030,8 +2038,6 @@ def update_content(db, class_row, user_id, answer_id, body):
             409,
             "version_conflict",
         )
-    if not isinstance(body, dict):
-        raise AnswerCheckError("请求内容不完整。", 400, "invalid")
     changed = {}
     for field in CONTENT_TEXT_FIELDS:
         text = _content_text(body, field)
@@ -2118,7 +2124,8 @@ def update_content(db, class_row, user_id, answer_id, body):
             reason="作答内容已补录/校正，基于旧内容的追问回答不再对应当前作答",
         )
         stale_checks = db.scalar(
-            "SELECT COUNT(*) FROM answer_checks WHERE answer_id=? AND answer_version<>?",
+            "SELECT COUNT(*) FROM answer_checks WHERE answer_id=? AND answer_version<>''"
+            " AND answer_version<>?",
             (answer["id"], new_fingerprint),
         ) or 0
     answer = _answer(db, class_row["id"], answer_id)

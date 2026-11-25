@@ -2279,12 +2279,24 @@ async function renderCheckAnswer(classData, answerId) {
   noteArea.addEventListener('input', () => { draft.note = noteArea.value; });
 
   // R1-02：判断依据与备注分列——依据进 basis_note（谁凭什么这么判），备注进 teacher_note。
+  // T11：规则判不了的作答（applicability=optional，如超出核验范围）人工改判原因时，
+  // 后端强制要求依据（400 basis_required）。这里只加一句必填提示，不改布局；
+  // 已经记成「无需判断」的不再提示（老师并没有形成原因判断）。
+  const basisRequired = (data.applicability || '') === 'optional'
+    && (judgement.cause_state || '') !== 'not_applicable';
   const basisArea = h('textarea', {
     rows: 2,
-    placeholder: '可选：这次判断的依据，例如「第 2 行把 −6 写成 −2，课堂口述也这么说」',
+    placeholder: basisRequired
+      ? '必填：本题规则判不了，写清你凭哪条证据判的原因（例如「作业本原图第 2 行写的是 2x>2，他抄成 x<1」）'
+      : '可选：这次判断的依据，例如「第 2 行把 −6 写成 −2，课堂口述也这么说」',
   });
   basisArea.value = draft.basis !== undefined ? draft.basis : (judgement.basis_note || '');
   basisArea.addEventListener('input', () => { draft.basis = basisArea.value; });
+  const basisHint = basisRequired
+    ? h('p', { class: 'tiny muted basis-hint' },
+      '本题超出规则核验范围：要判原因就必须写判断依据，否则保存会被拒绝（basis_required）；'
+      + '确认无需判断就直接点主按钮，系统会记成「无需判断」，不要求依据。')
+    : null;
 
   const errorBox = h('div', { class: 'banner danger', style: 'margin:0 0 6px' }, '');
   errorBox.hidden = true;
@@ -2335,8 +2347,11 @@ async function renderCheckAnswer(classData, answerId) {
           '主按钮沿用这条原因；点「改为原因待判断」会把旧原因记入改判历史，原因回到待判断。'))
       : null,
     h('label', { class: 'field', style: 'margin-top:8px' },
-      h('span', { class: 'lab' }, '判断依据（可选，与备注分开记录）'),
+      h('span', { class: 'lab' }, basisRequired
+        ? '判断依据（本题规则判不了：人工改判原因时必填）'
+        : '判断依据（可选，与备注分开记录）'),
       basisArea,
+      basisHint,
     ),
     h('label', { class: 'field', style: 'margin-top:8px' },
       h('span', { class: 'lab' }, '教师备注（可选，随这次保存一起记录）'),

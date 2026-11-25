@@ -1,4 +1,4 @@
-"""R1-05 人工核对路径 + R1-06 追问记录与证据更新机制：源码级验收（本地临时库 + 环回 HTTP）。
+﻿"""R1-05 人工核对路径 + R1-06 追问记录与证据更新机制：源码级验收（本地临时库 + 环回 HTTP）。
 
 依据（R1-00 §12 要求改写/新增测试必须写明依据）：
 - PRD §4.3「追问要针对具体的错步与错因；没有可用资源时明确写暂无，不拿套话代替」；
@@ -283,8 +283,8 @@ def group_1_out_of_scope(envs):
 
     data = detail(env, class_id, answer_id)
     locate = data["locate"]
-    check("1.1 规则判不了这份作答：locate.status=out_of_scope、locate.source=rule",
-          locate["status"] == "out_of_scope" and locate["source"] == "rule",
+    check("1.1 规则判不了这份作答：locate.status=out_of_scope（source 只记 rule/none，不冒充预置）",
+          locate["status"] == "out_of_scope" and locate["source"] in ("rule", "none"),
           "%s/%s" % (locate["status"], locate["source"]))
     check("1.2 可判可不判：applicability=optional（不再一律禁止人工判断）",
           data["applicability"] == "optional", data["applicability"])
@@ -411,8 +411,9 @@ def group_2_content_update(envs):
           status == 400 and bad.get("code") == "nothing_to_update",
           "%s %s" % (status, bad.get("code")))
     # 缺测那份：去掉「缺测」但步骤是空的 → 明确拒绝（不静默替老师决定）
-    missing_id = env.add_answer(class_id, student, "MS-2", CASE_ONLY_ANSWER, question_no="3",
-                                missing=1, missing_reason="未提供学生步骤", student_name="学生乙")
+    missing_id = env.add_answer(class_id, student, "MS-2", CASE_MISSING_SAFE, question_no="3",
+                                missing=1, missing_reason="未提供学生步骤", batch="9月第4次作业",
+                                student_name="学生乙")
     missing_detail = detail(env, class_id, missing_id)
     status, bad = patch_content(env, class_id, missing_id, {
         "expected_version": missing_detail["answer"]["version"], "missing": "否"})
@@ -876,7 +877,7 @@ def main():
         question_env, question_class, ids = group_3_question_relevance(envs)
         group_4_sources(envs, question_env, question_class, ids)
         evidence_env, evidence_class, evidence_answer = group_5_evidence_change(envs)
-        group_6_mutants(envs, question_env, question_class, ids["move"])
+        group_6_mutants(envs)
     finally:
         for env in ENVS:
             env.close()

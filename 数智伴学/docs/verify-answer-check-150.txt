@@ -1,15 +1,15 @@
 数智伴学｜作答核对与追问（第一轮 A1–A7）源码级验收
-时间：2026-11-25T16:11:44+08:00
+时间：2026-11-25T18:11:02+08:00
 命令：python.exe tests\verify_answer_check_150.py
 目录：E:\Agent\Math-Analysis-r1\数智伴学
 环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
 临时库：E:\Agent\Math-Analysis-r1\数智伴学\tests\.tmp-answer-check
 网络：只用 127.0.0.1 随机端口环回，无任何外部请求
-被测文件 src/web/app.js sha256=2EC1987A9797 mtime=2026-11-25 15:10:27 size=135280
+被测文件 src/web/app.js sha256=1003A5F9039A mtime=2026-11-25 17:42:58 size=140752
 被测文件 src/web/styles.css sha256=9D1454513298 mtime=2026-11-25 15:04:47 size=17331
 被测文件 src/app/equation_steps.py sha256=11D90941D317 mtime=2026-11-25 14:08:53 size=36183
 被测文件 src/app/demo_answers.py sha256=E9B96DDC2F50 mtime=2026-11-25 14:08:15 size=37655
-被测文件 src/app/answer_check.py sha256=BBB2C76CD8B2 mtime=2026-11-25 16:10:25 size=104350
+被测文件 src/app/answer_check.py sha256=B51C777452C3 mtime=2026-11-25 17:13:54 size=106009
 被测文件 src/app/stats.py sha256=7844D2A7363D mtime=2026-11-24 22:20:00 size=11174
 被测文件 src/app/api.py sha256=33D2F34A202E mtime=2026-11-25 16:11:19 size=86129
 
@@ -151,7 +151,16 @@ PASS 11.7 同一问句同一原话重复保存不重复插入（§3.7 第 5 条�
 PASS 11.8 老师自己写的问句 → source=teacher
 PASS 11.9 详情 followup.recorded=true 且回显最新原话
 
-== 12. 断言非恒真：把实现反向改错后，同一断言必须失败（4 个变异体） ==
+== 11b. T11 依据必填：out_of_scope 改判必须有依据；first_bad 不强制；forbidden 仍拒 ==
+PASS 11b.0 造数自检：这份作答 applicability=optional（规则判不了）
+PASS 11b.1 out_of_scope + decided + 无依据 → 400 basis_required
+PASS 11b.2 这一次一条都不写（answer_checks 行数不变）
+PASS 11b.3 out_of_scope + decided + 有依据 → 200，落库依据并记人工核验
+PASS 11b.4 first_bad + decided + 无依据 → 仍 200（A5 快路径不被卡）
+PASS 11b.5 forbidden（正确作答）+ decided → 仍 400 cause_not_applicable（回归）
+PASS 11b.6 out_of_scope 默认保存 → 200 且记「无需判断」（新闸门不误伤收口）
+
+== 12. 断言非恒真：把实现反向改错后，同一断言必须失败（5 个变异体） ==
 PASS 12.1 变异体1 补丁命中唯一位置
 PASS 12.2 变异体1 让 hint_text 变空 → 第 1.3/2.4 条断言不再成立
 PASS 12.3 对照：真实实现 hint_text 非空（同一断言在原实现上成立）
@@ -163,6 +172,10 @@ PASS 12.8 对照：真实实现对正确/只有答案/缺测/缺测都判为「�
 PASS 12.9 变异体4 补丁命中唯一位置
 PASS 12.10 变异体4 让「已核对数」恒 0 → 队列待核对数/状态断言不再成立
 PASS 12.11 对照：真实实现在同一份库上是 [0, 3, all_checked]（已全部核对）
+PASS 12.12 变异体5（依据闸门）补丁命中唯一位置
+PASS 12.13 变异体5 摘掉依据闸门后同一调用不再报错 → 第 11b.1 条断言不再成立
+PASS 12.14 对照：真实实现在同一调用上抛 basis_required（400）
+PASS 12.15 变异体5 在接口层也不再拦（同一请求从 400 变 200 ok/not_applicable）
 
 == 13. 防漂移不变式：demo_answers 预置 locate 与 equation_steps.locate 逐字段相等 ==
 PASS 13.1 demo build() 里带 locate 的作答都被复核到（至少 4 份）
@@ -178,13 +191,13 @@ PASS 15.5 reset 后 source='合成演示' 归零，只剩真实导入那一条
 PASS 15.6 reset 不动真实作答的判断（check 仍在、详情仍显示已核对）
 
 == 14. 三条既有回归线（如实记录，含已知失败） ==
-回归 verify_answers_150.py：退出码 0，用时 1.1s，合计 60 项，通过 60，失败 0
+回归 verify_answers_150.py：退出码 0，用时 1.3s，合计 60 项，通过 60，失败 0
 PASS 14.1 verify_answers_150.py 合计 60 项、通过 60、失败 0（无失败）
-回归 verify_followup_180.py：退出码 0，用时 1.5s，合计 126 项，通过 126，失败 0
+回归 verify_followup_180.py：退出码 0，用时 1.6s，合计 126 项，通过 126，失败 0
 PASS 14.2 verify_followup_180.py 合计 126 项、通过 126、失败 0（无失败）
 回归 verify_review_160.py：退出码 1，用时 3.7s，合计 135 项，通过 134，失败 1
 PASS 14.3 verify_review_160.py 合计 135 项、通过 134、失败 1（已知失败：FAIL 1.8.0 版本号 1.8.1）
 PASS 14.4 verify_review_160.py 的唯一失败是已知的历史版本号断言
 
-合计 138 项，通过 138，失败 0（另：未验证 0 项）
+合计 149 项，通过 149，失败 0（另：未验证 0 项）
 退出码：0
