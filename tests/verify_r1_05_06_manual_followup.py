@@ -1,4 +1,4 @@
-﻿"""R1-05 人工核对路径 + R1-06 追问记录与证据更新机制：源码级验收（本地临时库 + 环回 HTTP）。
+"""R1-05 人工核对路径 + R1-06 追问记录与证据更新机制：源码级验收（本地临时库 + 环回 HTTP）。
 
 依据（R1-00 §12 要求改写/新增测试必须写明依据）：
 - PRD §4.3「追问要针对具体的错步与错因；没有可用资源时明确写暂无，不拿套话代替」；
@@ -462,19 +462,37 @@ def group_2_content_update(envs):
           detail_after["judgement"]["progress"] == "pending"
           and detail_after["judgement"]["saved_at"] == "", jdump(detail_after["judgement"])[:160])
 
-    # 合成演示作答不许补录（它是五项全匹配的基线）
+    # 合成演示作答：**允许**校正（R1-T12 要求界面上能演示「单条作答补录与校正」）。
+    # 原断言（2.16）：patch 演示作答 → 409 demo_readonly；原依据：演示数据是「五项全匹配」预置基线，
+    #   改内容会让预置定位与候选失效。
+    # 新断言（2.16）：patch 演示作答 → 200，返回体明确标注 `demo_preset_invalidated` 且给出说明，
+    #   版本随之变化（预置失效 → 退回规则定位，这正是要演示的效果）。
+    # 新断言（2.17）：隔离仍然成立——source / record_key / 批次三样一个字都不能变。
+    # 改写依据：R1-T12「单条作答补录与校正要能在演示现场用界面完成，不要求导 CSV」；
+    #   演示数据仍靠 source + DEMO- 前缀 + 批次三条与真实数据隔离，重置可恢复基线。
     status, seeded = env.client.post("/api/classes/%d/check/demo/seed" % class_id)
     demo_id = env.db.scalar(
         "SELECT id FROM answers WHERE class_id=? AND record_key='DEMO-A-01'", (class_id,))
     demo_detail = detail(env, class_id, demo_id)
-    status, bad = patch_content(env, class_id, demo_id, {
+    demo_before = env.db.query_one(
+        "SELECT source, record_key, batch FROM answers WHERE id=?", (demo_id,))
+    status, updated = patch_content(env, class_id, demo_id, {
         "expected_version": demo_detail["answer"]["version"], "student_steps": "3(x-2)=12\nx=6"})
-    check("2.16 合成演示作答 → 409 demo_readonly（不破坏五项全匹配的预置基线）",
-          status == 409 and bad.get("code") == "demo_readonly", "%s %s" % (status, bad.get("code")))
-    check("2.17 演示作答内容一个字没改",
-          (env.db.scalar("SELECT student_steps FROM answers WHERE id=?", (demo_id,))
-           or "").startswith("3(x-2)=12"), env.db.scalar(
-              "SELECT student_steps FROM answers WHERE id=?", (demo_id,)))
+    check("2.16 合成演示作答可校正 → 200，且明确标注预置已失效、版本已变化",
+          status == 200
+          and updated.get("demo_preset_invalidated") is True
+          and bool(updated.get("note"))
+          and (updated.get("answer") or {}).get("version")
+          not in ("", demo_detail["answer"]["version"]),
+          "%s %s" % (status, jdump(updated)[:240]))
+    demo_after = env.db.query_one(
+        "SELECT source, record_key, batch, student_steps FROM answers WHERE id=?", (demo_id,))
+    _ident = lambda r: (r["source"], r["record_key"], r["batch"])  # noqa: E731
+    check("2.17 演示作答校正后 source/record_key/批次三样不变（隔离未破），内容已更新",
+          _ident(demo_after) == _ident(demo_before)
+          and (demo_after["student_steps"] or "").startswith("3(x-2)=12")
+          and demo_after["source"] == "合成演示",
+          "%s -> %s" % (_ident(demo_before), _ident(demo_after)))
 
     status, bad = patch_content(env, class_id, 999999, {"expected_version": "x"})
     check("2.18 不存在的作答 → 404 not_found", status == 404 and bad.get("code") == "not_found",

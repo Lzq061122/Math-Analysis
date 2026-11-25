@@ -2043,18 +2043,20 @@ def update_content(db, class_row, user_id, answer_id, body):
        否则等于把一份作答悄悄搬到别人名下；
     3) 内容指纹按新文字重算 → 旧结论自动变成「旧版本」（stale），本份回到待核对队列重新分析；
     4) 依据旧内容记录的追问原话一并标记失效（`answer_updated`），原话不删。
+
+    合成演示作答**也允许**校正（t12 要求界面上能演示「单条作答补录与校正」）：改完指纹变化，
+    预置定位与候选随旧内容失效、退回规则定位，返回体带 `demo_preset_invalidated` 与说明；
+    学生/批次/记录编号不动，隔离不变，「重置合成数据」可恢复基线。
     """
     _require_tables(db)
     if not isinstance(body, dict):
         raise AnswerCheckError("请求内容不完整（应为 JSON 对象）。", 400, "invalid")
     answer = _answer(db, class_row["id"], answer_id)
-    if (answer.get("source") or "") == DEMO_SOURCE:
-        raise AnswerCheckError(
-            "合成演示作答不支持补录/校正：它是「五项全匹配」预设的基线，改了内容预置定位与候选就会失效。"
-            "演示数据请用「重置合成数据」恢复；需要补录的是真实导入的作答。",
-            409,
-            "demo_readonly",
-        )
+    # 合成演示作答允许校正（答辩要在界面上演示「单条作答补录与校正」，不能要求现场导 CSV）：
+    # 演示数据是「五项全匹配」的预置基线，内容一改指纹就变，预置定位与候选自然失效，
+    # 这份作答退回规则定位——这本身就是要演示的效果。source / record_key / 批次一律不动，
+    # 所以证据隔离不变；「重置合成数据」可以整批恢复基线。
+    is_demo_answer = (answer.get("source") or "") == DEMO_SOURCE
     version = answer["fingerprint"] or ""
     expected = str(body.get("expected_version") or "")
     if expected != version:
@@ -2168,6 +2170,12 @@ def update_content(db, class_row, user_id, answer_id, body):
         "stale_conclusions": stale_checks,
         "reanalysed": True,
     }
+    if is_demo_answer:
+        extra["demo_preset_invalidated"] = True
+        extra["note"] = (
+            "已校正演示作答：内容指纹已变化，预置定位与候选随旧内容失效，本份改为按当前内容"
+            "规则定位；学生、批次、记录编号未改动，隔离不变；「重置合成数据」可恢复演示基线。"
+        )
     return _save_response(db, class_row, answer, None, adjustments, "updated", extra)
 
 

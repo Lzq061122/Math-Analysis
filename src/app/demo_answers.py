@@ -9,7 +9,10 @@
 1. **身份**：合成作答 `answers.source` 固定写「合成演示」，`record_key` 固定带 `DEMO-` 前缀。
    注意 `answers.source` 来自 CSV 的「来源批次」列，真实数据也可能写进这五个字，
    所以它只算第一道条件，真正的身份还要靠 `record_key` 一起判（`is_demo_record_key`）。
-2. **批次**：合成作答只落在 `DEMO_BATCH`，一个真实导入不可能自然取到的名字；
+2. **批次**：合成作答只落在 `DEMO_BATCHES` 里的演示批次（显式名单，见该常量）。
+   R1-T12 起有**两个**演示批次，用来演示「不同作业批次的核对与统计」；判定一律走
+   `is_demo_batch()`（`answer_check._is_demo_batch()` 委派到这里），**不按批名前缀猜**——
+   批名由老师在 CSV 的「来源批次」列自由填写，前缀判定会把同名的真实批次整批误排除。
    真实作业的应交 / 待核对 / 原题错误数里因此永远不含演示数据。
 3. **学生**：合成作答只挂带 `STUDENT_NOTE` 标记的合成学生，绝不占用真实名单里的学生
    —— 演示学生的原话不能安到真学生头上。
@@ -18,7 +21,8 @@
    演示内容或版本一改，旧作答的预置立刻失效，退回规则定位、空候选与「原因待判断」。
 
 `reset()` 的删除口径与上面同源：`source='合成演示'` **且** `record_key` 带 `DEMO-` 前缀
-**且** 批次是 `DEMO_BATCH`，三条同时满足才删 —— 真实作答把批名写成演示批名也不会被误删。
+**且** 批次属于 `DEMO_BATCHES`，三条同时满足才删 —— 真实作答把批名写成演示批名、
+或只撞其中一条，都不会被误删。
 
 数学内容直接复用《数智伴学_Agent开发规格.md》§7 的案例 A（值得追问）、
 案例 B（证据足够、无需追问）、案例 C（只有最终答案），另加一份正确作答作对照：
@@ -37,6 +41,14 @@ from .answers import fingerprint as _fingerprint
 # 存储级标识只有一份：来源标记 / 演示批次 / record_key 前缀都定义在 db.py，
 # 因为库级触发器要用同一份字面量。这里只做再导出，绝不另写一行字符串。
 from .db import DEMO_BATCH, DEMO_RECORD_PREFIX, DEMO_SOURCE, now_iso
+
+# 演示批次名单（R1-T12）：**显式枚举**，不按批名前缀判定。
+# 第一项保持等于 db.DEMO_BATCH（向后兼容：老库里的演示行仍落在它里面），第二项是给
+# 「不同作业批次」演示用的第二个作业；两条都只有 seed 会写、reset 会删。
+# 为什么不用 `batch.startswith("【合成演示】")`：批名是老师 CSV 里自由填的，
+# 前缀判定会把他自己起的同名批次当演示批次，随后按 source 过滤时整批被排除——丢的是真实数据。
+DEMO_BATCH_EXTRA = "【合成演示】9月第3次作业"
+DEMO_BATCHES = (DEMO_BATCH, DEMO_BATCH_EXTRA)
 
 # 若班级里没有学生，seed 会补建这几个合成学生；note 用这段标记，
 # 重置时只清理「带标记且已经没有任何记录」的学生，绝不碰真实名单。
@@ -213,8 +225,11 @@ def preset_causes(question_text):
 # 身份闸门：预置数据（定位 / 候选 / 问句）只对「这一条演示记录」生效
 # --------------------------------------------------------------------------
 def is_demo_batch(batch):
-    """批次名是不是演示批次（真实作业只认非演示批次）。"""
-    return (batch or "") == DEMO_BATCH
+    """批次名是不是演示批次（显式名单判定；真实作业只认非演示批次）。
+
+    `answer_check._is_demo_batch()` 直接委派到这里，所以演示批次的语义只有这一处。
+    """
+    return (batch or "") in DEMO_BATCHES
 
 
 def is_demo_record_key(record_key):
@@ -267,6 +282,10 @@ def match_answer(answer):
         return None
     key = answer.get("record_key") or ""
     if not is_demo_record_key(key):
+        return None
+    # 批次也过同一道闸：只有落在演示批次里的行才认预置（R1-T12 多批次后这条更要紧——
+    # 老师把自己的真实作答写进同名批名时，不该拿到演示预置）。
+    if not is_demo_batch(answer.get("batch")):
         return None
     record = {item["record_key"]: item for item in build()["answers"]}.get(key)
     if record is None:
@@ -344,6 +363,26 @@ def _locate_missing_steps(lines, note):
         "contrast": {"expected": None, "actual": None, "note": ""},
         "reason_note": "学生正文只有结论行，没有中间步骤可以逐行比对。",
         "manual_note": note,
+        "lines": lines,
+    }
+
+
+def _locate_out_of_scope(lines, reason_note, manual_note):
+    """规则判不了的作答（例如不等式）：不标错步、不给对照，转人工核对。
+
+    R1-T12：这份记录用来演示「规则无法识别时的人工核对」——界面要有「人工核对并记录错误」
+    的入口，所以预置定位必须与规则引擎的 out_of_scope 逐字段一致（见 verify_preset_matches_rules）。
+    """
+    return {
+        "status": "out_of_scope",
+        "source": "preset",
+        "first_bad_index": None,
+        "first_bad_text": None,
+        "underline": None,
+        "hint_text": None,
+        "contrast": {"expected": None, "actual": None, "note": ""},
+        "reason_note": reason_note,
+        "manual_note": manual_note,
         "lines": lines,
     }
 
@@ -478,6 +517,71 @@ ANSWERS = (
         },
         "expects": "不标错、不给候选错因，可直接核对完",
     },
+    {
+        # R1-T12 演示批次 2：规则判不了（不等式）→ 演示「人工核对并记录错误 + 判断依据必填」
+        "case": "S（超范围）",
+        "record_key": "DEMO-OOS-01",
+        "batch": DEMO_BATCH_EXTRA,
+        "student": "jia",
+        "question_no": "1",
+        "question_text": "2x+1>3",
+        "standard_solution": "x>1",
+        "student_steps": "2x>2\nx<1",
+        "occurred_on": "2026-11-21",
+        "missing": 0,
+        "missing_reason": "",
+        # 与 equation_steps.locate('2x+1>3','x>1','2x>2\nx<1') 逐字段一致（防漂移不变式守着）。
+        "locate": _locate_out_of_scope(
+            [
+                _line("2x+1>3", "given"),
+                _line("2x>2", "student"),
+                _line("x<1", "student"),
+            ],
+            "题干没能解析成一元一次方程，这份不作核对。",
+            "已转人工",
+        ),
+        "causes_source": "none",
+        "causes_note": "规则判不了这份作答（超出一元一次方程的核验范围），本轮不给候选错因；可人工核对并记录错误。",
+        "followup": {
+            "question": "这道你是按哪一步算的？把过程写下来我看看。",
+            "preset_answer_text": "",
+            "asked_at": "",
+        },
+        "expects": "显示「超出本次核对范围，已转人工」；可点「人工核对并记录错误」写错步+依据；保存后记「无需判断」或「教师已判断」，不再永远挂账。",
+    },
+    {
+        # R1-T12 演示批次 2：移项没变号 → 演示「追问按错步生成」与「改了关键依据后旧确认失效」
+        "case": "Q（移项追问）",
+        "record_key": "DEMO-MV-01",
+        "batch": DEMO_BATCH_EXTRA,
+        "student": "yi",
+        "question_no": "2",
+        "question_text": "2x+7=15",
+        "standard_solution": "2x+7=15；2x=8；x=4",
+        "student_steps": "2x+7=15\n2x=15+7\n2x=22\nx=11",
+        "occurred_on": "2026-11-21",
+        "missing": 0,
+        "missing_reason": "",
+        # 与 equation_steps.locate 对同一份内容逐字段一致：首处错步是整行换边，划线退回整行。
+        "locate": _locate_first_bad(
+            [
+                _line("2x+7=15", "given"),
+                _line("2x=15+7", "student", bad=True),
+                _line("2x=22", "student"),
+                _line("x=11", "student"),
+            ],
+            1,
+            "2x=15+7",
+            "2x+7=15",
+            "2x=15+7",
+            "这两行不等价：上一行是 2x+7=15，学生这一行是 2x=15+7。",
+        ),
+        "causes_source": "none",
+        "causes_note": "这份没有预置候选错因：按错步人工判断。",
+        # 故意不给预置问句：让界面演示「问句按本条错步生成」（移项题不问展开括号）。
+        "followup": {"question": "", "preset_answer_text": "", "asked_at": ""},
+        "expects": "问句由错步生成（「你把 +7 移到等号另一边时符号变了吗」）；记录学生回答后再改错步，旧确认标为需复核。",
+    },
 )
 
 
@@ -499,7 +603,8 @@ def build():
     answers = []
     for item in ANSWERS:
         record = {key: value for key, value in item.items() if key not in ("locate", "followup")}
-        record["batch"] = DEMO_BATCH
+        # R1-T12：记录可以自带批次（第二个演示作业），缺省落在主演示批次上。
+        record["batch"] = item.get("batch") or DEMO_BATCH
         record["unit"] = QUESTION_UNIT
         record["source"] = DEMO_SOURCE
         record["candidates"] = preset_causes(item["question_text"])
@@ -508,7 +613,7 @@ def build():
         record["locate"] = deepcopy(item["locate"])
         record["followup"] = dict(item["followup"])
         answers.append(record)
-    return {"students": students, "answers": answers}
+    return {"students": students, "answers": answers, "batches": list(DEMO_BATCHES)}
 
 
 # 防漂移不变式要比对的字段：判错的那几个键，外加对照句的三段。
@@ -756,7 +861,7 @@ def seed(db, uploads, class_id, student_ids=None):
                     class_id,
                     student_id,
                     key,
-                    DEMO_BATCH,
+                    record["batch"],
                     "",
                     "",
                     record["question_no"],
@@ -780,6 +885,7 @@ def seed(db, uploads, class_id, student_ids=None):
                     "answer_id": cur.lastrowid,
                     "case": record["case"],
                     "question_no": record["question_no"],
+                    "batch": record["batch"],
                 }
             )
 
@@ -788,6 +894,7 @@ def seed(db, uploads, class_id, student_ids=None):
         "class_id": class_id,
         "source": DEMO_SOURCE,
         "batch": DEMO_BATCH,
+        "batches": list(DEMO_BATCHES),
         "scope": SCOPE_SYNTHETIC,
         "preset_version": preset_version(),
         "seeded": {
@@ -796,6 +903,11 @@ def seed(db, uploads, class_id, student_ids=None):
             "skipped_existing": skipped_existing,
             "skipped_conflict": skipped_conflict,
             "students_created": len(created),
+            # 逐批次条数：演示页与套件用它证明「两个演示批次各有多少份」。
+            "by_batch": {
+                batch: sum(1 for item in inserted if item["batch"] == batch)
+                for batch in DEMO_BATCHES
+            },
         },
         "records": inserted,
         "students_created": created,
@@ -817,7 +929,9 @@ def reset(db, uploads, class_id):
     R1-01 缺陷 2 的教训：只看 `source='合成演示'` 会误删真实作答——`answers.source`
     直接取自 CSV 的「来源批次」列（`answers.py`），真实导入把批名写成「合成演示」
     就会在重置时被删掉（实测 deleted.answers=1）。现在三条同时满足才删：
-    1) `source='合成演示'`；2) `record_key` 带 `DEMO-` 前缀；3) `batch=DEMO_BATCH`。
+    1) `source='合成演示'`；2) `record_key` 带 `DEMO-` 前缀；3) `batch` 属于 `DEMO_BATCHES`。
+    （R1-T12 起有两个演示批次，第三条从「等于单个批次」放宽为「属于演示批次名单」——
+    名单是显式枚举，真实行即使撞了批名也不在其中，所以仍然删不到真实数据。）
     真实作答把批名撞成演示批名、或来源列写了「合成演示」，都删不到它。
 
     真实导入的作答一条都不动；`kept.imported_answers` 用数字把这件事说清楚。
@@ -826,9 +940,9 @@ def reset(db, uploads, class_id):
     ids = [
         row["id"]
         for row in db.query(
-            "SELECT id FROM answers WHERE class_id=? AND source=? AND batch=?"
-            " AND record_key LIKE ?",
-            (class_id, DEMO_SOURCE, DEMO_BATCH, DEMO_RECORD_PREFIX + "%"),
+            "SELECT id FROM answers WHERE class_id=? AND source=?"
+            " AND batch IN (%s) AND record_key LIKE ?" % ",".join("?" * len(DEMO_BATCHES)),
+            (class_id, DEMO_SOURCE) + tuple(DEMO_BATCHES) + (DEMO_RECORD_PREFIX + "%",),
         )
     ]
     deleted_checks = deleted_followups = deleted_reviews = 0

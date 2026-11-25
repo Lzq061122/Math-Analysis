@@ -1,13 +1,13 @@
 数智伴学｜R1-05 人工核对路径 + R1-06 追问记录与证据更新机制（源码级验收）
-时间：2026-11-25T18:43:13+08:00
+时间：2026-11-25T19:02:52+08:00
 命令：python.exe tests\verify_r1_05_06_manual_followup.py
 目录：E:\Agent\小挑
 环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
 临时库：E:\Agent\小挑\tests\.tmp-r1-05-06
 网络：只用 127.0.0.1 随机端口环回，无任何外部请求
-被测文件 src/app/answer_check.py sha256=46FD511AB30A size=106674
-被测文件 src/app/db.py sha256=849B4F77084D size=57163
-被测文件 src/app/api.py sha256=33D2F34A202E size=86129
+被测文件 src/app/answer_check.py sha256=9D06934B23B1 size=108473
+被测文件 src/app/db.py sha256=4BBAECCB0D8A size=63351
+被测文件 src/app/api.py sha256=6A17BD410E0B size=88776
 被测文件 src/web/app.js sha256=1003A5F9039A size=140752
 
 == 1. R1-05：out_of_scope 有人工核对出路（记录数学错误 + 核验依据 + 留痕，不再永久卡死） ==
@@ -45,8 +45,8 @@ PASS 2.12 stale_conclusions 如实报数（1 条旧结论失效）
 PASS 2.13 补录后这份回到待核对队列（应交 1、已核对 0、待核对 1）
 PASS 2.14 详情与补录响应同源：版本、步骤、locate 都取新内容
 PASS 2.15 补录后的新版本没有任何当前结论（judgement.progress=pending、saved_at 为空）
-PASS 2.16 合成演示作答 → 409 demo_readonly（不破坏五项全匹配的预置基线）
-PASS 2.17 演示作答内容一个字没改
+PASS 2.16 合成演示作答可校正 → 200，且明确标注预置已失效、版本已变化
+PASS 2.17 演示作答校正后 source/record_key/批次三样不变（隔离未破），内容已更新
 PASS 2.18 不存在的作答 → 404 not_found
 PASS 2.19 跨班级补录 → 404（班级归属校验，不能改别人班的作答）
 
