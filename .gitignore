@@ -11,3 +11,6 @@ src/last-data-dir.txt
 *.pyc
 *.log
 docs/screenshots/
+classdemo/
+*.lock
+

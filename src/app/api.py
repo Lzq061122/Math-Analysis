@@ -1459,16 +1459,30 @@ def api_meta(ctx):
 
 
 def api_account_ai_individual(ctx):
-    """教师账号级「个体 AI 外发」开关（R1-14）。
+    """教师账号级「个体 AI 外发」开关（R1-14）：读与写都走这里。
 
-    只对注入了 provider 的客户端（桌面端）开放：网页端 provider 恒为缺省（MockProvider），
-    这里直接 403，网页上不出现、也调不到这个开关。
-
-    `allowed=true` 之后，6 个个体入口在真实通道下会真的发出去，但**每次都受两道约束**：
-    vision 的字段白名单（身份字段没有入口）与「发之前写一条审计」（审计失败则不发送）。
+    网页端也能读/写（设置页要显示与修改这个偏好），但**能不能真的外发**看
+    `ai_egress_available`：只有注入了 provider 的桌面端才是 true；网页端恒为 false
+    （`server.py` 不注入 provider，业务环境只会拿到 MockProvider，真实外发在 egress 处被拦）。
     """
-    if getattr(ctx, "ai_provider", None) is None:
-        raise ApiError("当前环境不提供该开关。", 403, code=INDIVIDUAL_FLOW_CODE)
+    allowed = db_mod.ai_individual_allowed(ctx.db, (ctx.user or {}).get("id"))
+    return {
+        "ok": True,
+        "ai_individual_allowed": bool(allowed),
+        "ai_individual_switch": "account",
+        "ai_egress_available": getattr(ctx, "ai_provider", None) is not None,
+        "note": "开启后每次真实外发都会写一条审计（谁/何时/哪个流程/哪些字段/哪条通道）；"
+                "关闭立即恢复拦截（403 %s），不需要重启。网页端只能改偏好，不能外发。"
+                % INDIVIDUAL_FLOW_CODE,
+    }
+
+
+def api_account_ai_individual_update(ctx):
+    """写开关：请求体 `{"allowed": true|false}`（网页/桌面都可写，只影响账号偏好）。
+
+    真正外发仍要求「注入了 provider + 开关为真」；`allowed=true` 之后，6 个个体入口在真实
+    通道下会真的发出去，但每次都受 vision 字段白名单与「发之前写审计」两道约束。
+    """
     body = ctx.body or {}
     if "allowed" not in body:
         raise ApiError("缺少 allowed（true 表示允许个体 AI 外发，false 表示关闭）。", 400, code="invalid")
@@ -1481,6 +1495,7 @@ def api_account_ai_individual(ctx):
         "ok": True,
         "ai_individual_allowed": bool(value),
         "ai_individual_switch": "account",
+        "ai_egress_available": getattr(ctx, "ai_provider", None) is not None,
         "note": "开启后每次真实外发都会写一条审计（谁/何时/哪个流程/哪些字段/哪条通道）；"
                 "关闭立即恢复拦截（403 %s），不需要重启。" % INDIVIDUAL_FLOW_CODE,
     }
@@ -1976,8 +1991,10 @@ ROUTES = [
     ("POST", r"^/api/auth/logout$", api_logout, True),
     ("GET", r"^/api/auth/me$", api_me, True),
     ("POST", r"^/api/auth/password$", api_change_password, True),
-    # R1-14：教师账号级「个体 AI 外发」开关（只对注入了 provider 的桌面端可用，网页端 403）
-    ("POST", r"^/api/account/ai-individual$", api_account_ai_individual, True),
+    # R1-14：教师账号级「个体 AI 外发」开关：GET 读全字段、POST 写（设置页用）。
+    # 网页端也能读写这个偏好，但响应里 ai_egress_available=false（网页不注入 provider，不能真外发）。
+    ("GET", r"^/api/account/ai-individual$", api_account_ai_individual, True),
+    ("POST", r"^/api/account/ai-individual$", api_account_ai_individual_update, True),
     ("GET", r"^/api/meta$", api_meta, True),
     ("GET", r"^/api/info$", api_info, False),
     ("POST", r"^/api/backup$", api_backup, True),

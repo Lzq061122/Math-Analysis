@@ -1,5 +1,5 @@
 数智伴学｜R1-14 个体 AI 账号开关（默认关 / 开启可用 / 脱敏 / 审计）
-时间：2026-11-25T19:00:31+08:00
+时间：2026-11-25T19:55:34+08:00
 命令：python.exe tests\verify_r1_14_account_ai.py
 目录：E:\Agent\小挑
 环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
@@ -16,21 +16,22 @@ PASS 1.4 审计表此时没有任何记录（没发就没有台账）
 PASS 2.0 网页端能注册登录（用于取证）
 PASS 2.1 网页端 /api/meta 里没有 ai_individual_allowed 这个键
 PASS 2.2 网页端 ai_mode 仍是 mock（没有 provider 注入）
-PASS 2.3 网页端调这个开关被拒（403 ai_isolation）
-PASS 2.4 网页端即使被拒，也没有把开关写进库（仍是关）
+PASS 2.3 网页端能读这个偏好（GET 全字段），但 ai_egress_available=false
+PASS 2.4 网页端能改这个偏好，但仍不能外发（ai_egress_available 恒 false）
+PASS 2.5 网页端可以关回去（偏好读写对称）
 
 == 三、账号开关打开：6 个入口放行 + payload 无身份字段 + 审计有记录 ==
 PASS 3.0 通过 /api/account/ai-individual 打开开关（桌面端）
 PASS 3.1 桌面端 /api/meta 能读到开关（网页端读不到，见 2.1）
-FAIL 3.2 6 个入口全部放行（不再 ai_isolation）  [('错题重新分析', True, 'returned dict'), ('错题照片分析建议', True, '404 None'), ('个人辅导建议生成', False, '403 ai_isolation'), ('追问候选生成', False, '403 ai_isolation'), ('追问后的错因候选生成', False, '403 ai_isolation'), ('作答分析', False, '403 ai_isolation')]
-FAIL 3.3 开启后确实发生了外发（桩收到 0 次请求）  0
-实际发送的请求体字段（0 条）：[]
+PASS 3.2 6 个入口全部放行（不再 ai_isolation）
+PASS 3.3 开启后确实发生了外发（桩收到 3 次请求）
+实际发送的请求体字段（3 条）：[{"path": "/v1/chat/completions", "fields": ["messages[system,user]", "model", "temperature", "max_tokens"]}, {"path": "/v1/chat/completions", "fields": ["messages[system,user]", "model", "temperature", "max_tokens"]}, {"path": "/v1/chat/completions", "fields": ["messages[system,user]", "model", "temperature", "max_tokens"]}]
 PASS 3.4 payload 里没有任何身份字段（姓名/学号/班级名/answer_id/account）
 PASS 3.5 payload 字段全在白名单形状里（只有 model/messages/content/image/temperature 等）
-PASS 3.6 每次真实外发都留了审计（审计 0 行 / 发送 0 次）
+PASS 3.6 每次真实外发都留了审计（审计 3 行 / 发送 3 次）
 PASS 3.7 审计字段齐全：人 / 时间 / 流程 / 字段清单 / 通道
 PASS 3.8 审计只记字段名、不记取值（不含学生姓名/学号/题干原文）
-FAIL 3.9 审计里能区分是哪个流程（flow 名来自 6 个入口之一）  set()
+PASS 3.9 审计里能区分是哪个流程（flow 名来自 6 个入口之一）
 
 == 四、关回去：立刻恢复 403（不需要重启） ==
 PASS 4.0 开关已关回 false
@@ -45,5 +46,5 @@ PASS 5.2 旧库首次外发时自建审计表并写入成功
 PASS 5.3 旧库写入开关时自动补列（幂等：第二次不再加）
 PASS 5.4 补列后默认仍是关（老账号不会被悄悄打开）
 
-合计 30 项，通过 27，失败 3
-退出码：1
+合计 31 项，通过 31，失败 0
+退出码：0

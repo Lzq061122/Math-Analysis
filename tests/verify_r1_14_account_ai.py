@@ -285,14 +285,17 @@ def main():
                   sorted((meta or {}).keys())[:8])
             check("2.2 网页端 ai_mode 仍是 mock（没有 provider 注入）",
                   (meta or {}).get("ai_mode") == "mock", (meta or {}).get("ai_mode"))
-            status, payload = http_call("POST", "/api/account/ai-individual", {"allowed": True})
-            check("2.3 网页端调这个开关被拒（403 ai_isolation）",
-                  status == 403 and (payload or {}).get("code") == analysis.INDIVIDUAL_FLOW_CODE,
-                  (status, (payload or {}).get("code")))
-            web_user = web.db.scalar("SELECT id FROM users WHERE username='web14'")
-            check("2.4 网页端即使被拒，也没有把开关写进库（仍是关）",
-                  db_mod.ai_individual_allowed(web.db, web_user) is False,
-                  db_mod.ai_individual_allowed(web.db, web_user))
+            status, read_switch = http_call("GET", "/api/account/ai-individual")
+            check("2.3 网页端能读这个偏好（GET 全字段），但 ai_egress_available=false",
+                  status == 200 and (read_switch or {}).get("ai_individual_allowed") is False
+                  and (read_switch or {}).get("ai_egress_available") is False, read_switch)
+            status, wrote = http_call("POST", "/api/account/ai-individual", {"allowed": True})
+            check("2.4 网页端能改这个偏好，但仍不能外发（ai_egress_available 恒 false）",
+                  status == 200 and (wrote or {}).get("ai_individual_allowed") is True
+                  and (wrote or {}).get("ai_egress_available") is False, wrote)
+            status, reverted = http_call("POST", "/api/account/ai-individual", {"allowed": False})
+            check("2.5 网页端可以关回去（偏好读写对称）",
+                  status == 200 and (reverted or {}).get("ai_individual_allowed") is False, reverted)
         finally:
             web.shutdown()
             web.server_close()
@@ -301,7 +304,7 @@ def main():
         section("三、账号开关打开：6 个入口放行 + payload 无身份字段 + 审计有记录")
         # ---------------------------------------------------------------
         switch_ctx = FakeCtx(db, user, uploads, body={"allowed": True}, ai_provider=provider)
-        switched = api.api_account_ai_individual(switch_ctx)
+        switched = api.api_account_ai_individual_update(switch_ctx)
         check("3.0 通过 /api/account/ai-individual 打开开关（桌面端）",
               switched.get("ai_individual_allowed") is True
               and db_mod.ai_individual_allowed(db, user["id"]) is True, switched)
@@ -360,7 +363,9 @@ def main():
                   for row in new_rows),
               new_rows[:1])
         check("3.8 审计只记字段名、不记取值（不含学生姓名/学号/题干原文）",
-              all(not any(token in json.dumps(row, ensure_ascii=False) for token in IDENTITY_TOKENS)
+              all(not any(token in json.dumps(row, ensure_ascii=False)
+                          for token in ("学生甲", "学生乙", "隔离验证班", "XY001", "解方程", "3x-6"))
+                  and all(isinstance(name, str) and len(name) <= 40 for name in row["payload_fields"])
                   for row in new_rows), new_rows[:1])
         flows_logged = {row.get("flow") for row in new_rows}
         check("3.9 审计里能区分是哪个流程（flow 名来自 6 个入口之一）",
@@ -369,8 +374,8 @@ def main():
         # ---------------------------------------------------------------
         section("四、关回去：立刻恢复 403（不需要重启）")
         # ---------------------------------------------------------------
-        api.api_account_ai_individual(FakeCtx(db, user, uploads, body={"allowed": False},
-                                              ai_provider=provider))
+        api.api_account_ai_individual_update(FakeCtx(db, user, uploads, body={"allowed": False},
+                                                     ai_provider=provider))
         check("4.0 开关已关回 false", db_mod.ai_individual_allowed(db, user["id"]) is False,
               db_mod.ai_individual_allowed(db, user["id"]))
         mark_calls = len(stub_calls())

@@ -219,15 +219,16 @@ def _store(db, class_id, answer, status, provider, model, suggestion, raw, finge
 
 
 def analyse(db, class_id, answer_id, provider, service_name, model):
-    """R1-07：真实通道一律在按 answer_id 读作答之前拦断；本机模拟只记本地判断。
+    """发起一次分析。provider 为 None 表示模拟模式：不发请求，只记录本机判断。"""
 
-    - provider 指向真实通道（real/go/custom）：立即返回 ai_isolation 业务错误，
-      不读题目、标准解法、学生步骤与姓名，不拼提示词，不发请求，不写 answer_reviews。
-    - 本机模拟或缺测：不联网、不调用任何外部模型，只按规则记一条待核对记录。
-    """
-    if provider is not None and getattr(provider, "mode", "mock") != "mock":
+    # R1-14：模拟通道（MockProvider 不是 None）先归一化成 None，然后照 1.8.1 原样走模拟分支；
+    # 只有「真实通道 + 该账号未显式开启」才在下面 403。
+    if provider is not None and getattr(provider, "mode", "mock") == "mock":
+        provider = None
+    # R1-14：默认不外发。只有 api 在确认「该教师账号已显式开启」之后，才会把授权盖到
+    # **这个 provider 实例**上（provider.individual_allowed=True）；没有授权就维持 R1-07 的拦截。
+    if provider is not None and not getattr(provider, "individual_allowed", False):
         raise AnswerReviewError(INDIVIDUAL_FLOW_MESSAGE, 403, INDIVIDUAL_FLOW_CODE)
-
     answer = _answer(db, class_id, answer_id)
     fingerprint = answer["fingerprint"] or ""
 
@@ -240,13 +241,25 @@ def analyse(db, class_id, answer_id, provider, service_name, model):
         row = _store(db, class_id, answer, "pending", "本地判断", "", suggestion, "", fingerprint)
         return _serialise(db, row)
 
-    suggestion = {
-        "causes": [],
-        "note": "模拟分析不会判断对错，也不会发送任何内容；本次只验证流程。",
-        "uncertain": True,
-    }
-    row = _store(db, class_id, answer, "pending", service_name or "模拟分析", "", suggestion, "", fingerprint)
-    return _serialise(db, row)
+    if provider is None:
+        suggestion = {
+            "causes": [],
+            "note": "模拟分析不会判断对错，也不会发送任何内容；本次只验证流程。",
+            "uncertain": True,
+        }
+        row = _store(db, class_id, answer, "pending", service_name or "模拟分析", "", suggestion, "", fingerprint)
+        return _serialise(db, row)
+
+    prompt = build_prompt(answer)
+    text, usage = provider.chat_text(prompt, SYSTEM_PROMPT)
+    parsed = parse_suggestion(text, answer["student_steps"])
+    row = _store(
+        db, class_id, answer, "pending", service_name, model or "", parsed, text, fingerprint
+    )
+    data = _serialise(db, row)
+    data["usage"] = usage
+    return data
+
 
 
 def update(db, class_id, review_id, causes, note):

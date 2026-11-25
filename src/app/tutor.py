@@ -342,16 +342,60 @@ def load(db, class_id, student_id):
 
 
 def generate(db, class_id, student_id, provider, service_name, model):
-    """R1-07：个体辅导建议的生成只在本机模拟时按原样拒绝，真实通道一律拦断。
+    """发起一次生成。provider 为 None 表示模拟模式：不发请求，也不编造建议。"""
 
-    两种情况都在 summary() 之前返回：不读该生已确认错题、不拼提示词、不发请求、不写 tutor_advice。
-    老师手写并保存建议（save）与个人学情汇总（load/summary）不受影响。
-    """
-    if provider is None or getattr(provider, "mode", "mock") == "mock":
+    # R1-14：模拟通道（MockProvider 不是 None）先归一化成 None，再照 1.8.1 原样走模拟分支；
+    # 只有「真实通道 + 该账号未显式开启」才会走到最后那道 403。
+    if provider is not None and getattr(provider, "mode", "mock") == "mock":
+        provider = None
+
+    # R1-14：默认不外发。只有 api 在确认「该教师账号已显式开启」之后，才会把授权盖到
+    # **这个 provider 实例**上（provider.individual_allowed=True）；没有授权就维持 R1-07 的拦截。
+    if not getattr(provider, "individual_allowed", False):
+        raise TutorError(INDIVIDUAL_FLOW_MESSAGE, 403, INDIVIDUAL_FLOW_CODE)
+    data = summary(db, class_id, student_id)
+    if not data["items"]:
+        raise TutorError("这名学生还没有已确认的错题，暂时不能生成辅导建议。", 409, "empty")
+    if provider is None:
         raise TutorError(
             "当前是模拟分析，不会生成辅导建议。请先在「AI 设置」里配置服务后再生成。", 409, "mock"
         )
-    raise TutorError(INDIVIDUAL_FLOW_MESSAGE, 403, INDIVIDUAL_FLOW_CODE)
+
+    prompt = build_prompt(data)
+    text, usage = provider.chat_text(prompt, SYSTEM_PROMPT)
+    parsed = parse_suggestion(text, data)
+    content = render(parsed, data)
+    now = now_iso()
+    evidence = {
+        "advice": parsed,
+        "items": [
+            {"name": item["name"], "count": item["count"], "weight": item["weight"],
+             "last_on": item["last_on"], "mistake_ids": item["mistake_ids"]}
+            for item in data["items"]
+        ],
+        "undated": [ev["id"] for ev in data["undated"]],
+        "anomalies": [ev["id"] for ev in data["anomalies"]],
+        "rule": data["rule"],
+        "today": data["today"],
+    }
+    with db.tx() as conn:
+        conn.execute("DELETE FROM tutor_advice WHERE student_id=?", (student_id,))
+        conn.execute(
+            "INSERT INTO tutor_advice(class_id, student_id, content, ai_content, evidence,"
+            " fingerprint, teacher_edited, mode, generated_at, updated_at)"
+            " VALUES (?,?,?,?,?,?,0,?,?,?)",
+            (
+                class_id, student_id, content, content,
+                json.dumps(evidence, ensure_ascii=False), data["fingerprint"],
+                service_name or "", now, now,
+            ),
+        )
+    row = _row(db, class_id, student_id)
+    return {"summary": summary(db, class_id, student_id),
+            "advice": _serialise(db, row, data["fingerprint"]), "usage": usage}
+
+
+
 
 
 def save(db, class_id, student_id, content):
