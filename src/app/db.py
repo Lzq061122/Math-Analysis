@@ -347,6 +347,7 @@ ASSIGNMENT_BATCH_DDL = (
     expected_questions TEXT NOT NULL DEFAULT '[]',
     scored_questions   TEXT NOT NULL DEFAULT '[]',
     full_scores        TEXT NOT NULL DEFAULT '{}',
+    rubrics            TEXT NOT NULL DEFAULT '{}',
     rubric             TEXT NOT NULL DEFAULT '{}',
     rubric_version     TEXT NOT NULL DEFAULT '',
     config_state       TEXT NOT NULL DEFAULT 'unconfigured',
@@ -575,7 +576,7 @@ R2_DDL = (
 R2_REQUIRED_COLUMNS = {
     "assignment_batches": [
         "id", "class_id", "batch", "name", "occurred_on", "expected_students",
-        "expected_questions", "scored_questions", "full_scores", "rubric",
+        "expected_questions", "scored_questions", "full_scores", "rubrics", "rubric",
         "rubric_version", "config_state", "origin", "created_by", "created_at", "updated_at",
     ],
     "answer_images": [
@@ -614,6 +615,12 @@ R2_REQUIRED_COLUMNS = {
         "resource_key", "resource_version", "note", "created_at", "updated_at",
     ],
 }
+
+# 后续契约版本给 R2 表补的列（R2-00.4 起）：老 R2 库缺列时由 ensure_r2_schema /
+# Database._ensure_columns 逐列 ALTER 补上，只补空值、不动既有行。
+R2_BATCH_EXTRA_COLUMNS = (
+    ("rubrics", "TEXT NOT NULL DEFAULT '{}'"),
+)
 
 R2_REQUIRED_INDEXES = (
     "idx_batches_class_batch",
@@ -1702,6 +1709,9 @@ def ensure_r2_schema(db_file):
         try:
             for ddl in R2_DDL:
                 conn.execute(ddl)
+            # R2-00.4：题级评分标准版本（rubrics）。已建过 R2 表但还没有这一列的库在这里补，
+            # 补的是空 JSON（读作「题级未配置」，回退批次级旧版本），旧行一条不动。
+            _add_missing_columns(conn, "assignment_batches", R2_BATCH_EXTRA_COLUMNS)
             _seed_assignment_batches(conn)
             _migration_fault("r2_commit")
             conn.execute("COMMIT")
@@ -1734,7 +1744,8 @@ def _batch_config_from_row(row, batch=""):
     row = dict(row or {})
     raw = {}
     for key, default in (("expected_students", []), ("expected_questions", []),
-                         ("scored_questions", []), ("full_scores", {}), ("rubric", {})):
+                         ("scored_questions", []), ("full_scores", {}), ("rubrics", {}),
+                         ("rubric", {})):
         value = row.get(key)
         if isinstance(value, str):
             try:
@@ -1823,6 +1834,7 @@ def save_batch_config(db, class_id, batch, config, user_id=None):
         json.dumps(list(normalized["expected_questions"]), ensure_ascii=False),
         json.dumps(list(normalized["scored_questions"]), ensure_ascii=False),
         json.dumps(normalized["full_scores"], ensure_ascii=False),
+        json.dumps(normalized["rubrics"], ensure_ascii=False),
         json.dumps(normalized["rubric"], ensure_ascii=False),
         normalized["rubric_version"],
         normalized["config_state"],
@@ -1839,14 +1851,15 @@ def save_batch_config(db, class_id, batch, config, user_id=None):
             conn.execute(
                 "INSERT INTO assignment_batches(class_id, batch, name, occurred_on,"
                 " expected_students, expected_questions, scored_questions, full_scores,"
-                " rubric, rubric_version, config_state, origin, created_by, created_at, updated_at)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " rubrics, rubric, rubric_version, config_state, origin, created_by,"
+                " created_at, updated_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (int(class_id), str(batch or "")) + payload + (stamp,),
             )
         else:
             conn.execute(
                 "UPDATE assignment_batches SET name=?, occurred_on=?, expected_students=?,"
-                " expected_questions=?, scored_questions=?, full_scores=?, rubric=?,"
+                " expected_questions=?, scored_questions=?, full_scores=?, rubrics=?, rubric=?,"
                 " rubric_version=?, config_state=?, origin=?, created_by=?, updated_at=?"
                 " WHERE id=?",
                 payload + (int(row[0] if not isinstance(row, dict) else row["id"]),),
@@ -1943,6 +1956,8 @@ class Database:
         names = {row[0] for row in self.conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")}
         if "assignment_batches" in names:
+            # R2-00.4：题级评分标准版本列（老 R2 库用 create=True 打开时补空列，不动旧行）
+            _add_missing_columns(self.conn, "assignment_batches", R2_BATCH_EXTRA_COLUMNS)
             _seed_assignment_batches(self.conn)
 
     # -- 连接 -------------------------------------------------------------

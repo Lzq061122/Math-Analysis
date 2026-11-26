@@ -1058,6 +1058,110 @@ def section_migration():
 
 
 # ---------------------------------------------------------------------------
+# 九、题级评分标准版本（R2-00.4）
+# ---------------------------------------------------------------------------
+def section_rubric_versions():
+    section("九、题级评分标准版本（R2-00.4：改某题只失效该题）")
+    base = {
+        "expected_students": [{"key": "S1"}],
+        "expected_questions": ["1", "2", "3"],
+        "scored_questions": ["1", "2", "3"],
+        "full_scores": {"1": 10, "2": 10, "3": 10},
+        "rubrics": {
+            "1": {"criteria": "列式正确", "rubric_version": "q1-r1"},
+            "2": {"criteria": "移项变号", "rubric_version": "q2-r1"},
+            "3": {"criteria": "合并同类项", "rubric_version": "q3-r1"},
+        },
+    }
+    config, errors = C.normalize_batch_config(base, batch="B")
+    check("9.1 题级配置合法（每道题带自己的 rubric_version，无需批次级版本）",
+          not errors and C.rubric_versions(config)
+          == {"1": "q1-r1", "2": "q2-r1", "3": "q3-r1"}, (errors, C.rubric_versions(config)))
+
+    changed = {key: value for key, value in base.items()}
+    changed["rubrics"] = dict(base["rubrics"])
+    changed["rubrics"]["3"] = {"criteria": "合并同类项（改）", "rubric_version": "q3-r2"}
+    changed_cfg, changed_errors = C.normalize_batch_config(changed, batch="B")
+    versions = C.rubric_versions(changed_cfg)
+    check("9.2 改第 3 题 → 只有第 3 题版本变，第 1/2 题版本不变",
+          not changed_errors and versions["3"] == "q3-r2"
+          and versions["1"] == "q1-r1" and versions["2"] == "q2-r1", versions)
+
+    # 按题失效：改第 3 题只让第 3 题的旧成绩失效
+    def score_state(question, version):
+        state = C.empty_state()
+        state["answer"].update({"state": "valid", "fingerprint": "fp-1"})
+        state["verify"].update({"state": "verified_rule", "version": "fp-1"})
+        state["cause"].update({"state": "decided"})
+        state["score"].update({"state": "confirmed", "formal": True,
+                               "question_no": question, "rubric_version": version})
+        return state
+
+    hit = C.apply_event("rubric_changed", score_state("3", "q3-r1"),
+                        {"question_no": "3", "rubric_version": "q3-r2"})
+    other = C.apply_event("rubric_changed", score_state("1", "q1-r1"),
+                          {"question_no": "3", "rubric_version": "q3-r2"})
+    same = C.apply_event("rubric_changed", score_state("3", "q3-r2"),
+                         {"question_no": "3", "rubric_version": "q3-r2"})
+    check("9.3 改第 3 题 → 第 3 题旧成绩 invalidated",
+          hit["state"]["score"]["state"] == "invalidated"
+          and "answer_scores.invalidate:rubric_changed:question" in hit["actions"], hit)
+    check("9.4 改第 3 题 → 第 1 题成绩**不受影响**（仍是 confirmed）",
+          other["rules"] == () and other["state"]["score"]["state"] == "confirmed", other)
+    check("9.5 第 3 题版本没变 → 不失效（同一题也不乱撤）",
+          same["rules"] == () and same["state"]["score"]["state"] == "confirmed", same)
+
+    # 反向自证：用批次级版本比较（旧实现）会让未改动的题一起失效
+    saved = C.INVALIDATION_RULES
+    mutant_rules = tuple(
+        dict(rule, effect=(lambda state, event: C._plan(
+            {C.DIM_SCORE: {"state": "invalidated", "reason": "rubric_changed"}},
+            ("answer_scores.invalidate:rubric_changed",))))
+        if rule["id"] == "R2-INV-05" else rule
+        for rule in saved)
+    mutant = C.apply_event("rubric_changed", score_state("1", "q1-r1"),
+                           {"question_no": "3", "rubric_version": "q3-r2"},
+                           rules=mutant_rules)
+    check("9.6 反向自证：拿批次级版本比较（变异体）会让第 1 题也被失效（9.4 不恒真）",
+          mutant["state"]["score"]["state"] == "invalidated", mutant)
+
+    # 题级缺失 → 回退批次级版本（只作历史兼容）
+    legacy_raw = {
+        "expected_questions": ["1"], "scored_questions": ["1"],
+        "full_scores": {"1": 10}, "rubric": {"1": "旧标准原文"},
+        "rubric_version": "batch-r1",
+    }
+    legacy_cfg, legacy_errors = C.normalize_batch_config(legacy_raw, batch="Old")
+    check("9.7 题级缺失时回退批次级版本（旧形态仍可读，且不报错）",
+          not legacy_errors
+          and C.question_rubric_version(legacy_cfg, "1") == "batch-r1"
+          and C.question_rubric(legacy_cfg, "1")["criteria"] == "旧标准原文",
+          (legacy_errors, C.question_rubric(legacy_cfg, "1")))
+    check("9.8 回退只作兼容：题级给了版本时批次级旧值不覆盖它",
+          C.question_rubric_version(
+              {"rubrics": {"1": {"criteria": "x", "rubric_version": "q1-r9"}},
+               "rubric_version": "batch-r1"}, "1") == "q1-r9", "")
+    bad_raw = {"expected_questions": ["1"], "scored_questions": ["1"],
+               "full_scores": {"1": 10}, "rubrics": {"1": {"criteria": "没版本"}}}
+    _bad_cfg, bad_errors = C.normalize_batch_config(bad_raw, batch="Bad")
+    check("9.9 有标准但题级与批次级都没版本 → rubric_version_missing（不允许静默）",
+          [item[0] for item in bad_errors] == ["rubric_version_missing"], bad_errors)
+    check("9.10 满分权威在题级：rubrics[q].full_score 覆盖 full_scores 的旧值",
+          C.full_score_of({"full_scores": {"1": 5},
+                           "rubrics": {"1": {"full_score": 12}}}, "1") == 12.0, "")
+
+    # 契约文本防回流：写明「按题失效」，禁止拿批次级比较
+    text = open(CONTRACT_DOC, encoding="utf-8").read()
+    check("9.11 契约写明「修改某题 → 只失效该题」并点明批次级比较属实现错误",
+          "只" in text and "按题" in text and "实现错误" in text
+          and "改**某题**评分标准" in text, "")
+    check("9.12 契约版本已升到 %s（版本记录含 R2-00.4 与受影响任务）"
+          % C.R2_CONTRACT_VERSION,
+          C.R2_CONTRACT_VERSION == "R2-00.4" and "R2-00.4" in text
+          and "受影响任务" in text, C.R2_CONTRACT_VERSION)
+
+
+# ---------------------------------------------------------------------------
 def main():
     sys.path.insert(0, os.path.join(ROOT, "tests"))
     from logmeta import environment_lines
@@ -1076,6 +1180,7 @@ def main():
         section_isolation()
         section_stats()
         section_migration()
+        section_rubric_versions()
     finally:
         leftover = emergency_restore()
         if leftover:

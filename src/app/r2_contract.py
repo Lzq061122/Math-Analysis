@@ -1,4 +1,4 @@
-"""R2（1.9.0）公共契约：常量、四维状态、状态机、批次配置、失效规则、统计口径。
+﻿"""R2（1.9.0）公共契约：常量、四维状态、状态机、批次配置、失效规则、统计口径。
 
 **本模块无副作用**：不打开数据库、不读写文件、不读环境变量、不联网，也不 import
 app 层其它模块（只用标准库 `re`）。R2-01/02/03/04/05 与桌面端都 import 它，所以它必须是
@@ -28,7 +28,7 @@ import re
 TARGET_APP_VERSION = "1.9.0"
 
 # 契约版本：正文与代码同步修改时必须一起升。测试断言正文里出现同一字符串。
-R2_CONTRACT_VERSION = "R2-00.2"
+R2_CONTRACT_VERSION = "R2-00.4"
 
 # **不改** `app.db.SCHEMA_VERSION`（R1 起一直是 "4"）。理由（这是硬口径，别动）：
 # `src/desktop/data_dir.py::_db_problem()` 用 `version != SCHEMA_VERSION` 判断旧库
@@ -297,9 +297,10 @@ BATCH_CONFIG_KEYS = (
     "expected_students",  # [{"key","name","code"}] 应作答学生名单
     "expected_questions",  # ["1","2",...] 应作答题号
     "scored_questions",    # ["1","2",...] 应评分题范围（必须是 expected_questions 的子集）
-    "full_scores",         # {"1":10,...} 各题满分（scored_questions 每题必填，>0）
-    "rubric",              # {"1":"评分标准原文",...} 各题评分标准（可空，空则成绩不失效）
-    "rubric_version",      # 评分标准版本串；变了才让旧成绩失效（§2.5 第 5 条）
+    "full_scores",         # {"1":10,...} 各题满分（兼容镜像；权威值在 rubrics[q].full_score）
+    "rubrics",             # {"1":{"full_score","criteria","rubric_version"}} **题级权威**（R2-00.4）
+    "rubric",              # {"1":"评分标准原文",...} 旧形态（R2-00.2 及以前），读入时并入 rubrics
+    "rubric_version",      # 批次级旧版本串：题级缺失时**只作历史兼容回退**，不再是权威
     "config_state",        # configured / unconfigured
     "origin",              # legacy / import / manual
 )
@@ -312,6 +313,7 @@ DEFAULT_BATCH_CONFIG = {
     "expected_questions": [],
     "scored_questions": [],
     "full_scores": {},
+    "rubrics": {},
     "rubric": {},
     "rubric_version": "",
     "config_state": BATCH_CONFIG_STATE_UNCONFIGURED,
@@ -415,6 +417,29 @@ def normalize_batch_config(raw, batch=""):
         rubric[str(key).strip()] = str(value or "")
     config["rubric"] = rubric
 
+    # R2-00.4：题级评分标准是权威。三种来源按优先级合并（后者只补缺失项）：
+    #   rubrics（新结构，题级带自己的 rubric_version）
+    #   → rubric（R2-00.2 及以前的「题号: 标准原文」映射，版本沿用批次级 rubric_version）
+    #   → 批次级 rubric_version（仅历史兼容回退）
+    rubrics = {}
+    for key, value in (raw.get("rubrics") or {}).items():
+        question = str(key).strip()
+        entry = value if isinstance(value, dict) else {"criteria": str(value or "")}
+        rubrics[question] = {
+            "full_score": _as_float(entry.get("full_score")),
+            "criteria": str(entry.get("criteria") or entry.get("text") or ""),
+            "rubric_version": str(entry.get("rubric_version") or "").strip(),
+        }
+    for question, criteria in rubric.items():
+        entry = rubrics.setdefault(question, {"full_score": None, "criteria": "",
+                                              "rubric_version": ""})
+        if not entry["criteria"]:
+            entry["criteria"] = criteria
+    for question in list(rubrics):
+        if rubrics[question]["full_score"] is None:
+            rubrics[question]["full_score"] = _as_float(full_scores.get(question))
+    config["rubrics"] = rubrics
+
     errors = batch_config_errors(config)
     if not errors and config["expected_students"] and config["expected_questions"]:
         config["config_state"] = BATCH_CONFIG_STATE_CONFIGURED
@@ -486,18 +511,65 @@ def batch_config_errors(config):
     if not isinstance(full_scores, dict):
         errors.append(("full_score_invalid", "full_scores 必须是 {题号: 满分}"))
         full_scores = {}
+    rubrics = config.get("rubrics") if isinstance(config.get("rubrics"), dict) else {}
     for question in scored:
-        if question not in {str(key).strip() for key in full_scores}:
+        entry = rubrics.get(question) if isinstance(rubrics, dict) else None
+        entry = entry if isinstance(entry, dict) else {}
+        number = _as_float(entry.get("full_score"))
+        if number is None:
+            number = _as_float(full_scores.get(question, full_scores.get(str(question))))
+        if number is None:
             errors.append(("full_score_missing", question))
             continue
-        number = _as_float(full_scores.get(question, full_scores.get(str(question))))
-        if number is None or number <= 0:
-            errors.append(("full_score_invalid", "%s=%r" % (question, full_scores.get(question))))
+        if number <= 0:
+            errors.append(("full_score_invalid", "%s=%r" % (question, number)))
 
-    rubric = config.get("rubric") or {}
-    if isinstance(rubric, dict) and rubric and not str(config.get("rubric_version") or "").strip():
-        errors.append(("rubric_version_missing", ""))
+    # 评分标准的版本按**题**判（R2-00.4）：某题给了标准就必须有该题的版本号；
+    # 题级缺失时允许回退批次级 `rubric_version`，但那只作历史兼容，不能当成「所有题共用一个版本」。
+    batch_version = str(config.get("rubric_version") or "").strip()
+    legacy_rubric = config.get("rubric") if isinstance(config.get("rubric"), dict) else {}
+    for question in scored:
+        entry = rubrics.get(question) if isinstance(rubrics, dict) else None
+        entry = entry if isinstance(entry, dict) else {}
+        criteria = str(entry.get("criteria") or "").strip() or str(
+            legacy_rubric.get(question) or "").strip()
+        if not criteria:
+            continue
+        if not str(entry.get("rubric_version") or "").strip() and not batch_version:
+            errors.append(("rubric_version_missing", question))
     return errors
+
+
+def question_rubric(config, question_no):
+    """某题的评分标准配置 `{"full_score","criteria","rubric_version"}`（R2-00.4 题级权威）。
+
+    缺失项按兼容顺序回落：`rubrics[q]` → `full_scores[q]`（只有满分）→
+    `rubric[q]`（旧形态的标准原文）→ 批次级 `rubric_version`（仅版本，历史兼容）。
+    """
+    config = config or {}
+    question = str(question_no).strip()
+    rubrics = config.get("rubrics") if isinstance(config.get("rubrics"), dict) else {}
+    entry = dict(rubrics.get(question) or {}) if isinstance(rubrics, dict) else {}
+    legacy = config.get("rubric") if isinstance(config.get("rubric"), dict) else {}
+    return {
+        "full_score": (_as_float(entry.get("full_score"))
+                       if _as_float(entry.get("full_score")) is not None
+                       else full_score_of(config, question)),
+        "criteria": str(entry.get("criteria") or legacy.get(question) or ""),
+        "rubric_version": str(entry.get("rubric_version")
+                              or config.get("rubric_version") or "").strip(),
+    }
+
+
+def question_rubric_version(config, question_no):
+    """某题**自己的**评分标准版本（题级优先，题级缺失才回退批次级旧值）。"""
+    return question_rubric(config, question_no)["rubric_version"]
+
+
+def rubric_versions(config):
+    """`{题号: 该题版本}`（应评分题范围）。改某题只动它自己的版本，其余题不变。"""
+    return {question: question_rubric_version(config, question)
+            for question in scored_question_nos(config or {})}
 
 
 def expected_question_nos(config):
@@ -524,8 +596,19 @@ def expected_student_keys(config):
 
 
 def full_score_of(config, question_no):
-    """某题满分；未配置返回 None（统计按「暂无」处理，不猜 100）。"""
-    scores = (config or {}).get("full_scores") or {}
+    """某题满分；未配置返回 None（统计按「暂无」处理，不猜 100）。
+
+    权威顺序（R2-00.4）：`rubrics[题号].full_score`（题级）→ `full_scores[题号]`（兼容镜像）。
+    """
+    config = config or {}
+    rubrics = config.get("rubrics")
+    if isinstance(rubrics, dict):
+        entry = rubrics.get(str(question_no))
+        if isinstance(entry, dict):
+            number = _as_float(entry.get("full_score"))
+            if number is not None:
+                return number
+    scores = config.get("full_scores") or {}
     if not isinstance(scores, dict):
         return None
     value = scores.get(str(question_no))
@@ -918,19 +1001,30 @@ def _inv_04_score_saved(state, event):
 
 
 def _inv_05_rubric_changed(state, event):
-    """⑤ 改评分标准/满分 → 该题既有成绩失效（需重评），旧值留历史。"""
+    """⑤ 改**某题**评分标准/满分 → 只失效**该题**的旧成绩（R2-00.4）。
+
+    `event` 必须带 `question_no` + 该题的新 `rubric_version`：
+      {"question_no": "3", "rubric_version": "q3-r2"}
+    比较口径是**题级版本**（`(题号, 版本)` 配对）：题号不同、或版本相同 → 不失效。
+    反例（明确禁止）：拿批次级版本比较，会让**没改动的题**一起失效——那是实现错误，不是口径。
+    """
     new_version = str((event or {}).get("rubric_version") or "")
+    question = str((event or {}).get("question_no") or "").strip()
     if not new_version:
         return None
     score = (state or {}).get(DIM_SCORE) or {}
     if score.get("state") not in ("draft", "confirmed"):
         return None
+    if question and str(score.get("question_no") or "") and \
+            str(score.get("question_no")).strip() != question:
+        return None                      # 改的是别的题，本题成绩不动
     if str(score.get("rubric_version") or "") == new_version:
         return None
     return _plan(
         {DIM_SCORE: {"state": "invalidated", "reason": "rubric_changed",
                      "rubric_version": str(score.get("rubric_version") or ""), "formal": False}},
-        ("answer_scores.invalidate:rubric_changed", "score_steps.keep_history", "stats.recount"),
+        ("answer_scores.invalidate:rubric_changed:question", "score_steps.keep_history",
+         "stats.recount"),
     )
 
 
@@ -1040,10 +1134,13 @@ INVALIDATION_RULES = (
         "name": "评分标准或满分变化",
         "trigger": "rubric_changed",
         "effect": _inv_05_rubric_changed,
-        "statement": "同批次同题的评分标准/满分一变，该题既有成绩置 invalidated 并要求重评；旧分数、"
-                     "旧扣分项、旧标准版本全部留历史，不覆盖。",
-        "executor": "grading.update_rubric()（写 assignment_batches.rubric_version）",
-        "counter_proof": "不改 rubric_version 只改标准正文，R2-02「改标准 → 旧成绩失效」必红。",
+        "statement": "修改**某题**的评分标准/满分 → **只**让该题的旧成绩置 invalidated 并要求重评，"
+                     "其余题的成绩不受影响；旧分数、旧扣分项、旧题级版本全部留历史，不覆盖。"
+                     "比较口径是题级 `(question_no, rubric_version)` 配对，**不得**用批次级版本比较——"
+                     "那会让没改动的题一起失效（属实现错误，不是口径）。",
+        "executor": "grading.update_rubric()（写 assignment_batches.rubrics[题号].rubric_version）",
+        "counter_proof": "只改标准正文不升该题 rubric_version，R2-02「改标准 → 该题旧成绩失效」必红；"
+                         "改成用批次级版本比较，R2-00.4 的「其余题成绩不变」断言必红。",
     },
     {
         "id": "R2-INV-06",
