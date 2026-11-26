@@ -1,0 +1,33 @@
+﻿数智伴学｜R2-06 全链路验收（桌面端：ZIP 导入 → 核验 → 错因/成绩 → 看板 → 报告）
+python 3.14.7
+PASS  A1 预览：50 行、45 有效、5 缺测、1 条仅照片、0 冲突 | {'valid': 45, 'missing': 5, 'duplicate': 0, 'conflict': 0, 'unmatched': 0, 'file_error': 0, 'insufficient': 1}
+PASS  A2 确认导入：新增 50 条、落盘 4 张图片 | {'new': 50, 'overwritten': 0, 'duplicate': 0, 'conflict': 0, 'failed': 0}
+PASS  A3 仅照片作答判成「内容不足」，缺测另有 5 条（三态不混） | {'valid': 44, 'insufficient': 1, 'missing': 5}
+PASS  A4 内容不足那条正是「有图无步骤」的记录 | answer_id=13
+PASS  A5 多图作答：至少一条记录挂了 2 张图 | 多图条数=1
+PASS  A6 重复导入同一压缩包：新增 0、识别 50 条重复 | {'new': 0, 'overwritten': 0, 'duplicate': 50, 'conflict': 0, 'failed': 0}
+PASS  B1 批次配置落地并置为已配置 | configured
+PASS  B2 应作答 10、作答 9（S10 五题全缺测）、未提交 0、有效 44、缺测 5 | {'expected_students': 10, 'submitted_students': 9, 'unsubmitted_answers': 0, 'valid_answers': 44, 'missing_answers': 5}
+PASS  B3 名单加进一个零作答的学生 → 应作答人数与覆盖率分母一起变成 11 | 11
+PASS  C1 批量核验队列看见导入的 50 条 | 50
+PASS  C2 批量核验跑完：失败 0，且逐条有结果 | 50
+PASS  C3 缺测 5 条不产生任何错题行（不是「落了但标记不算」） | 缺测错题行=0
+PASS  D1 核验结果里能找出带错误步骤原文的作答 | 条数=18
+PASS  D2 确认错因 N 条 → 统计「已确认错题数」= N | 统计=18 确认=18
+PASS  D3 统计口径与库内 decided 行数一致（同一判据，不是两套算法） | 统计=18 库内=18
+PASS  D4 mistakes 行数与「已确认错题数」同源 | mistakes=18 确认=18
+PASS  D5 整批重跑核验后，已确认的判断一字不变（重复核验不覆盖） | {'cause_state': 'decided', 'cause_label': '去括号未变号', 'cause_source': 'teacher', 'answer_version': 'd905bb00c3ebcafe470c815c1733125cabb823d6808571ca6c7b4b5e3f6a9393'} vs {'cause_state': 'decided', 'cause_label': '去括号未变号', 'cause_source': 'teacher', 'answer_version': 'd905bb00c3ebcafe470c815c1733125cabb823d6808571ca6c7b4b5e3f6a9393'}
+PASS  E1 6 名学生全题确认 100 分 → 覆盖率 60%、平均分 500（每生 5 题×100） | coverage=0.6 average=500.0
+PASS  E2 只评了一题的学生不计入平均分，覆盖率分母也不变 | average=500.0 coverage=0.6
+PASS  F1 撤回一条错因 → 已确认错题数降 1 | 18 → 17
+PASS  F2 撤回后该条核验与评分仍在（R2-INV-03：只退错因，不连带撤核验/成绩） | {'cause_state': 'undecided'}
+PASS  G1 合成演示作答不进正式统计（18 张卡片逐字段相等） | 差异={}
+PASS  H1 班级报告预览里出现班级名与统计口径 | 1135
+PASS  H2 班级报告能渲染成 PDF（%PDF 头 + 页数可读） | 475069 bytes
+PASS  H3 导出文件落盘且内容读得回（中文不乱码） | 475069 bytes, pages=3
+PASS  H4 个人报告不含其他学生姓名 | 含本人=True 含他人=False
+PASS  H5 完全匹配的「待审核」资源仍不进正式推荐（退回人工补充） | tier=manual items=0 note=没有匹配的已发布资源，请人工补充（未审资源不能用
+PASS  I1 重启后 18 张卡片逐字段相等（业务记录完整、统计确定） | 差异={}
+PASS  I2 重启后导出历史仍可读（账号/时间/用途/类型都在） | list
+
+合计 29 项，通过 29 项，失败 0 项
