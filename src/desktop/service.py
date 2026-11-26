@@ -68,7 +68,8 @@ from app.api import (
     describe_ai,
 )
 from app.db import (
-    Database, add_student_active, ensure_answers_schema, ensure_followup_schema, ensure_tutor_schema,
+    Database, add_student_active, ensure_answers_schema, ensure_followup_schema, ensure_r2_schema,
+    ensure_tutor_schema,
 )
 from app.preview import PreviewStore
 from app.uploads import UploadStore
@@ -153,6 +154,10 @@ class DesktopService:
         self.tutor_migration = ensure_tutor_schema(db_file) if os.path.exists(db_file) else None
         # 追问记录与候选更新表是 1.8.0 新增的结构。
         self.followup_migration = ensure_followup_schema(db_file) if os.path.exists(db_file) else None
+        # R2（1.9.0）新增的批次配置、评分、教学资源、教学任务与提示记录表。
+        # 不升 SCHEMA_VERSION：data_dir 用结构版本判「不兼容」，升版会把 1.8.1 老师的库
+        # 挡在门外，迁移根本没机会跑；R2 结构是否就绪由 db.r2_schema_ready() 单独判定。
+        self.r2_migration = ensure_r2_schema(db_file) if os.path.exists(db_file) else None
         # 打开已有库：create=False，绝不执行建表/补列/补索引/改结构版本。
         self.db = Database(db_file, create=False)
         # 照片与网页版存在同一个 uploads 目录，两边看到的是同一批文件。

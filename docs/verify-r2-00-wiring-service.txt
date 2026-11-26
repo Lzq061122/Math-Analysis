@@ -1,0 +1,125 @@
+﻿# R2-00 接线：src/desktop/service.py 加 ensure_r2_schema（captain 独占文件）
+# 时间: 2026-11-26T18:30:18.9165057+08:00
+# 目的：确认 create=False 桌面路径在旧库上执行 R2 迁移后，既有业务与备份恢复不受影响
+
+===== verify_r1_18_desktop_service.py（venv-desktop, offscreen）exit=0 =====
+数智伴学｜R1-T18 桌面 service 层：作答核对 + AI 开关（进程内调 api，错误原样上抛）
+时间：2026-11-26T18:30:16+08:00
+命令：python.exe tests\verify_r1_18_desktop_service.py
+目录：E:\Agent\小挑
+环境：Python 3.12.10 / Windows-11-10.0.26300-SP0
+
+== 一、总览 / 详情（api_check_overview / api_check_answer） ==
+PASS 1.1 check_overview 返回网页端同源结构（assignment/assignments/counts/state 齐备）
+PASS 1.2 总览统计到本班 2 份真实作答（counts.answers）
+PASS 1.3 指定批次与不指定批次结果一致（同一批作业）
+PASS 1.4 详情含 answer（与 api_check_answer 同字段）
+PASS 1.4 详情含 locate（与 api_check_answer 同字段）
+PASS 1.4 详情含 judgement（与 api_check_answer 同字段）
+PASS 1.4 详情含 followup（与 api_check_answer 同字段）
+PASS 1.4 详情含 queue（与 api_check_answer 同字段）
+PASS 1.4 详情含 applicability（与 api_check_answer 同字段）
+PASS 1.4 详情含 candidates（与 api_check_answer 同字段）
+
+== 二、保存教师判断（api_check_save）：三态 + 错误原值 ==
+PASS 2.1 本夹具没有 out_of_scope 作答，跳过（如实登记）
+PASS 2.2 check_save 正常路径返回 saved + judgement（字段与网页端一致）
+PASS 2.3 保存后 mistakes 落了一条（R1-16 联动仍在作用）
+PASS 2.4 过期版本 → 409 version_conflict（原样上抛）
+PASS 2.5 撤回时夹带判断 → 400 cause_state_mismatch（不静默丢弃）
+
+== 三、撤回（api_check_save + progress=pending） ==
+PASS 3.1 撤回返回 action=retracted、judgement.progress=pending
+PASS 3.2 撤回后队列把它算回来（pending ≥ 1）
+PASS 3.3 没有可撤回的结论 → 400 nothing_to_retract（原样上抛）
+
+== 四、补录 / 校正（api_check_answer_content） ==
+PASS 4.1 校正成功：返回 action=updated + 新版本号
+PASS 4.2 校正时版本过期 → 409 version_conflict（版本闸门在服务端）
+
+== 五、记录找回（api_check_records：cause_state / verify_source） ==
+PASS 5.1 三态筛选各自可用（undecided/decided/all 都返回 items）
+PASS 5.2 decided 档位的记录数 ≤ 全部档位
+PASS 5.3 verify_source=manual 可单独筛（返回 items）
+PASS 5.4 非法 verify_source → 400 bad_verify_source（不静默当 all）
+
+== 六、演示数据（api_check_demo_seed / api_check_demo_reset） ==
+PASS 6.1 seed 返回体原样带 seeded/by_batch/records（不裁剪）
+PASS 6.2 seed 真的写入了合成作答（≥1 条）
+PASS 6.3 reset 返回 deleted/by_batch（不裁剪）
+PASS 6.4 reset 之后合成作答被清掉
+
+== 七、AI 开关（api_account_ai_individual / _update）+ 六入口仍按 t14 拒绝 ==
+PASS 7.1 桌面端能读到开关（ai_egress_available=true，因为注入了 provider）
+PASS 7.2 未开启时六入口之一（追问候选）仍 403 ai_isolation（未授权不放行）
+PASS 7.3 set_ai_individual(True) 写入成功并回读为 true
+PASS 7.4 set_ai_individual(False) 立刻关回去（下次调用重新判定）
+
+== 八、越权与未登录（沿用会话，越权必须 404） ==
+PASS 8.1 用错班级查详情 → 404 not_found（不泄露别的班数据）
+PASS 8.2 用错班级保存 → 404 not_found
+PASS 8.3 用错班级纠正 → 404 not_found
+PASS 8.4 退出登录后新方法与既有方法同样被拦住（不产生未鉴权访问）
+
+合计 36 项，通过 36，失败 0
+退出码：0
+
+===== verify_r1_15_backup_tables.py（py314）exit=0 =====
+数智伴学｜R1-T15（B1）备份恢复：answer_checks / answer_followups 随备份走
+时间：2026-11-26T18:30:16+08:00
+命令：python.exe tests\verify_r1_15_backup_tables.py
+目录：E:\Agent\小挑
+环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
+临时库：E:\Agent\小挑\tests\.tmp-r1-15
+网络：无（纯本地 SQLite 与 zip）
+恢复前 counts：{"ai_egress_audit": 2, "answer_checks": 4, "answer_followups": 3, "answer_reviews": 2, "answers": 4, "classes": 2, "followup_updates": 0, "followups": 0, "mistakes": 2, "students": 3, "tutor_advice": 0}
+
+== 1. 备份侧：导出范围包含两张新表（整库快照，不需要第二套导出格式） ==
+PASS 1.1 create_backup 清单里 answer_checks=4、answer_followups=3（不是 0）
+PASS 1.2 暂存库（解开后的备份）里同样是 4/3，且备份只有一份 app.db（整库快照）
+PASS 1.3 inspect_backup 认为这份备份就是本账号的（same_key）
+
+== 2. 恢复侧：按 answer_map / student_map 重建，外键全部重映射 ==
+PASS 2.0 造一份「空库」作为恢复目标（两张新表为 0、旧表清空）
+恢复后 counts：{"ai_egress_audit": 2, "answer_checks": 4, "answer_followups": 3, "answer_reviews": 2, "answers": 4, "classes": 2, "followup_updates": 0, "followups": 0, "mistakes": 2, "students": 3, "tutor_advice": 0}
+PASS 2.1 恢复后 answer_checks=4、answer_followups=3（都搬回来了，不是 0）
+PASS 2.1b 一班恢复后仍是 3 条 check + 1 条 followup（验收条口径）
+PASS 2.2 恢复后 9 张旧表条数与备份时一致（classes/students/mistakes/answers/reviews）
+PASS 2.3 核对记录与作答/学生/班级三处外键对得上（没有沿用旧 id）
+PASS 2.4 跨班级不串：一班 3 条、二班 1 条，且各自挂在自己的班级上
+PASS 2.5 追问原话的 check_id 指向恢复后的新核对行（不是暂存库里的旧 501/502/504）
+
+== 3. 保留语义：撤回行与 invalidated_* 原样保留 ==
+PASS 3.1 撤回行（answer_version 为空）被原样搬回，没有被「只恢复有效行」过滤掉
+PASS 3.2 撤回行的 cause_history 也原样保留（含 retract 事件）
+PASS 3.3 已失效的追问原话连同 invalidated_at/_reason 一起搬回
+PASS 3.4 证据快照（evidence_snapshot）逐字保留
+PASS 3.5 人工核验那一列组（verify_source/teacher_error_text/basis_note）逐字保留
+PASS 3.6 t14 的外发审计按账号整体搬回（2 条、user_id 重映射为当前账号）
+
+== 4. 返回的 counts 与库内实际条数一致 ==
+PASS 4.1 apply_staged 返回的 counts 与恢复后库内实际条数逐项相等
+PASS 4.2 返回的 answer_checks / answer_followups 不再是 0（旧版这里恒 0）
+
+== 5. 重复恢复不叠加（恢复 = 用备份状态替换该账号的数据） ==
+PASS 5.1 第二次恢复后仍是 4/3/2（没有翻倍）
+
+== 6. 向后兼容：1.8.1 形态的旧备份（没有这两张表）恢复照常成功 ==
+PASS 6.1 旧格式备份（没有 answer_checks/answer_followups/ai_egress_audit）恢复成功
+PASS 6.2 旧格式备份恢复后旧表照常回来（classes/answers/mistakes 与备份一致）
+PASS 6.3 旧格式备份里没有的两张新表为 0，且返回的 counts 不报错
+PASS 6.4 备份里没有 ai_egress_audit 时，恢复不会清空现有审计记录（备份没带就不动）
+PASS 6.5 「备份里有 audit 表」（3.6/5.1）与「没有 audit 表」（6.1/6.4）两种情形都恢复成功
+PASS 6.4 备份里没有 ai_egress_audit 时，恢复不会清空现有审计记录（备份没带就不动）
+PASS 6.5 「备份里有 audit 表」与「没有 audit 表」两种情形都恢复成功（本条 + 6.1 一起看）
+
+== 7. 失败回滚：新增步骤上的故障不留半恢复状态 ==
+PASS 7.1 注入 check_restore 故障 → 抛 BackupError（而且是「原数据未改动」那句）
+PASS 7.2 回滚后库内条数与恢复前完全相同（不留半恢复状态，含两张新表与旧表）
+PASS 7.3 回滚后两张新表仍是原来的 4/3（没有被清空、也没有被塞一半）
+PASS 7.3b 注入 audit_restore 故障 → 抛 BackupError 且整体回滚（审计与新表都回到恢复前）
+PASS 7.3b 注入 audit_restore 故障 → 抛 BackupError 且整体回滚（审计与新表都回到恢复前）
+PASS 7.4 暂存库里核对记录指向不存在的作答 → 抛错并整体回滚（不留半条）
+
+合计 32 项，通过 32，失败 0
+退出码：0
