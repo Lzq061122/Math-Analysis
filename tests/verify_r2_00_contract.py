@@ -383,13 +383,13 @@ def section_batch_and_score():
           not [item for item in empty_errors if item[0] != "missing_batch"]
           and empty["config_state"] == C.BATCH_CONFIG_STATE_UNCONFIGURED, empty_errors)
 
-    check("4.11 未配置名单/题号时，总分与应作答格子都返回 None（不拿 0 冒充）",
-          C.assignment_total_score(empty) is None and C.roster_status(empty, [])["expected"] is None,
-          (C.assignment_total_score(empty), C.roster_status(empty, [])))
-    check("4.12 作业总分 = 应评分题满分之和（10 + 5 = 15）",
-          C.assignment_total_score(config) == 15.0, C.assignment_total_score(config))
-    check("4.13 缺任一题满分 → 总分 None（不做部分相加）",
-          C.assignment_total_score({"scored_questions": ["1", "2"], "full_scores": {"1": 10}}) is None,
+    check("4.11 未配置名单/题号时，满分合计与应作答格子都返回 None（不拿 0 冒充）",
+          C.batch_full_score(empty) is None and C.roster_status(empty, [])["expected"] is None,
+          (C.batch_full_score(empty), C.roster_status(empty, [])))
+    check("4.12 满分合计 = 应评分题满分之和（10 + 5 = 15；非得分，见 4.25d）",
+          C.batch_full_score(config) == 15.0, C.batch_full_score(config))
+    check("4.13 缺任一题满分 → 满分合计 None（不做部分相加）",
+          C.batch_full_score({"scored_questions": ["1", "2"], "full_scores": {"1": 10}}) is None,
           "")
 
     # 作答维：未提交 / 缺测 / 内容不足 / 有效
@@ -428,6 +428,27 @@ def section_batch_and_score():
     check("4.22 有记录格子数 = 45（9 名 × 5 题），其中 valid 44、缺测 1",
           roster["recorded"] == 45 and roster["valid"] == 44, roster)
 
+    # §5.6 合成数据集口径（captain 按派单原文裁定）：5 条缺测集中在 S09 身上 →
+    # 作答人数 = 9 而不是 10（S09 只有缺测记录，不进作答人数）
+    section_rows = []
+    for index, student in enumerate(students):
+        for question in range(1, 6):
+            if index == 9:
+                section_rows.append({"student_key": student["key"],
+                                     "question_no": str(question), "state": "missing"})
+                continue
+            section_rows.append({"student_key": student["key"],
+                                 "question_no": str(question), "state": "valid"})
+    submitted = C.submitted_student_keys(section_rows)
+    check("4.22a 作答人数 = 至少一条非缺测的去重学生数：S10 五题全缺测 → 9 人（不是 10）",
+          len(submitted) == 9 and "S10" not in submitted, submitted)
+    section_roster = C.roster_status(cfg50, section_rows)
+    check("4.22b 只有缺测记录也不等于未提交：S10 有记录，未提交格子 = 0",
+          section_roster["unsubmitted"] == 0 and section_roster["missing"] == 5,
+          section_roster)
+    check("4.22c 有效作答数只数非缺测 valid 记录（50 条里 5 条缺测 → 45）",
+          section_roster["valid"] == 45, section_roster["valid"])
+
     # 完整成绩判定
     check("4.23 缺一题 → 不完整，total 为 None",
           C.score_completeness(cfg50, {"1": 18, "2": 20, "3": 20, "4": 15})["complete"] is False,
@@ -437,6 +458,72 @@ def section_batch_and_score():
           complete)
     check("4.25 批次没配应评分题 → batch_unscored（显示暂无）",
           C.score_completeness({}, {"1": 10})["reason"] == "batch_unscored", "")
+
+    # F2：作业总分是「逐生得分」，不是满分之和；不完整不给值
+    full_confirmed = {"1": 18, "2": 20, "3": 20, "4": 15, "5": 17}
+    partial_confirmed = {"1": 18, "2": 20}
+    check("4.25a 作业总分（完整）＝ 该生有效确认得分之和 90",
+          C.assignment_total_score(cfg50, full_confirmed)["total"] == 90.0,
+          C.assignment_total_score(cfg50, full_confirmed))
+    incomplete_score = C.assignment_total_score(cfg50, partial_confirmed)
+    check("4.25b 不完整学生不给值：total 为 None、complete=False、missing 列出缺的题",
+          incomplete_score["total"] is None and incomplete_score["complete"] is False
+          and incomplete_score["missing"] == ["3", "4", "5"], incomplete_score)
+    check("4.25c 不完整也不拿 0 顶替（None 与 0 不是一回事）",
+          incomplete_score["total"] is None and incomplete_score["total"] != 0,
+          incomplete_score["total"])
+    check("4.25d 满分合计是另一项，不等于作业总分（100 vs 90）",
+          C.batch_full_score(cfg50) == 100.0
+          and C.assignment_total_score(cfg50, full_confirmed)["total"] == 90.0,
+          (C.batch_full_score(cfg50), C.assignment_total_score(cfg50, full_confirmed)))
+    per_student = C.student_total_scores(
+        cfg50, {"S01": full_confirmed, "S02": partial_confirmed})
+    check("4.25e 逐生作业总分：完整给分、不完整给 None",
+          per_student.get("S01") == 90.0 and per_student.get("S02") is None, per_student)
+    per_student_filtered = C.student_total_scores(
+        cfg50, {"S01": full_confirmed, "S02": full_confirmed},
+        comparable=lambda student_id, scores: student_id == "S01")
+    check("4.25f 不可比的学生不合并（comparable 判假 → 不给值）",
+          per_student_filtered.get("S01") == 90.0
+          and per_student_filtered.get("S02") is None, per_student_filtered)
+
+    # F3：重复错误 = 知识点重复对 + 错因重复对，两类分别计数
+    knowledge_items = [
+        {"student_key": "S01", "category": "去括号"},
+        {"student_key": "S01", "category": "去括号"},
+        {"student_key": "S01", "category": "移项"},
+        {"student_key": "S02", "category": "去括号"},
+    ]
+    cause_items = [
+        {"student_key": "S01", "category": "B01"},
+        {"student_key": "S01", "category": "B01"},
+        {"student_key": "S01", "category": "B02"},
+    ]
+    knowledge_pairs = C.repeated_pairs(knowledge_items)
+    cause_pairs = C.repeated_pairs(cause_items)
+    check("4.25g 知识点重复对：S01×去括号 计 1 对（S02 只有 1 次不算）",
+          knowledge_pairs == [{"student_key": "S01", "category": "去括号", "count": 2}],
+          knowledge_pairs)
+    check("4.25h 错因重复对：S01×B01 计 1 对", cause_pairs == [
+        {"student_key": "S01", "category": "B01", "count": 2}], cause_pairs)
+    check("4.25i 两类分开计数，合成总数 = 两类对数之和（1 + 1 = 2）",
+          len(knowledge_pairs) + len(cause_pairs) == 2, (knowledge_pairs, cause_pairs))
+    check("4.25j 重复错误指标的定义写明两类（knowledge_pairs / cause_pairs）",
+          "knowledge_pairs" in next(row for row in C.R2_STAT_METRICS
+                                    if row["key"] == "repeated_errors")["definition"]
+          and "cause_pairs" in next(row for row in C.R2_STAT_METRICS
+                                    if row["key"] == "repeated_errors")["definition"], "")
+
+    # F1/F5/F6/F7：口径文本与原文一致（analytics/R2-04 照它实现）
+    metric_by_key = {row["key"]: row for row in C.R2_STAT_METRICS}
+    check("4.25k 班级人数写入两条可断言约束（知识点/错因不变、学生筛选变）",
+          "知识点" in metric_by_key["class_students"]["definition"]
+          and "不改变" in metric_by_key["class_students"]["definition"]
+          and "学生筛选" in metric_by_key["class_students"]["definition"], "")
+    check("4.25l 有效作答数写明「非缺测」",
+          "非缺测" in metric_by_key["valid_answers"]["definition"], "")
+    check("4.25m 作答人数写明「只有缺测记录的学生不计入」",
+          "只有缺测记录" in metric_by_key["submitted_students"]["definition"], "")
 
     # 评分范围与小数位
     check("4.26 满分 10 录 7.5 → 通过", C.validate_score(7.5, 10)["ok"] is True, "")
@@ -472,6 +559,29 @@ def section_batch_and_score():
     check("4.36 扣分值为负 → 拒绝", C.step_deductions_consistent(
         10, 10, [{"deduction": -1}])["code"] == "not_number", "")
 
+    # 评分覆盖率的分母口径（captain 2026-11-26 核对 §5.1 原文后修正）
+    scoring_cfg = {
+        "expected_students": [{"key": "S01"}, {"key": "S02"}, {"key": "S03"}],
+        "expected_questions": ["1", "2"],
+        "scored_questions": ["1"],
+        "full_scores": {"1": 10},
+    }
+    scoring_rows = [
+        {"student_key": "S01", "question_no": "1"},
+        {"student_key": "S01", "question_no": "2"},
+        {"student_key": "S02", "question_no": "2"},     # 只有不参与评分的题目
+    ]
+    students_scored = C.scoring_students(scoring_cfg, scoring_rows)
+    check("4.37 应参与评分学生数：只有非评分题的学生不计入（S01 计入、S02 不计入）",
+          students_scored == ["S01"], students_scored)
+    check("4.38 没有应评分题 → 应参与评分学生数为空（覆盖率显示无法计算）",
+          C.scoring_students({"expected_questions": ["1"], "scored_questions": []},
+                             scoring_rows) == ["S01"], "")
+    coverage_row = next(row for row in C.R2_STAT_METRICS if row["key"] == "score_coverage")
+    check("4.39 评分覆盖率分母写的是「应参与评分学生数」，不是应作答人数",
+          coverage_row["denominator"] == "应参与评分学生数"
+          and "应参与评分学生数" in coverage_row["definition"], coverage_row)
+
     # 反向自证 2：摘掉一致性校验，4.35 必须变红
     original = patch_bytes(contract_path, [
         ("    if abs(diff) > 10 ** -MAX_SCORE_DECIMALS:\n",
@@ -481,9 +591,9 @@ def section_batch_and_score():
         mutant_ok = C.step_deductions_consistent(10, 7.5, [{"deduction": 1}])["ok"]
     finally:
         restore_bytes(contract_path, original)
-    check("4.37 反向自证：摘掉一致性闸门后不一致也被放行（4.35 断言不再成立）",
+    check("4.40 反向自证：摘掉一致性闸门后不一致也被放行（4.35 断言不再成立）",
           mutant_ok is True, mutant_ok)
-    check("4.38 恢复实现后不一致重新被拒",
+    check("4.41 恢复实现后不一致重新被拒",
           C.step_deductions_consistent(10, 7.5, [{"deduction": 1}])["ok"] is False, "")
 
 
@@ -844,7 +954,7 @@ def section_migration():
         check("8.19 保存批次配置 → configured 且满分/题号按字符串规范化",
               saved["config_state"] == "configured" and saved["full_scores"].get("1") == 10.0
               and C.expected_question_nos(saved) == ("1", "2")
-              and C.assignment_total_score(saved) == 10.0, saved)
+              and C.batch_full_score(saved) == 10.0, saved)
         rejected = False
         try:
             DB.save_batch_config(database, 1, batches[0] if batches else "x",

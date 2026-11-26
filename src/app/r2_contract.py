@@ -28,7 +28,7 @@ import re
 TARGET_APP_VERSION = "1.9.0"
 
 # 契约版本：正文与代码同步修改时必须一起升。测试断言正文里出现同一字符串。
-R2_CONTRACT_VERSION = "R2-00.1"
+R2_CONTRACT_VERSION = "R2-00.2"
 
 # **不改** `app.db.SCHEMA_VERSION`（R1 起一直是 "4"）。理由（这是硬口径，别动）：
 # `src/desktop/data_dir.py::_db_problem()` 用 `version != SCHEMA_VERSION` 判断旧库
@@ -534,8 +534,12 @@ def full_score_of(config, question_no):
     return _as_float(value)
 
 
-def assignment_total_score(config):
-    """作业总分 = 应评分题满分之和；缺任一题满分 → None（显示「暂无」而不是部分相加）。"""
+def batch_full_score(config):
+    """【非得分】应评分题满分之和；缺任一题满分 → None（显示「暂无」而不是部分相加）。
+
+    这是**满分合计**，只用于「本卷共多少分」这类展示，不参与平均分/得分率/覆盖率。
+    R2 派单 §5.1 第 15 项「作业总分」指的是**逐生得分之和**，见 `assignment_total_score()`。
+    """
     scored = scored_question_nos(config)
     if not scored:
         return None
@@ -546,6 +550,42 @@ def assignment_total_score(config):
             return None
         total += value
     return round(total, 2)
+
+
+def assignment_total_score(config, confirmed_scores):
+    """【作业总分】某一学生「全部应评分题目的有效确认得分之和」（派单 §5.1 第 15 项）。
+
+    返回 `{"total", "complete", "missing", "reason"}`：
+      - 该生应评分题**全部**有 `confirmed` 成绩 → `total` 为得分之和；
+      - 缺任何一题 → `total=None`、`complete=False`、`missing=[题号]`；
+        **不完整不给值**：不许用 0 或「已判题目的部分和」顶替，否则平均分被拉低；
+      - 批次没有应评分题 → `reason="batch_unscored"`，值同样为 None。
+    调用方按 student_id 建索引，得到的就是「逐生作业总分」字典（见 `student_total_scores()`）。
+    """
+    result = score_completeness(config, confirmed_scores)
+    return {
+        "total": result["total"],
+        "complete": result["complete"],
+        "missing": result["missing"],
+        "reason": result["reason"],
+    }
+
+
+def student_total_scores(config, scores_by_student, comparable=None):
+    """【逐生作业总分】把 `assignment_total_score` 摊成 `{student_id: 分数或 None}`。
+
+    `scores_by_student` = {student_id: {题号: 分数}}（只传 `confirmed` 的行）。
+    `comparable`（可选）= 可合并的判定：返回 True 的学生才给值——不同批次/不同满分/
+    不同评分标准的学生不合并（派单 §5.1 硬口径「不合并不可比」）。缺省视为全部可比。
+    不完整或不可比的学生在结果里是 `None`（界面显示「暂无」），**不是 0**。
+    """
+    result = {}
+    for student_id, scores in (scores_by_student or {}).items():
+        if comparable is not None and not comparable(student_id, scores):
+            result[student_id] = None
+            continue
+        result[student_id] = assignment_total_score(config, scores)["total"]
+    return result
 
 
 def classify_record_state(missing=False, missing_reason="", has_text=False, has_steps=False,
@@ -616,6 +656,73 @@ def roster_status(config, records):
         "unsubmitted_students": unsubmitted_students,
         "configured": bool(students and questions),
     }
+
+
+def scoring_students(config, records):
+    """「应参与评分学生数」的口径（派单 §5.1 第 17 项的分母，纯函数）。
+
+    `records` = [{"student_key","question_no"}]（只用于判断「谁有应评分题」）。
+    判定：该学生在**应评分题范围**（`scored_question_nos`）里至少有一道题（不论交没交）。
+    批次没有应评分题 → 返回空列表（覆盖率显示「无法计算」，不拿应作答人数顶替）。
+    为什么不能拿「应作答人数」当分母：某学生只有不参与评分的题目时，分母会变大、覆盖率被算低。
+    """
+    scored = set(scored_question_nos(config or {}))
+    if not scored:
+        return []
+    students = []
+    for row in records or []:
+        student = str((row or {}).get("student_key") or "").strip()
+        question = str((row or {}).get("question_no") or "").strip()
+        if student and question in scored and student not in students:
+            students.append(student)
+    return students
+
+
+def submitted_student_keys(records):
+    """【作答人数】至少有一条**非缺测**记录的去重学生 key（派单 §5.1 第 3 项）。
+
+    `records` = [{"student_key","state"}]，state 取作答维四值。
+    只有缺测记录的学生**不算作答**（例如 5 题全标缺测 → 他不进作答人数）；
+    内容不足（仅照片）算作答但不进有效作答数。这是「作答人数 ≠ 有记录人数」的唯一实现，
+    R2-03 直接调用，别在统计里另写一遍条件。
+    """
+    students = []
+    for row in records or []:
+        student = str((row or {}).get("student_key") or "").strip()
+        state = str((row or {}).get("state") or "").strip()
+        if student and state in ("valid", "insufficient") and student not in students:
+            students.append(student)
+    return students
+
+
+def repeated_pairs(items, student_field="student_key", category_field="category", minimum=2):
+    """【重复错误】同一学生同类目出现 ≥ `minimum` 次的对，返回按次数降序的列表。
+
+    派单 §5.1 第 18 项要求「同一学生不同作答中重复出现的**知识点或确认错因**」：
+    两类各算一遍（`knowledge_pairs` / `cause_pairs`），明细必须能分开看，
+    合成总数只能是「两类对数之和」——所以这里做成一个通用函数，两类各调一次。
+    同一错题多知识点/多错因仍按类别分别计；**同一（学生, 类别）只计一次对数**，
+    不因为一条错题里重复写了两遍同类别就多算。
+    """
+    counts = {}
+    order = []
+    for item in items or []:
+        student = str((item or {}).get(student_field) or "").strip()
+        category = str((item or {}).get(category_field) or "").strip()
+        if not student or not category:
+            continue
+        key = (student, category)
+        if key not in counts:
+            counts[key] = 0
+            order.append(key)
+        counts[key] += 1
+    pairs = [
+        {"student_key": student, "category": category, "count": counts[(student, category)]}
+        for student, category in order
+        if counts[(student, category)] >= int(minimum or 2)
+    ]
+    pairs.sort(key=lambda row: (-row["count"], row["student_key"], row["category"]))
+    return pairs
 
 
 def score_completeness(config, confirmed_scores):
@@ -1139,24 +1246,33 @@ def include_in_formal_stats(source, batch_is_synthetic=False):
 # 硬口径（对应派单 §5.1 要求，R2-03/R2-04 不得自行改写）：
 #   - 多知识点/多错因按类别分别计数，同类别内去重（同一条错题同一知识点只计一次）；
 #   - 成绩只用**已确认**成绩；不合并不可比的满分/标准/批次；不完整成绩不进平均分；
+#   - 「作答人数」= 至少有一条**非缺测**记录的去重学生数（5 题全缺测的学生不算作答）；
+#   - 「作业总分」= **逐生**有效确认得分之和（不是满分之和；不完整不给值）；
+#   - 「评分覆盖率」分母 = 应参与评分学生数（不是应作答人数）；
 #   - 缺分母显示「暂无/无法计算」，绝不拿 0 冒充；历史错题不用于推算正确率或掌握率；
 #   - 正式统计排除合成演示数据。
 R2_STAT_METRICS = (
     {"key": "class_students", "label": "班级人数",
-     "definition": "该班级在册学生数（students.active=1）；不受批次/知识点/错因筛选影响",
-     "numerator": "在册学生数", "denominator": "—",
+     "definition": "**当前统计范围内**的班级学生人数（在册 `students.active=1`）。"
+                   "两条可断言约束：① 知识点 / 错因筛选**不改变**班级人数（这两类只作用于"
+                   "错题分布、涉及学生数与证据明细）；② 学生筛选**改变**班级人数（取该学生群体"
+                   "在册人数）。换班级 = 换整套分母",
+     "numerator": "统计范围内在册学生数", "denominator": "—",
      "states": ("students.active=1",), "empty": "空班显示 0"},
     {"key": "expected_students", "label": "应作答人数",
      "definition": "批次配置 expected_students 去重后的人数；未配置名单显示暂无",
      "numerator": "应作答学生数", "denominator": "—",
      "states": ("batch.config_state=configured",), "empty": "未配置名单 → 暂无"},
     {"key": "submitted_students", "label": "作答人数",
-     "definition": "该批次内至少有一条作答记录的学生数（排除合成演示）",
-     "numerator": "有记录的学生数", "denominator": "—",
-     "states": ("answer in (valid, insufficient, missing)",), "empty": "无记录 → 0"},
+     "definition": "该批次内**至少有一条非缺测作答**的去重学生数（排除合成演示）："
+                   "只有缺测记录的学生不算作答（例如 5 题全标缺测，作答人数里不该出现他）；"
+                   "内容不足（仅照片）算作答，不算有效核验内容",
+     "numerator": "有非缺测记录的学生数", "denominator": "—",
+     "states": ("answer in (valid, insufficient)",), "empty": "无记录 → 0"},
     {"key": "valid_answers", "label": "有效作答数",
-     "definition": "记录级：作答维为 valid（有可核验文本/步骤）的作答条数",
-     "numerator": "valid 记录数", "denominator": "—",
+     "definition": "**非缺测**且作答维为 valid 的记录数（有可核验文本/步骤；「缺测」行不计入，"
+                   "仅照片的「内容不足」也不计入有效）",
+     "numerator": "有效（非缺测）记录数", "denominator": "—",
      "states": ("answer=valid",), "empty": "0"},
     {"key": "insufficient_answers", "label": "内容不足数",
      "definition": "记录级：仅照片或无过程，无法核验（不实现手写 OCR）",
@@ -1200,22 +1316,50 @@ R2_STAT_METRICS = (
      "numerator": "已确认成绩之和", "denominator": "已确认份数 × 满分",
      "states": ("score=confirmed",), "empty": "无已评 → 暂无"},
     {"key": "assignment_total_score", "label": "作业总分",
-     "definition": "应评分题满分之和（同批次同题统一满分）；缺任一题满分 → 暂无（不做部分相加）",
-     "numerator": "Σ满分", "denominator": "—",
-     "states": ("batch.config_state=configured",), "empty": "未配置 → 暂无"},
+     "definition": "**逐生得分**：某一学生全部应评分题目的**有效确认得分之和**（键为 student_id，"
+                   "`assignment_total_score()` / `student_total_scores()`）；"
+                   "缺任何一题就**不给值**（不得用 0 或已判题目的部分和顶替）；"
+                   "各题满分与评分标准不可比时不合并。满分之和不是得分，另见 supplement.batch_full_score",
+     "numerator": "逐生有效确认得分之和", "denominator": "—",
+     "states": ("score=confirmed",), "empty": "该生不完整/未配置 → 暂无（不给 0）"},
     {"key": "average_score", "label": "平均分",
      "definition": "**完整成绩**学生的确认总分平均；不完整成绩一分都不计入；不合并不同满分/标准/批次",
      "numerator": "完整成绩总分之和", "denominator": "完整成绩学生数",
      "states": ("score=confirmed",), "empty": "无完整成绩 → 暂无"},
     {"key": "score_coverage", "label": "评分覆盖率",
-     "definition": "已确认且完整成绩的学生数 ÷ 应作答人数；未配置名单 → 暂无",
-     "numerator": "完整成绩学生数", "denominator": "应作答人数",
-     "states": ("score=confirmed",), "empty": "未配置/无完整成绩 → 暂无"},
+     "definition": "已确认且完整成绩的学生数 ÷ **应参与评分学生数**（= 批次配置中至少有一道"
+                   "应评分题目的学生数去重；无应评分题目时显示无法计算）。"
+                   "分母不是「应作答人数」——某学生只有不参与评分的题目时，用应作答人数会把"
+                   "覆盖率算低，与派单 §5.1 口径不符",
+     "numerator": "完整成绩学生数", "denominator": "应参与评分学生数",
+     "states": ("score=confirmed",), "empty": "未配置/无应评分题目 → 无法计算"},
     {"key": "repeated_errors", "label": "重复错误",
-     "definition": "同一学生在同一知识点上有 ≥2 条已确认错题的（学生, 知识点）对数；"
+     "definition": "同一学生**不同作答中重复出现**的两类对数之和："
+                   "① `knowledge_pairs`（同一学生同一知识点 ≥2 条已确认错题）；"
+                   "② `cause_pairs`（同一学生同一确认错因 ≥2 次）。明细必须分开看"
+                   "（`R2_STAT_REPEATED_ERROR_PARTS`，计数用 `repeated_pairs()`）；"
+                   "同一错题多知识点/多错因按类别分别计、同类别内去重；"
                    "历史错题不用于推算正确率或掌握率",
-     "numerator": "重复对对数", "denominator": "—",
-     "states": ("cause=decided",), "empty": "0"},
+     "numerator": "knowledge_pairs 对数 + cause_pairs 对数", "denominator": "—",
+     "states": ("cause=decided",), "empty": "两类都无 → 0（明细给空列表）"},
+)
+
+# 第 15/18 项的配套口径：不是新的「18 项」，而是同一组指标里必须能分开看的部分。
+# R2-03 的看板与 R2-04 的报告都按这里的 key 出明细，避免各自另起名字。
+R2_STAT_SUPPLEMENTARY = (
+    {"key": "batch_full_score", "label": "满分合计（非得分）",
+     "definition": "应评分题满分之和（`batch_full_score()`）；只用于展示「本卷多少分」，"
+                   "**不得**参与平均分、得分率、覆盖率或「作业总分」"},
+    {"key": "scored_count", "label": "已评分数",
+     "definition": "单题得分率的分母口径配套值：该题已确认成绩的份数"},
+)
+R2_STAT_REPEATED_ERROR_PARTS = (
+    {"key": "knowledge_pairs", "label": "知识点重复",
+     "definition": "同一学生同一知识点上 ≥2 条已确认错题的对数（`repeated_pairs()`，"
+                   "输入项的 category 取知识点）"},
+    {"key": "cause_pairs", "label": "错因重复",
+     "definition": "同一学生同一确认错因出现 ≥2 次的对数（`repeated_pairs()`，"
+                   "输入项的 category 取 cause_code）"},
 )
 
 # 两项「排序结论」不是数值口径，靠上面的指标排序得出；R2-03 的看板与 R2-04 的报告
@@ -1347,14 +1491,16 @@ __all__ = [
     "LEGACY_STATE_MAP", "R1_UNCHANGED_FIELDS",
     "BATCH_CONFIG_KEYS", "DEFAULT_BATCH_CONFIG", "BATCH_CONFIG_CODES",
     "normalize_batch_config", "batch_config_errors", "expected_question_nos",
-    "scored_question_nos", "expected_student_keys", "full_score_of", "assignment_total_score",
-    "classify_record_state", "roster_status", "score_completeness",
+    "scored_question_nos", "expected_student_keys", "full_score_of", "batch_full_score",
+    "assignment_total_score", "student_total_scores", "repeated_pairs",
+    "classify_record_state", "roster_status", "scoring_students", "score_completeness",
     "MAX_SCORE_DECIMALS", "SCORE_ERROR_CODES", "validate_score", "step_deductions_consistent",
     "INVALIDATION_RULES", "INVALIDATION_RULE_IDS", "INVALIDATION_TRIGGERS", "rules_for",
     "empty_state", "apply_event",
     "AI_FLOWS", "EGRESS_FORBIDDEN_FIELDS", "egress_decision", "egress_field_problem",
     "include_in_formal_stats",
     "R2_STAT_METRICS", "R2_STAT_RANKINGS", "R2_STAT_FILTER_RULES",
+    "R2_STAT_SUPPLEMENTARY", "R2_STAT_REPEATED_ERROR_PARTS",
     "STAT_EMPTY_TEXT", "STAT_UNDEFINED_TEXT",
     "R1_LEGACY_OWNERSHIP", "MIGRATION_STEPS", "legacy_batch_config", "same_batch_scope",
     "is_current_version",
