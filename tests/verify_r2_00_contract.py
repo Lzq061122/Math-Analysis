@@ -582,6 +582,42 @@ def section_batch_and_score():
           coverage_row["denominator"] == "应参与评分学生数"
           and "应参与评分学生数" in coverage_row["definition"], coverage_row)
 
+    # F10：分母必须按「在册名单 × 应评分题」全格子传，不能只传已有作答行
+    roster_cfg = {
+        "expected_students": [{"key": "S%02d" % index} for index in range(1, 11)],
+        "expected_questions": ["1", "2", "3", "4", "5"],
+        "scored_questions": ["1", "2", "3", "4", "5"],
+        "full_scores": {str(q): 20 for q in range(1, 6)},
+    }
+    grid_rows = [{"student_key": s["key"], "question_no": q}
+                 for s in roster_cfg["expected_students"] for q in range(1, 6)]
+    answered_rows = [item for item in grid_rows if item["student_key"] != "S10"]
+    check("4.39a 分母按「名单 × 应评分题」全格子传 → 10 人（含完全没有记录的 S10）",
+          len(C.scoring_students(roster_cfg, grid_rows)) == 10,
+          len(C.scoring_students(roster_cfg, grid_rows)))
+    check("4.39b 只传已有作答行 → 分母少 1 人（覆盖率会被算高，这就是必须传全格子的原因）",
+          len(C.scoring_students(roster_cfg, answered_rows)) == 9,
+          len(C.scoring_students(roster_cfg, answered_rows)))
+    check("4.39c docstring 写清了「只传已有作答行会让未提交学生漏出分母」",
+          "只传" in C.scoring_students.__doc__
+          and "漏出分母" in C.scoring_students.__doc__, C.scoring_students.__doc__)
+
+    # F8 / F9：两项排序结论的口径（不是数值指标，但 definition 是 R2-04/R2-06 的引用源）
+    ranking = {row["key"]: row for row in C.R2_STAT_RANKINGS}
+    common = ranking["class_common_issues"]["definition"]
+    check("4.39d 班级共性问题主排序键 = 涉及学生人数，频次只作辅助",
+          "涉及学生人数" in common and "主排序" in common
+          and "频次只作辅助" in common, common)
+    priority = ranking["student_priority_issues"]["definition"]
+    check("4.39e 个人重点问题写明复用 app/tutor.py 近期加权（3/2/1，30/90 天）",
+          "app/tutor.py" in priority and "WEIGHT_RECENT=3" in priority
+          and "RECENT_DAYS=30" in priority and "MID_DAYS=90" in priority, priority)
+    tutor_text = open(os.path.join(SRC, "app", "tutor.py"), encoding="utf-8").read()
+    check("4.39f 契约里引用的 tutor 常量与原版逐字一致（原版调值会立刻红）",
+          all(token in tutor_text for token in (
+              "WEIGHT_RECENT = 3", "WEIGHT_MID = 2", "WEIGHT_OLD = 1",
+              "RECENT_DAYS = 30", "MID_DAYS = 90")), "")
+
     # 反向自证 2：摘掉一致性校验，4.35 必须变红
     original = patch_bytes(contract_path, [
         ("    if abs(diff) > 10 ** -MAX_SCORE_DECIMALS:\n",

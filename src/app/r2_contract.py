@@ -661,8 +661,11 @@ def roster_status(config, records):
 def scoring_students(config, records):
     """「应参与评分学生数」的口径（派单 §5.1 第 17 项的分母，纯函数）。
 
-    `records` = [{"student_key","question_no"}]（只用于判断「谁有应评分题」）。
-    判定：该学生在**应评分题范围**（`scored_question_nos`）里至少有一道题（不论交没交）。
+    `records` 必须是**统计范围内在册名单 × 应评分题的全部组合**（含未提交格子）：
+    `{"student_key","question_no"}` 列表。**只传「已有作答行」会让完全未提交的学生
+    漏出分母、把覆盖率算高**（analytics 的 v6 变体：名单加一名无记录学生时，分母应 11，
+    只传作答行会得 10）。
+    判定：该学生在应评分题范围（`scored_question_nos`）里至少有一道题（不论交没交）。
     批次没有应评分题 → 返回空列表（覆盖率显示「无法计算」，不拿应作答人数顶替）。
     为什么不能拿「应作答人数」当分母：某学生只有不参与评分的题目时，分母会变大、覆盖率被算低。
     """
@@ -1366,9 +1369,16 @@ R2_STAT_REPEATED_ERROR_PARTS = (
 # 都用这两个 key，避免各自另起名字。
 R2_STAT_RANKINGS = (
     {"key": "class_common_issues", "label": "班级共性问题",
-     "definition": "按知识点错误频次 → 错因频次降序取前 N，附涉及学生数与示例错题"},
+     "definition": "先按**涉及学生人数（去重）**降序；人数相同再按频次降序；仍相同按知识点名"
+                   "稳定排序（任何调用顺序、任何进程重启结果一致）。"
+                   "**频次只作辅助，不得作为主排序键**；附涉及学生数与示例错题"},
     {"key": "student_priority_issues", "label": "个人重点问题",
-     "definition": "同一排序规则作用于单个学生；重复错误优先，其次频次与最近发生时间"},
+     "definition": "**复用 `app/tutor.py` 的近期加权排序**（`summary()` 的既有口径）："
+                   "近 30 天每次 3 分、31–90 天每次 2 分、超 90 天每次 1 分"
+                   "（`WEIGHT_RECENT=3` / `WEIGHT_MID=2` / `WEIGHT_OLD=1`，"
+                   "`RECENT_DAYS=30` / `MID_DAYS=90`）；日期缺失不参与加权，未来日期按异常不计入；"
+                   "未分类（unclassified）排最后。**不得另立一套排序、不得复制这些常量**："
+                   "以 `app/tutor.py` 的同名常量为唯一来源，原版调值时 R2 必须跟着变"},
 )
 
 # 筛选口径（派单 §5.2）：哪些筛选会改变哪些指标的分母。
