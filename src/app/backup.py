@@ -49,6 +49,9 @@ APP_TAG = "math-mistake-studio"
 MAX_RESTORE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_MEMBERS = 20000
 REQUIRED_TABLES = ("classes", "students", "mistakes", "advice")
+# R2（1.9.0）的十张表随 app.db 整份备份/恢复；这里只用于清单里报条数，便于恢复前后核对。
+# 不写死在 backup.py 里：口径以 r2_contract.R2_TABLE_NAMES 为唯一来源，避免两边漂移。
+from .r2_contract import R2_TABLE_NAMES as R2_BACKUP_TABLES  # noqa: E402  （常量别名，无循环依赖）
 RESULT_FILE = ".restore-result.json"
 MARKER_FILE = ".restore-pending.json"
 CLAIM_FILE = "upload.lock"
@@ -103,6 +106,14 @@ def _counts(conn):
         counts["ai_egress_audit"] = conn.execute(
             "SELECT COUNT(*) FROM ai_egress_audit"
         ).fetchone()[0]
+    # R2（1.9.0）新增的十张表：批次配置、作答图片、评分与步骤扣分、教学资源三表、
+    # 教学任务、提示使用记录、报告导出历史。同样是「有表才统计」——1.8.1 与 R1 的备份
+    # 里没有这些表，不能因为算不出来就判备份损坏。
+    # 注意：这些表不进 REQUIRED_TABLES（那是「打开库时结构是否兼容」的判据，加进去会把
+    # 1.8.1 老师的库挡在门外，迁移根本没机会跑）；恢复时 app.db 整份覆盖，表跟着走。
+    for table in R2_BACKUP_TABLES:
+        if table in tables:
+            counts[table] = conn.execute("SELECT COUNT(*) FROM %s" % table).fetchone()[0]
     return counts
 
 

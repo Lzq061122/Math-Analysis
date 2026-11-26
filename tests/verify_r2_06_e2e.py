@@ -354,6 +354,26 @@ def main():
     check("I2 重启后导出历史仍可读（账号/时间/用途/类型都在）",
           isinstance(history, (list, dict)) and bool(history), type(history).__name__)
 
+    # I3 R2 的十张表要出现在备份清单里：否则「备份→换机恢复」后无法核对带过去了多少条，
+    # 而且导出历史这类新业务数据会静默丢（这正是把历史从侧车 JSON 挪进库里的原因）。
+    import zipfile
+
+    from app import backup
+
+    zip_path = os.path.join(tempfile.mkdtemp(prefix="r2e2e-bak-"), "备份.zip")
+    backup.create_backup(svc2.data_dir, zip_path, svc2.user["id"], app_version="1.9.0")
+    with zipfile.ZipFile(zip_path) as bundle:
+        manifest = json.loads(bundle.read("manifest.json").decode("utf-8"))
+    counts_in_manifest = manifest.get("counts") or {}
+    present = [t for t in C.R2_TABLE_NAMES if t in counts_in_manifest]
+    check("I3 备份清单里十个 R2 表条数齐全（批次配置至少 1 条）",
+          len(present) == len(C.R2_TABLE_NAMES)
+          and counts_in_manifest.get("assignment_batches", 0) >= 1,
+          "齐全 %d/%d，批次 %s 条，导出历史 %s 条" % (
+              len(present), len(C.R2_TABLE_NAMES),
+              counts_in_manifest.get("assignment_batches"),
+              counts_in_manifest.get("r2_report_exports")))
+
     total = len(ITEMS)
     passed = sum(1 for _, ok in ITEMS if ok)
     print("")
