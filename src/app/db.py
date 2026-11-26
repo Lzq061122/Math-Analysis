@@ -319,6 +319,329 @@ AI_EGRESS_AUDIT_DDL = (
     "CREATE INDEX IF NOT EXISTS idx_ai_egress_user ON ai_egress_audit(user_id, created_at)",
 )
 
+# ---------------------------------------------------------------------------
+# R2（1.9.0）：公共契约新增表（配套 src/app/r2_contract.py，正文见 docs/R2_接口契约.md）
+# ---------------------------------------------------------------------------
+# 五条总规矩（R2-00 硬约束，评审逐条核对）：
+#   1. **只加不删**：R1/1.8.1 的既有表一个字段都不删、不改默认值、不改写入规则
+#      （answer_checks.manual_verified 这类列根本没被碰：R1 里它只出现在契约文本里，
+#      归档字段名仍是 verify_source='manual' 的那一套，本轮一律不动）。
+#   2. **不做预留表**：下面 9 张表的每个字段都在 R2-01/02/03/04/05 的派单里有明确用途，
+#      没有「将来可能要用」的空表或空列。
+#   3. **不改 SCHEMA_VERSION**：仍为 "4"。理由见 r2_contract.R2_SCHEMA_VERSION_UNCHANGED ——
+#      desktop/data_dir.py 用版本号决定「结构不兼容」，升号会把 1.8.1 老师的库挡在门外。
+#   4. **幂等**：全部 CREATE ... IF NOT EXISTS；ensure_r2_schema() 二次调用返回 None。
+#   5. **演示数据仍靠查询侧收口**：新表不建任何「写入即改归属」的触发器（R1-08 的教训）。
+#
+# 批次配置：一份作业一行。`batch` 与 answers.batch 是同一字符串（R1 的归属口径），
+# 迁移只按 (class_id, batch) 登记，绝不改写历史 answers 行的归属——「同名历史批次维持
+# 原归属」就落在这条唯一索引上：同名 = 同一作用域，不同班 = 各算各的，不合并、不加前缀。
+ASSIGNMENT_BATCH_DDL = (
+    """CREATE TABLE IF NOT EXISTS assignment_batches (
+    id                 INTEGER PRIMARY KEY,
+    class_id           INTEGER NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+    batch              TEXT NOT NULL DEFAULT '',
+    name               TEXT NOT NULL DEFAULT '',
+    occurred_on        TEXT NOT NULL DEFAULT '',
+    expected_students  TEXT NOT NULL DEFAULT '[]',
+    expected_questions TEXT NOT NULL DEFAULT '[]',
+    scored_questions   TEXT NOT NULL DEFAULT '[]',
+    full_scores        TEXT NOT NULL DEFAULT '{}',
+    rubric             TEXT NOT NULL DEFAULT '{}',
+    rubric_version     TEXT NOT NULL DEFAULT '',
+    config_state       TEXT NOT NULL DEFAULT 'unconfigured',
+    origin             TEXT NOT NULL DEFAULT 'legacy',
+    created_by         INTEGER,
+    created_at         TEXT NOT NULL,
+    updated_at         TEXT NOT NULL
+)""",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_batches_class_batch"
+    " ON assignment_batches(class_id, batch)",
+    "CREATE INDEX IF NOT EXISTS idx_batches_occurred ON assignment_batches(class_id, occurred_on)",
+)
+
+# 作答图片多图：一张作答 1..n 张（ZIP 的 images/ 目录，或界面补录）。
+# 为什么不复用 mistakes.image_file：那张表是「错题」的照片，作答本身没有照片字段，
+# 且 R1 的作答是以文本步骤为核验依据的；R2 要「多图可查看」，就必须有独立表。
+# 只有图片、没有文本步骤的作答由 r2_contract.classify_record_state 判成「内容不足」，
+# 这里不记录任何「AI 识别出来的内容」（不实现手写 OCR）。
+ANSWER_IMAGES_DDL = (
+    """CREATE TABLE IF NOT EXISTS answer_images (
+    id          INTEGER PRIMARY KEY,
+    class_id    INTEGER NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+    student_id  INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+    answer_id   INTEGER NOT NULL REFERENCES answers(id) ON DELETE CASCADE,
+    seq         INTEGER NOT NULL DEFAULT 1,
+    file_path   TEXT NOT NULL DEFAULT '',
+    mime        TEXT NOT NULL DEFAULT '',
+    width       INTEGER NOT NULL DEFAULT 0,
+    height      INTEGER NOT NULL DEFAULT 0,
+    bytes       INTEGER NOT NULL DEFAULT 0,
+    sha256      TEXT NOT NULL DEFAULT '',
+    source      TEXT NOT NULL DEFAULT 'zip',
+    note        TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL
+)""",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_answer_images_seq ON answer_images(answer_id, seq)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_answer_images_path ON answer_images(answer_id, file_path)",
+    "CREATE INDEX IF NOT EXISTS idx_answer_images_student ON answer_images(student_id)",
+    "CREATE INDEX IF NOT EXISTS idx_answer_images_class ON answer_images(class_id)",
+)
+
+# 教师评分：同批次同题统一满分（满分抄 assignment_batches.full_scores，不在这里重新定义）。
+# 状态：unscored / draft / confirmed / invalidated（见 r2_contract.SCORE_STATES）。
+# 唯一性口径与 R1 的 answer_checks 保持一致：同一作答同一题同一作答版本只保留一条
+# 「还活着」的成绩（draft/confirmed），失效行（invalidated）与撤回行留历史、不受限制。
+# 正式统计只认 confirmed —— 这条闸门写在查询侧，不靠任何触发器。
+ANSWER_SCORES_DDL = (
+    """CREATE TABLE IF NOT EXISTS answer_scores (
+    id                 INTEGER PRIMARY KEY,
+    class_id           INTEGER NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+    student_id         INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+    answer_id          INTEGER NOT NULL REFERENCES answers(id) ON DELETE CASCADE,
+    batch              TEXT NOT NULL DEFAULT '',
+    question_no        TEXT NOT NULL DEFAULT '',
+    full_score         REAL NOT NULL DEFAULT 0,
+    score              REAL,
+    state              TEXT NOT NULL DEFAULT 'unscored',
+    answer_version     TEXT NOT NULL DEFAULT '',
+    rubric_version     TEXT NOT NULL DEFAULT '',
+    steps_json         TEXT NOT NULL DEFAULT '[]',
+    scored_by          INTEGER,
+    scored_at          TEXT NOT NULL DEFAULT '',
+    confirmed_by       INTEGER,
+    confirmed_at       TEXT NOT NULL DEFAULT '',
+    revision_reason    TEXT NOT NULL DEFAULT '',
+    invalidated_at     TEXT NOT NULL DEFAULT '',
+    invalidated_reason TEXT NOT NULL DEFAULT '',
+    invalidated_by     INTEGER,
+    history            TEXT NOT NULL DEFAULT '[]',
+    created_at         TEXT NOT NULL,
+    updated_at         TEXT NOT NULL
+)""",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_scores_answer_version"
+    " ON answer_scores(answer_id, question_no, answer_version)"
+    " WHERE state IN ('draft','confirmed')",
+    "CREATE INDEX IF NOT EXISTS idx_scores_batch ON answer_scores(class_id, batch, question_no)",
+    "CREATE INDEX IF NOT EXISTS idx_scores_answer ON answer_scores(answer_id)",
+)
+
+# 步骤扣分项：「满分 − Σ扣分 = 录入分数」，不一致一律拒绝保存（r2_contract §七 第 7 条）。
+# 扣分项与成绩行同生共死（ON DELETE CASCADE）；撤回/失效时不删行，只由成绩行的 history
+# 与 state 表达「这批扣分已不是当前结论」。
+SCORE_STEPS_DDL = (
+    """CREATE TABLE IF NOT EXISTS score_step_deductions (
+    id         INTEGER PRIMARY KEY,
+    score_id   INTEGER NOT NULL REFERENCES answer_scores(id) ON DELETE CASCADE,
+    step_index INTEGER,
+    label      TEXT NOT NULL DEFAULT '',
+    deduction  REAL NOT NULL DEFAULT 0,
+    note       TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_score_steps_score ON score_step_deductions(score_id)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_score_steps_index"
+    " ON score_step_deductions(score_id, step_index) WHERE step_index IS NOT NULL",
+)
+
+# 教学资源库（R2-05）：五类资源统一结构，`resource_key` 是跨版本的独立 ID。
+# 正文/条件/练习字段放 JSON，是因为五类资源的字段差异大（练习有题干/难度/答案/解析，
+# 追问只有问句），给每类各建一张表会让「双审核 + 版本」重复三遍。
+# 状态：draft / pending_review / published / disabled（r2_contract.RESOURCE_STATES）。
+TEACHING_RESOURCES_DDL = (
+    """CREATE TABLE IF NOT EXISTS teaching_resources (
+    id              INTEGER PRIMARY KEY,
+    resource_key    TEXT NOT NULL,
+    kind            TEXT NOT NULL DEFAULT 'cause',
+    unit            TEXT NOT NULL DEFAULT '',
+    knowledge_point TEXT NOT NULL DEFAULT '',
+    cause_code      TEXT NOT NULL DEFAULT '',
+    title           TEXT NOT NULL DEFAULT '',
+    body            TEXT NOT NULL DEFAULT '{}',
+    conditions      TEXT NOT NULL DEFAULT '{}',
+    source          TEXT NOT NULL DEFAULT '',
+    status          TEXT NOT NULL DEFAULT 'draft',
+    current_version INTEGER NOT NULL DEFAULT 0,
+    created_by      INTEGER,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+)""",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_resources_key ON teaching_resources(resource_key)",
+    "CREATE INDEX IF NOT EXISTS idx_resources_kind ON teaching_resources(kind, status)",
+    "CREATE INDEX IF NOT EXISTS idx_resources_kp ON teaching_resources(knowledge_point)",
+    "CREATE INDEX IF NOT EXISTS idx_resources_cause ON teaching_resources(cause_code)",
+    """CREATE TABLE IF NOT EXISTS teaching_resource_versions (
+    id           INTEGER PRIMARY KEY,
+    resource_key TEXT NOT NULL REFERENCES teaching_resources(resource_key) ON DELETE CASCADE,
+    version      INTEGER NOT NULL DEFAULT 1,
+    body         TEXT NOT NULL DEFAULT '{}',
+    conditions   TEXT NOT NULL DEFAULT '{}',
+    state        TEXT NOT NULL DEFAULT 'pending_review',
+    note         TEXT NOT NULL DEFAULT '',
+    created_by   INTEGER,
+    created_at   TEXT NOT NULL,
+    published_at TEXT NOT NULL DEFAULT '',
+    disabled_at  TEXT NOT NULL DEFAULT ''
+)""",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_versions_key"
+    " ON teaching_resource_versions(resource_key, version)",
+    """CREATE TABLE IF NOT EXISTS teaching_resource_reviews (
+    id             INTEGER PRIMARY KEY,
+    resource_key   TEXT NOT NULL REFERENCES teaching_resources(resource_key) ON DELETE CASCADE,
+    version        INTEGER NOT NULL DEFAULT 1,
+    review_kind    TEXT NOT NULL DEFAULT 'math',
+    reviewer       INTEGER,
+    reviewer_name  TEXT NOT NULL DEFAULT '',
+    decision       TEXT NOT NULL DEFAULT 'pending',
+    opinion        TEXT NOT NULL DEFAULT '',
+    reviewed_at    TEXT NOT NULL DEFAULT '',
+    publish_version INTEGER
+)""",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_reviews_once"
+    " ON teaching_resource_reviews(resource_key, version, review_kind, reviewer)",
+    "CREATE INDEX IF NOT EXISTS idx_resource_reviews_key"
+    " ON teaching_resource_reviews(resource_key, version)",
+)
+
+# 教学任务（R2-05 E）：个人或班级的辅导任务。
+# `review_state` 与 `status` 正交：依据变了只打 needs_review，状态不自动改（§2.5 第 9 条）。
+TEACHING_TASKS_DDL = (
+    """CREATE TABLE IF NOT EXISTS teaching_tasks (
+    id                INTEGER PRIMARY KEY,
+    class_id          INTEGER NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+    student_id        INTEGER,
+    kind              TEXT NOT NULL DEFAULT 'individual',
+    title             TEXT NOT NULL DEFAULT '',
+    basis             TEXT NOT NULL DEFAULT '{}',
+    hint_plan         TEXT NOT NULL DEFAULT '{}',
+    exercise_refs     TEXT NOT NULL DEFAULT '[]',
+    resource_versions TEXT NOT NULL DEFAULT '{}',
+    teacher_note      TEXT NOT NULL DEFAULT '',
+    status            TEXT NOT NULL DEFAULT 'draft',
+    review_state      TEXT NOT NULL DEFAULT 'ok',
+    created_by        INTEGER,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    completed_at      TEXT NOT NULL DEFAULT '',
+    history           TEXT NOT NULL DEFAULT '[]'
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_tasks_class ON teaching_tasks(class_id, status)",
+    "CREATE INDEX IF NOT EXISTS idx_tasks_student ON teaching_tasks(student_id)",
+)
+
+# 三级提示使用记录（R2-05 D）：记录「学生独立尝试 → 实际给的级别 → 是否自行修正」。
+# `independent_before_solution` 专门记「完整解析是在独立尝试之后给的」，因为
+# 「教师提前看答案不算学生完成」这条验收靠的就是它，不能从别的字段推断。
+HINT_USAGES_DDL = (
+    """CREATE TABLE IF NOT EXISTS hint_usages (
+    id                         INTEGER PRIMARY KEY,
+    class_id                   INTEGER NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+    student_id                 INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+    answer_id                  INTEGER REFERENCES answers(id) ON DELETE SET NULL,
+    task_id                    INTEGER REFERENCES teaching_tasks(id) ON DELETE SET NULL,
+    knowledge_point            TEXT NOT NULL DEFAULT '',
+    cause_code                 TEXT NOT NULL DEFAULT '',
+    level                      TEXT NOT NULL DEFAULT 'P1',
+    planned_level              TEXT NOT NULL DEFAULT 'P1',
+    provided                   INTEGER NOT NULL DEFAULT 0,
+    independent_attempt        INTEGER NOT NULL DEFAULT 0,
+    student_fixed              INTEGER NOT NULL DEFAULT 0,
+    full_solution_provided     INTEGER NOT NULL DEFAULT 0,
+    independent_before_solution INTEGER NOT NULL DEFAULT 0,
+    resource_key               TEXT NOT NULL DEFAULT '',
+    resource_version           INTEGER,
+    note                       TEXT NOT NULL DEFAULT '',
+    created_at                 TEXT NOT NULL,
+    updated_at                 TEXT NOT NULL
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_hints_class ON hint_usages(class_id, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_hints_answer ON hint_usages(answer_id)",
+    "CREATE INDEX IF NOT EXISTS idx_hints_task ON hint_usages(task_id)",
+    "CREATE INDEX IF NOT EXISTS idx_hints_student ON hint_usages(student_id)",
+)
+
+R2_DDL = (
+    ASSIGNMENT_BATCH_DDL
+    + ANSWER_IMAGES_DDL
+    + ANSWER_SCORES_DDL
+    + SCORE_STEPS_DDL
+    + TEACHING_RESOURCES_DDL
+    + TEACHING_TASKS_DDL
+    + HINT_USAGES_DDL
+)
+
+# 「R2 结构就绪」的判据（与 r2_contract.R2_TABLE_NAMES 一一对应）：
+# 表在、索引在、关键列在，缺任何一项都按未升级处理，由 ensure_r2_schema() 补齐。
+R2_REQUIRED_COLUMNS = {
+    "assignment_batches": [
+        "id", "class_id", "batch", "name", "occurred_on", "expected_students",
+        "expected_questions", "scored_questions", "full_scores", "rubric",
+        "rubric_version", "config_state", "origin", "created_by", "created_at", "updated_at",
+    ],
+    "answer_images": [
+        "id", "class_id", "student_id", "answer_id", "seq", "file_path", "mime",
+        "width", "height", "bytes", "sha256", "source", "note", "created_at",
+    ],
+    "answer_scores": [
+        "id", "class_id", "student_id", "answer_id", "batch", "question_no", "full_score",
+        "score", "state", "answer_version", "rubric_version", "steps_json", "scored_by",
+        "scored_at", "confirmed_by", "confirmed_at", "revision_reason", "invalidated_at",
+        "invalidated_reason", "invalidated_by", "history", "created_at", "updated_at",
+    ],
+    "score_step_deductions": ["id", "score_id", "step_index", "label", "deduction", "note", "created_at"],
+    "teaching_resources": [
+        "id", "resource_key", "kind", "unit", "knowledge_point", "cause_code", "title",
+        "body", "conditions", "source", "status", "current_version", "created_by",
+        "created_at", "updated_at",
+    ],
+    "teaching_resource_versions": [
+        "id", "resource_key", "version", "body", "conditions", "state", "note",
+        "created_by", "created_at", "published_at", "disabled_at",
+    ],
+    "teaching_resource_reviews": [
+        "id", "resource_key", "version", "review_kind", "reviewer", "reviewer_name",
+        "decision", "opinion", "reviewed_at", "publish_version",
+    ],
+    "teaching_tasks": [
+        "id", "class_id", "student_id", "kind", "title", "basis", "hint_plan",
+        "exercise_refs", "resource_versions", "teacher_note", "status", "review_state",
+        "created_by", "created_at", "updated_at", "completed_at", "history",
+    ],
+    "hint_usages": [
+        "id", "class_id", "student_id", "answer_id", "task_id", "knowledge_point",
+        "cause_code", "level", "planned_level", "provided", "independent_attempt",
+        "student_fixed", "full_solution_provided", "independent_before_solution",
+        "resource_key", "resource_version", "note", "created_at", "updated_at",
+    ],
+}
+
+R2_REQUIRED_INDEXES = (
+    "idx_batches_class_batch",
+    "idx_batches_occurred",
+    "idx_answer_images_seq",
+    "idx_answer_images_path",
+    "idx_answer_images_student",
+    "idx_answer_images_class",
+    "idx_scores_answer_version",
+    "idx_scores_batch",
+    "idx_scores_answer",
+    "idx_score_steps_score",
+    "idx_score_steps_index",
+    "idx_resources_key",
+    "idx_resources_kind",
+    "idx_resources_kp",
+    "idx_resources_cause",
+    "idx_resource_versions_key",
+    "idx_resource_reviews_once",
+    "idx_resource_reviews_key",
+    "idx_tasks_class",
+    "idx_tasks_student",
+    "idx_hints_class",
+    "idx_hints_answer",
+    "idx_hints_task",
+    "idx_hints_student",
+)
+
 SCHEMA = """
 PRAGMA foreign_keys = ON;
 
@@ -422,7 +745,7 @@ CREATE TABLE IF NOT EXISTS app_meta (
     key    TEXT PRIMARY KEY,
     value  TEXT NOT NULL
 );
-""" + "\n".join(ddl.rstrip(";") + ";" for ddl in ANSWERS_DDL + REVIEWS_DDL + TUTOR_DDL + FOLLOWUP_DDL + ANSWER_CHECK_DDL + AI_EGRESS_AUDIT_DDL) + """
+""" + "\n".join(ddl.rstrip(";") + ";" for ddl in ANSWERS_DDL + REVIEWS_DDL + TUTOR_DDL + FOLLOWUP_DDL + ANSWER_CHECK_DDL + AI_EGRESS_AUDIT_DDL + R2_DDL) + """
 """
 
 # 桌面版对「已有 1.3.0 数据目录」做只读完整性检查时用：必需表及其必需列。
@@ -1238,8 +1561,320 @@ def ensure_answer_check_schema(db_file):
     return backup_file
 
 
+# ---------------------------------------------------------------------------
+# R2（1.9.0）：结构就绪判定、增量迁移与批次配置读写
+# ---------------------------------------------------------------------------
+def _r2_contract():
+    """延迟导入 R2 契约模块。
+
+    为什么延迟：`r2_contract` 是纯函数层（只 import re），但 db.py 是它「不许反向依赖」
+    的对象；放成模块级 import 会让「谁依赖谁」变得看不出来，也挡住将来单独复用 db.py 的
+    场景（tests/fixtures 里就有独立的 db.py 副本）。这里照 `answer_check._demo_module()`
+    的既有做法，import 失败也能给出明确异常。
+    """
+    try:
+        from . import r2_contract
+    except ImportError:  # 直接以脚本方式 import db.py 时
+        import r2_contract  # type: ignore[no-redef]
+    return r2_contract
+
+
+def r2_schema_ready(db_file):
+    """只读判断已有库是否已具备 R2 结构（9 张表 + 索引 + 关键列都在）。
+
+    与 R1 的 `*_schema_ready` 同一套判据风格：**不看 SCHEMA_VERSION**（它仍是 "4"），
+    只看结构本身，因此 1.8.1 的库升级成功后版本号不变、结构就绪为真。
+    """
+    uri = "file:%s?mode=ro" % db_file.replace("?", "%3f")
+    conn = sqlite3.connect(uri, uri=True)
+    try:
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        indexes = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+        for table, columns in R2_REQUIRED_COLUMNS.items():
+            if table not in tables:
+                return False
+            existing = {row[1] for row in conn.execute("PRAGMA table_info(%s)" % table)}
+            if any(name not in existing for name in columns):
+                return False
+        return all(name in indexes for name in R2_REQUIRED_INDEXES)
+    finally:
+        conn.close()
+
+
+def _seed_assignment_batches(conn, stamp=None):
+    """把历史作答里出现过的批次登记成「未配置」的批次配置行，返回新增行数。
+
+    三条硬口径（对应派单「同名历史批次维持原归属」）：
+      1. **不改写归属**：只 INSERT 配置行，绝不 UPDATE answers.batch；
+      2. **按 (class_id, batch) 逐字登记**：同名不同班各一行，同班同名视为同一份作业
+         （R1 的数据模型里它们本来就是同一个字符串，无法也无权区分）；
+      3. **不猜名单/满分**：名单、题号、满分一律留空 → `config_state='unconfigured'`，
+         统计显示「暂无」。若把该批次自己的作答行反推成「应作答名单」，未提交数会永远是 0，
+         那是**用数据污染口径**，明确不做。
+    幂等：已存在的 (class_id, batch) 跳过，所以二次调用返回 0。
+    """
+    contract = _r2_contract()
+    stamp = stamp or now_iso()
+    rows = conn.execute(
+        "SELECT DISTINCT class_id, batch FROM answers"
+        " WHERE batch IS NOT NULL AND TRIM(batch) <> ''"
+    ).fetchall()
+    added = 0
+    for class_id, batch in rows:
+        existing = conn.execute(
+            "SELECT 1 FROM assignment_batches WHERE class_id=? AND batch=?",
+            (class_id, batch),
+        ).fetchone()
+        if existing:
+            continue
+        conn.execute(
+            "INSERT INTO assignment_batches(class_id, batch, name, occurred_on,"
+            " expected_students, expected_questions, scored_questions, full_scores,"
+            " rubric, rubric_version, config_state, origin, created_by, created_at, updated_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                class_id, batch, batch, "",
+                "[]", "[]", "[]", "{}", "{}", "",
+                contract.BATCH_CONFIG_STATE_UNCONFIGURED, contract.BATCH_ORIGIN_LEGACY,
+                None, stamp, stamp,
+            ),
+        )
+        added += 1
+    return added
+
+
+def ensure_r2_schema(db_file):
+    """给旧库补上 R2 的 9 张表/索引并登记历史批次；本来就齐全时返回 None。
+
+    与 `ensure_answer_check_schema` 同一套三段式：只读检查 → 一致性备份 → `BEGIN IMMEDIATE`
+    建表/建索引/登记历史批次 → COMMIT → 复核。失败抛 `MigrationError`，原库不动
+    （迁移前的一致性备份仍在，覆盖回去即回退）。测试注入点：`MISTAKE_FAULT` 含
+    `r2_backup` / `r2_begin` / `r2_commit` 时模拟对应环节故障。
+
+    幂等性：结构就绪时**直接返回 None，一个字节都不写**；未就绪时才走完整流程。
+    因此「老师每次启动桌面端都调一次」是安全的。
+    """
+    if not os.path.exists(db_file):
+        raise FileNotFoundError("数据库文件不存在：%s" % db_file)
+    if r2_schema_ready(db_file):
+        return None
+    backup_file = "%s.bak-%s-%s" % (
+        db_file, datetime.now().strftime("%Y%m%d-%H%M%S"), uuid.uuid4().hex[:6]
+    )
+
+    try:
+        source = sqlite3.connect(db_file, timeout=15)
+        try:
+            target = sqlite3.connect(backup_file)
+            try:
+                _migration_fault("r2_backup")
+                source.backup(target)
+            finally:
+                target.close()
+        finally:
+            source.close()
+    except Exception as exc:
+        try:
+            if os.path.exists(backup_file):
+                os.remove(backup_file)
+        except OSError:
+            pass
+        raise MigrationError(
+            "给 R2 新功能加数据表前先做备份时失败（%s），原有数据没有改动，也没有改写任何文件。" % exc
+        )
+
+    try:
+        conn = sqlite3.connect(db_file, timeout=15, isolation_level=None)
+    except Exception as exc:
+        raise MigrationError(
+            "给 R2 新功能加数据表时无法打开数据库写入连接（%s），原有数据没有改动。"
+            "请先关闭其他正在使用这个数据目录的软件后重试；备份文件：%s" % (exc, backup_file)
+        )
+    try:
+        try:
+            _migration_fault("r2_begin")
+            conn.execute("BEGIN IMMEDIATE")
+        except Exception as exc:
+            raise MigrationError(
+                "给 R2 新功能加数据表时无法开始写入（%s），可能是另一份软件正在使用这个数据目录。"
+                "原有数据没有改动。备份文件：%s" % (exc, backup_file)
+            )
+        try:
+            for ddl in R2_DDL:
+                conn.execute(ddl)
+            _seed_assignment_batches(conn)
+            _migration_fault("r2_commit")
+            conn.execute("COMMIT")
+        except Exception as exc:
+            rollback_failed = False
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                rollback_failed = True
+            if rollback_failed:
+                raise MigrationError(
+                    "给 R2 新功能加数据表时失败（%s），而且撤销改动也没有成功，当前数据状态不确定。"
+                    "请保留备份文件 %s 和整个软件文件夹，联系技术人员处理。" % (exc, backup_file)
+                )
+            raise MigrationError(
+                "给 R2 新功能加数据表时失败（%s），改动已撤销，原有数据没有改动。备份文件：%s"
+                % (exc, backup_file)
+            )
+    finally:
+        conn.close()
+
+    if not r2_schema_ready(db_file):
+        raise MigrationError("R2 数据表没有生效，原有数据没有改动。备份文件：%s" % backup_file)
+    return backup_file
+
+
+def _batch_config_from_row(row, batch=""):
+    """把 assignment_batches 的一行还原成规范化配置（JSON 列解析失败按空值处理，不抛）。"""
+    contract = _r2_contract()
+    row = dict(row or {})
+    raw = {}
+    for key, default in (("expected_students", []), ("expected_questions", []),
+                         ("scored_questions", []), ("full_scores", {}), ("rubric", {})):
+        value = row.get(key)
+        if isinstance(value, str):
+            try:
+                raw[key] = json.loads(value)
+            except (TypeError, ValueError):
+                raw[key] = default
+        elif value is None:
+            raw[key] = default
+        else:
+            raw[key] = value
+    raw["batch"] = row.get("batch") or batch or ""
+    raw["name"] = row.get("name") or raw["batch"]
+    raw["occurred_on"] = row.get("occurred_on") or ""
+    raw["rubric_version"] = row.get("rubric_version") or ""
+    raw["origin"] = row.get("origin") or contract.BATCH_ORIGIN_LEGACY
+    raw["config_state"] = row.get("config_state") or contract.BATCH_CONFIG_STATE_UNCONFIGURED
+    config, _errors = contract.normalize_batch_config(raw, batch=raw["batch"])
+    # 库里记的是权威状态：不能因为「名单本来就有值」就把未配置的旧行读成已配置
+    config["config_state"] = raw["config_state"]
+    config["origin"] = raw["origin"]
+    config["class_id"] = row.get("class_id")
+    config["id"] = row.get("id")
+    config["created_at"] = row.get("created_at") or ""
+    config["updated_at"] = row.get("updated_at") or ""
+    return config
+
+
+def batch_config_row(db, class_id, batch):
+    """读一行原始批次配置（没有登记返回 None）。表不存在时也返回 None（未升级的旧库）。"""
+    names = {row["name"] for row in db.query("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "assignment_batches" not in names:
+        return None
+    return db.query_one(
+        "SELECT * FROM assignment_batches WHERE class_id=? AND batch=?",
+        (int(class_id), str(batch or "")),
+    )
+
+
+def load_batch_config(db, class_id, batch):
+    """读规范化后的批次配置；没有登记时返回「未配置」缺省值（不写库、不抛异常）。
+
+    统计与评分都从这里取口径，因此「未配置」必须是一等公民：`config_state =
+    'unconfigured'`，应作答人数/未提交数/作业总分等指标显示「暂无」，而不是拿 0 冒充。
+    """
+    contract = _r2_contract()
+    row = batch_config_row(db, class_id, batch)
+    if row is None:
+        config, _errors = contract.normalize_batch_config({}, batch=batch)
+        config["config_state"] = contract.BATCH_CONFIG_STATE_UNCONFIGURED
+        return config
+    return _batch_config_from_row(row, batch=batch)
+
+
+def list_batch_configs(db, class_id):
+    """列出该班已登记的批次配置（按日期→批次名排序，便于界面下拉）。"""
+    names = {row["name"] for row in db.query("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "assignment_batches" not in names:
+        return []
+    rows = db.query(
+        "SELECT * FROM assignment_batches WHERE class_id=?"
+        " ORDER BY occurred_on DESC, batch ASC",
+        (int(class_id),),
+    )
+    return [_batch_config_from_row(row) for row in rows]
+
+
+def save_batch_config(db, class_id, batch, config, user_id=None):
+    """写入/更新批次配置并返回规范化后的配置；不合法抛 ValueError（中文消息，含错误码）。
+
+    校验口径在 `r2_contract.batch_config_errors()`：应评分题必须在应作答题号内、每题满分
+    > 0、给了评分标准就要有 rubric_version。名单/题号可以为空（= 未配置），那是合法的。
+    """
+    contract = _r2_contract()
+    normalized, errors = contract.normalize_batch_config(config, batch=batch)
+    if errors:
+        messages = []
+        for code, detail in errors:
+            label = contract.BATCH_CONFIG_CODES.get(code, code)
+            messages.append("%s（%s%s）" % (label, code, "：" + detail if detail else ""))
+        raise ValueError("批次配置不合法：" + "；".join(messages))
+    stamp = now_iso()
+    payload = (
+        normalized["name"],
+        normalized["occurred_on"],
+        json.dumps(normalized["expected_students"], ensure_ascii=False),
+        json.dumps(list(normalized["expected_questions"]), ensure_ascii=False),
+        json.dumps(list(normalized["scored_questions"]), ensure_ascii=False),
+        json.dumps(normalized["full_scores"], ensure_ascii=False),
+        json.dumps(normalized["rubric"], ensure_ascii=False),
+        normalized["rubric_version"],
+        normalized["config_state"],
+        normalized["origin"],
+        int(user_id) if user_id is not None else None,
+        stamp,
+    )
+    with db.tx() as conn:
+        row = conn.execute(
+            "SELECT id FROM assignment_batches WHERE class_id=? AND batch=?",
+            (int(class_id), str(batch or "")),
+        ).fetchone()
+        if row is None:
+            conn.execute(
+                "INSERT INTO assignment_batches(class_id, batch, name, occurred_on,"
+                " expected_students, expected_questions, scored_questions, full_scores,"
+                " rubric, rubric_version, config_state, origin, created_by, created_at, updated_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (int(class_id), str(batch or "")) + payload + (stamp,),
+            )
+        else:
+            conn.execute(
+                "UPDATE assignment_batches SET name=?, occurred_on=?, expected_students=?,"
+                " expected_questions=?, scored_questions=?, full_scores=?, rubric=?,"
+                " rubric_version=?, config_state=?, origin=?, created_by=?, updated_at=?"
+                " WHERE id=?",
+                payload + (int(row[0] if not isinstance(row, dict) else row["id"]),),
+            )
+    return load_batch_config(db, class_id, batch)
+
+
+def ensure_batch_config(db, class_id, batch, origin=None, user_id=None):
+    """按需登记一个批次（已存在则原样返回，不覆盖老师的现有配置）。
+
+    R2-01 导入时用它「先登记再导数据」：新批次拿到的是一份未配置行（名单/满分待填），
+    历史批次则不会因为再次导入就被清空配置。
+    """
+    contract = _r2_contract()
+    row = batch_config_row(db, class_id, batch)
+    if row is not None:
+        return _batch_config_from_row(row, batch=batch)
+    return save_batch_config(
+        db, class_id, batch,
+        {"origin": origin or contract.BATCH_ORIGIN_IMPORT,
+         "config_state": contract.BATCH_CONFIG_STATE_UNCONFIGURED},
+        user_id=user_id,
+    )
+
+
 class Database:
     """线程安全的 SQLite 封装：每个线程一条连接，写操作显式事务。"""
+
     def __init__(self, path, create=True):
         """create=True：新建库（执行建表、补列、写结构版本）；create=False：只打开已有库，
         绝不执行任何建表/补列/补索引/改结构版本。"""
@@ -1301,6 +1936,14 @@ class Database:
         # (batch, source) 收口与 stats 的 a.source 过滤保证，不依赖任何隐式写入改写。
         for name in RETIRED_TRIGGER_NAMES:
             self.conn.execute("DROP TRIGGER IF EXISTS %s" % name)
+        # R2（1.9.0）：新库由 SCHEMA 直接建好 9 张新表；用 create=True 打开一份旧库时，
+        # 这里把历史批次登记成「未配置」的批次配置行（幂等，只 INSERT、不改 answers.batch）。
+        # 桌面端走的是 create=False + service 里的 ensure_r2_schema（见 docs/R2_接口契约.md
+        # §迁移方案第 3 步的接线片段），两条路径最终得到同一份结构。
+        names = {row[0] for row in self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        if "assignment_batches" in names:
+            _seed_assignment_batches(self.conn)
 
     # -- 连接 -------------------------------------------------------------
     def _connect(self):

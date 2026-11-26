@@ -1,0 +1,150 @@
+R2-00 回归原始记录（逐套件串行；工作副本 E:\Agent\小挑，分支 r2-work，基线 9fe7da8）
+生成时间：2026-11-26T18:27:21.4931646+08:00
+解释器：app 层 C:\Python314\python.exe（3.14.7）；桌面 UI 层 E:\Agent\venv-desktop\Scripts\python.exe（3.12.10 / PySide6 6.6.3.1，QT_QPA_PLATFORM=offscreen）
+取证方式：每个套件跑完后立刻复制**套件自己写出的 UTF-8 日志**到 docs/R2-00_回归日志/（不用控制台重定向，避免 GBK 乱码），随后把仓库里被改写的 docs/verify-*.txt git restore 回 HEAD，保证工作副本只留本轮真改动。
+完整原始日志目录：docs/R2-00_回归日志/（每个套件一份，字节级复制，未改一行）
+
+==============================================================================
+SUITE verify_r2_00_contract   exit=0   命令：C:\Python314\python.exe tests\verify_r2_00_contract.py
+原始日志：docs/R2-00_回归日志/verify_r2_00_contract.log.txt（共 184 行，下面为末段）
+    PASS  8.22 批次配置可列出（供 R2-01/R2-03 下拉）
+    PASS  8.23 create=False 打开旧库不迁移（迁移必须显式调用，接线片段见契约 §12）
+    PASS  8.24 反向自证：少建一张表时迁移必须抛 MigrationError（8.7 断言不恒真）
+    PASS  8.25 恢复实现后同一份夹具迁移成功、9 张表齐备
+    PASS  8.26 备份环节故障 → 抛 MigrationError 且原库一行未动
+    PASS  8.27 故障注入失败时不留残缺备份文件
+    合计 159 项，通过 159 项，失败 0 项
+    退出码：0
+
+==============================================================================
+SUITE verify_core_150   exit=0   命令：C:\Python314\python.exe tests\verify_core_150.py
+原始日志：docs/R2-00_回归日志/verify_core_150.log.txt（共 36 行，下面为末段）
+    PASS  恢复后错题还在且带照片
+    PASS  恢复后照片仍可读
+    PASS  恢复后照片文件只有一份
+    == 五、旧格式备份 ==
+    PASS  能读 3 号格式备份
+    PASS  3 号格式可以恢复
+    合计 18 项，通过 18，失败 0
+    退出码：0
+
+==============================================================================
+SUITE verify_r1_15_backup_tables   exit=0   命令：C:\Python314\python.exe tests\verify_r1_15_backup_tables.py
+原始日志：docs/R2-00_回归日志/verify_r1_15_backup_tables.log.txt（共 58 行，下面为末段）
+    PASS 7.1 注入 check_restore 故障 → 抛 BackupError（而且是「原数据未改动」那句）
+    PASS 7.2 回滚后库内条数与恢复前完全相同（不留半恢复状态，含两张新表与旧表）
+    PASS 7.3 回滚后两张新表仍是原来的 4/3（没有被清空、也没有被塞一半）
+    PASS 7.3b 注入 audit_restore 故障 → 抛 BackupError 且整体回滚（审计与新表都回到恢复前）
+    PASS 7.3b 注入 audit_restore 故障 → 抛 BackupError 且整体回滚（审计与新表都回到恢复前）
+    PASS 7.4 暂存库里核对记录指向不存在的作答 → 抛错并整体回滚（不留半条）
+    合计 32 项，通过 32，失败 0
+    退出码：0
+
+==============================================================================
+SUITE verify_r1_16_check_to_mistake   exit=0   命令：C:\Python314\python.exe tests\verify_r1_16_check_to_mistake.py
+原始日志：docs/R2-00_回归日志/verify_r1_16_check_to_mistake.log.txt（共 53 行，下面为末段）
+    PASS 5.4 错题管理页（api_list_mistakes）能列出这条错题
+    == 六、旧库升级 + 反向自证 ==
+    PASS 6.0 造好旧库替身：mistakes 没有 answer_id 列、没有唯一索引
+    PASS 6.1 旧库升级补上 answer_id 与唯一索引（有备份）
+    PASS 6.2 升级后再跑一次不再迁移（幂等，返回 None）
+    PASS 6.3 反向自证：不补列就写 answer_id 必然报 no such column（断言不恒真）
+    合计 33 项，通过 33，失败 0
+    退出码：0
+
+==============================================================================
+SUITE verify_answer_check_150   exit=0   命令：C:\Python314\python.exe tests\verify_answer_check_150.py
+原始日志：docs/R2-00_回归日志/verify_answer_check_150.log.txt（共 228 行，下面为末段）
+    PASS 14.1 verify_answers_150.py 合计 60 项、通过 60、失败 0（无失败）
+    回归 verify_followup_180.py：退出码 0，用时 2.2s，合计 126 项，通过 126，失败 0
+    PASS 14.2 verify_followup_180.py 合计 126 项、通过 126、失败 0（无失败）
+    回归 verify_review_160.py：退出码 1，用时 3.8s，合计 135 项，通过 134，失败 1
+    PASS 14.3 verify_review_160.py 合计 135 项、通过 134、失败 1（已知失败：FAIL 1.8.0 版本号 1.8.1）
+    PASS 14.4 verify_review_160.py 的唯一失败是已知的历史版本号断言
+    合计 172 项，通过 172，失败 0（另：未验证 0 项）
+    退出码：0
+
+==============================================================================
+SUITE verify_answers_150   exit=0   命令：C:\Python314\python.exe tests\verify_answers_150.py
+原始日志：docs/R2-00_回归日志/verify_answers_150.log.txt（共 86 行，下面为末段）
+    PASS  恢复后学校编号保留
+    PASS  旧备份没有 answers 时计数不报错
+    == 九、备份格式与旧版本 ==
+    PASS  新备份标记为 format 6
+    PASS  1.4.6 明确拒绝新备份
+    PASS  仍能读取 1.4.6 时代的 format 3 备份
+    合计 60 项，通过 60，失败 0
+    退出码：0
+
+==============================================================================
+SUITE verify_followup_180   exit=0   命令：C:\Python314\python.exe tests\verify_followup_180.py
+原始日志：docs/R2-00_回归日志/verify_followup_180.log.txt（共 158 行，下面为末段）
+    PASS 恢复后回答还在
+    PASS 恢复后仍关联着错题
+    PASS 跨电脑导入带上追问记录
+    PASS 导入后追问还能打开
+    PASS 导入后关联的错题编号已换成新库的
+    PASS 旧版本读 1.8 备份时给出提示
+    合计 126 项，通过 126，失败 0
+    退出码：0
+
+==============================================================================
+SUITE verify_tutor_170   exit=0   命令：C:\Python314\python.exe tests\verify_tutor_170.py
+原始日志：docs/R2-00_回归日志/verify_tutor_170.log.txt（共 126 行，下面为末段）
+    PASS 备份里带数据库与清单
+    PASS 恢复后辅导建议条数一致
+    PASS 恢复后建议内容还在
+    PASS 跨电脑导入带上辅导建议
+    PASS 导入后仍能打开这个学生的建议
+    PASS 旧版本读 1.8 备份时给出提示
+    合计 98 项，通过 98，失败 0
+    退出码：0
+
+==============================================================================
+SUITE verify_r1_07_isolation   exit=0   命令：C:\Python314\python.exe tests\verify_r1_07_isolation.py
+原始日志：docs/R2-00_回归日志/verify_r1_07_isolation.log.txt（共 105 行，下面为末段）
+    PASS  核对总览可用（不依赖模型）
+    PASS  异常路径全程没有发生任何外部请求
+    拦截汇总：
+      正向对照（离线工具用途 + 本机回环桩）：1 次请求（证明记录器有效）
+      外部地址尝试次数：0
+      业务路径（八入口 + 五条 id 绕过 + 网页端 + 桌面端）：0 次请求
+    合计 73 项，通过 73，失败 0
+    退出码：0
+
+==============================================================================
+SUITE verify_r1_18_desktop_service   exit=0   命令：C:\Python314\python.exe tests\verify_r1_18_desktop_service.py
+原始日志：docs/R2-00_回归日志/verify_r1_18_desktop_service.log.txt（共 60 行，下面为末段）
+    PASS 7.4 set_ai_individual(False) 立刻关回去（下次调用重新判定）
+    == 八、越权与未登录（沿用会话，越权必须 404） ==
+    PASS 8.1 用错班级查详情 → 404 not_found（不泄露别的班数据）
+    PASS 8.2 用错班级保存 → 404 not_found
+    PASS 8.3 用错班级纠正 → 404 not_found
+    PASS 8.4 退出登录后新方法与既有方法同样被拦住（不产生未鉴权访问）
+    合计 36 项，通过 36，失败 0
+    退出码：0
+
+==============================================================================
+SUITE verify_r1_27_batch_name_collision   exit=0   命令：C:\Python314\python.exe tests\verify_r1_27_batch_name_collision.py
+原始日志：docs/R2-00_回归日志/verify_r1_27_batch_name_collision.log.txt（共 45 行，下面为末段）
+    PASS 4.3 而统计仍然数得到（=1）—— 这正是「看不见但数得到」
+    PASS 4.4 断言不恒真：变异体下 1.6 那条『三处一致』必然不成立
+    PASS 4.5 恢复真实实现后三处又一致（total=1、expected=1）
+    == 五、两个零引用兼容壳已删除 ==
+    PASS 5.1 _default_question 已不存在
+    PASS 5.2 _followup_source 已不存在
+    合计 23 项，通过 23，失败 0
+    退出码：0
+
+==============================================================================
+SUITE verify_r1_19_desktop_check_ui   exit=0   命令：E:\Agent\venv-desktop\Scripts\python.exe tests\verify_r1_19_desktop_check_ui.py
+原始日志：docs/R2-00_回归日志/verify_r1_19_desktop_check_ui.log.txt（共 213 行，下面为末段）
+    PASS K6 提示后给出下一步（复用同一错误区，没有新增视觉元素）
+    PASS K7 被拒后界面不自动改状态：仍显示「已核对 · 无需判断」
+    PASS K8 被拒后窗口没崩、仍在单份核对页且可继续保存
+    PASS K9 库里状态没变（cause_state 仍 not_applicable、进度仍 checked、结论与保存前一致）
+    PASS K10 service_call 对 400 同样原样带回 status/code/message
+    PASS K11 界面为 cause_not_applicable 备了专属下一步提示（auth 文案与 basis_required 分开）
+    合计 182 项，通过 182，失败 0
+    退出码：0
+

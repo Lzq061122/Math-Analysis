@@ -1,0 +1,60 @@
+数智伴学｜R1-T18 桌面 service 层：作答核对 + AI 开关（进程内调 api，错误原样上抛）
+时间：2026-11-26T18:26:50+08:00
+命令：python.exe tests\verify_r1_18_desktop_service.py
+目录：E:\Agent\小挑
+环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
+
+== 一、总览 / 详情（api_check_overview / api_check_answer） ==
+PASS 1.1 check_overview 返回网页端同源结构（assignment/assignments/counts/state 齐备）
+PASS 1.2 总览统计到本班 2 份真实作答（counts.answers）
+PASS 1.3 指定批次与不指定批次结果一致（同一批作业）
+PASS 1.4 详情含 answer（与 api_check_answer 同字段）
+PASS 1.4 详情含 locate（与 api_check_answer 同字段）
+PASS 1.4 详情含 judgement（与 api_check_answer 同字段）
+PASS 1.4 详情含 followup（与 api_check_answer 同字段）
+PASS 1.4 详情含 queue（与 api_check_answer 同字段）
+PASS 1.4 详情含 applicability（与 api_check_answer 同字段）
+PASS 1.4 详情含 candidates（与 api_check_answer 同字段）
+
+== 二、保存教师判断（api_check_save）：三态 + 错误原值 ==
+PASS 2.1 本夹具没有 out_of_scope 作答，跳过（如实登记）
+PASS 2.2 check_save 正常路径返回 saved + judgement（字段与网页端一致）
+PASS 2.3 保存后 mistakes 落了一条（R1-16 联动仍在作用）
+PASS 2.4 过期版本 → 409 version_conflict（原样上抛）
+PASS 2.5 撤回时夹带判断 → 400 cause_state_mismatch（不静默丢弃）
+
+== 三、撤回（api_check_save + progress=pending） ==
+PASS 3.1 撤回返回 action=retracted、judgement.progress=pending
+PASS 3.2 撤回后队列把它算回来（pending ≥ 1）
+PASS 3.3 没有可撤回的结论 → 400 nothing_to_retract（原样上抛）
+
+== 四、补录 / 校正（api_check_answer_content） ==
+PASS 4.1 校正成功：返回 action=updated + 新版本号
+PASS 4.2 校正时版本过期 → 409 version_conflict（版本闸门在服务端）
+
+== 五、记录找回（api_check_records：cause_state / verify_source） ==
+PASS 5.1 三态筛选各自可用（undecided/decided/all 都返回 items）
+PASS 5.2 decided 档位的记录数 ≤ 全部档位
+PASS 5.3 verify_source=manual 可单独筛（返回 items）
+PASS 5.4 非法 verify_source → 400 bad_verify_source（不静默当 all）
+
+== 六、演示数据（api_check_demo_seed / api_check_demo_reset） ==
+PASS 6.1 seed 返回体原样带 seeded/by_batch/records（不裁剪）
+PASS 6.2 seed 真的写入了合成作答（≥1 条）
+PASS 6.3 reset 返回 deleted/by_batch（不裁剪）
+PASS 6.4 reset 之后合成作答被清掉
+
+== 七、AI 开关（api_account_ai_individual / _update）+ 六入口仍按 t14 拒绝 ==
+PASS 7.1 桌面端能读到开关（ai_egress_available=true，因为注入了 provider）
+PASS 7.2 未开启时六入口之一（追问候选）仍 403 ai_isolation（未授权不放行）
+PASS 7.3 set_ai_individual(True) 写入成功并回读为 true
+PASS 7.4 set_ai_individual(False) 立刻关回去（下次调用重新判定）
+
+== 八、越权与未登录（沿用会话，越权必须 404） ==
+PASS 8.1 用错班级查详情 → 404 not_found（不泄露别的班数据）
+PASS 8.2 用错班级保存 → 404 not_found
+PASS 8.3 用错班级纠正 → 404 not_found
+PASS 8.4 退出登录后新方法与既有方法同样被拦住（不产生未鉴权访问）
+
+合计 36 项，通过 36，失败 0
+退出码：0

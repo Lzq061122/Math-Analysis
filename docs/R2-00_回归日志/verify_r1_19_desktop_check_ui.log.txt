@@ -1,0 +1,213 @@
+时间：2026-11-26T18:26:51+08:00
+命令：python.exe tests\verify_r1_19_desktop_check_ui.py
+目录：E:\Agent\小挑
+环境：Python 3.12.10 / Windows-11-10.0.26300-SP0
+
+字体：C:\WINDOWS\Fonts\msyh.ttc
+
+== A. 入口与课前总览：批次三范围、演示标记、分母差别、唯一主按钮 ==
+PASS A1 班级列表有「作答核对」入口（objectName=openAnswerCheckButton）
+PASS A2 选中班级后入口可用
+PASS A3 点「作答核对」打开 CheckWindow
+PASS A4 总览加载完成
+PASS A5 有未核对作答时标记「待核对作答 4 份」（本批 4 份未核对）
+PASS A6 标明当前作业
+PASS A7 当前范围说明句写明「最近一次导入的真实批次」
+PASS A8 批次下拉三档：当前作业 / 全部批次 / 各批次
+PASS A9 批次下拉列出两个真实批次
+PASS A10 载入合成演示数据成功（演示批次单独成作业）
+PASS A11 演示批次在下拉里带「（演示）」标记
+PASS A12 页面上用一句话写明三种范围的分母差别
+PASS A13 作业表列出所有批次并给演示行标「演示」
+PASS A14 作业表数字与总览一致（9月第3次作业 应交 4 / 待核对 4）
+PASS A15 选「全部批次」后标题给出作业数与应交合计
+PASS A16 全部批次范围说明句写明「各批次并列相加」
+PASS A17 全部批次四格改为「作业数 / 应交（各批合计）/ 已核对（合计）/ 待核对作答（合计）」
+PASS A18 全部批次应交 = 各批次相加（不是只算当前作业）
+PASS A19 选具体批次后范围句写明「只看…这一批」
+PASS A20 具体批次的应交只算这一批（1 份）
+
+== B. 单份核对：原因轴三态、逐行原文与错步标记、保存回执只读服务端 ==
+PASS B1 打开首处不等价的作答
+PASS B2 定位结论是 first_bad（规则给出首处错步）
+PASS B3 两轴标签：待核对 · 原因待判断
+PASS B4 逐行原文全部渲染（题干 + 3 行学生步骤）
+PASS B5 首处不等价行同时有下划线文字标记（不只靠颜色）
+PASS B6 错步行文字里带 <u> 下划线
+PASS B7 显示「按规则应为 / 学生这一行」对照
+PASS B8 主按钮文案是「保存错步，原因待判断」
+PASS B9 首处不等价时追问有适用问句（按本条错步生成）
+PASS B10 保存后进入回执页
+PASS B11 回执标题「已保存」
+PASS B12 回执两轴：已核对 · 原因待判断
+PASS B13 回执写明保存到哪个班级与作业
+PASS B14 回执给出观察到的错步
+PASS B15 回执主按钮是「查看下一份」（本次作业还有待核对）
+PASS B16 详情与回执同源：progress=checked、cause_state=undecided
+PASS B17 只写结论行的作答判定为缺少步骤
+PASS B18 缺少步骤的作答没有适用追问，页面明说「暂无适用追问」
+PASS B19 缺少步骤默认收口成「无需判断」（不要求填依据）
+PASS B20 回执把「无需判断」讲清是不计入已确认错因
+PASS B21 库里 cause_state=not_applicable（是后端收口，不是界面写的字）
+PASS B22 全程等价的作答保存后也记「无需判断」
+PASS B23 库里 cause_state=not_applicable（正确作答不需要判原因）
+
+== C. out_of_scope 人工改判：依据必填由后端拦（400 basis_required），界面原样显示 ==
+PASS C1 规则判不了这份作答：out_of_scope
+PASS C2 applicability=optional（可判可不判）
+PASS C3 判断依据说明改成必填口径
+PASS C4 依据提示点名 basis_required，并说明「无需判断」不要求依据
+PASS C5 没有可追问的错步 → 「暂无适用追问」
+PASS C6 页面上有「人工核对并记录错误」入口
+PASS C7 填了原因说明后「保存人工判断」可用
+PASS C8 不填依据直接保存 → 被拒绝并给出提示
+PASS C9 提示里带状态与业务码 400 basis_required
+PASS C10 提示里是后端原文（逐字）
+PASS C10b 400 回执格式统一为「保存被拒绝（400 basis_required）：<后端原文>」
+PASS C11 后端真的没写入（answer_checks 里没有这一份的结论）
+PASS C12 详情仍是待判断、待核对（没有被界面偷偷补默认值）
+PASS C13 失败后页面没有自动填空「判断依据」
+PASS C14 填了依据后保存成功，回执原因轴=教师已判断
+PASS C15 回执区分「教师填写」（不是采纳候选）
+PASS C16 回执把核验来源标成教师人工核验
+PASS C17 库里记录人工核验：verify_source=manual、依据落在 basis_note
+PASS C18 回执展示判断依据原文
+
+== D. 撤回：answer_version 置空、回到待核对队列、回执原文 ==
+PASS D1 已核对的作答上出现「撤回本次结论（回到待核对）」
+PASS D2 撤回说明写明不会删除记录
+PASS D3 撤回前库里 answer_version 等于当前指纹
+PASS D4 撤回后回执标题是「已撤回」
+PASS D5 回执写明「已撤回，回到待核对」（后端 action_label 原样）
+PASS D6 回执两轴回到「待核对 · 原因待判断」
+PASS D7 撤回后主按钮是「返回课前总览」
+PASS D8 库里 answer_version 被置空（撤回=版本置空，不是加布尔列）
+PASS D9 撤回不删行：answer_checks 记录仍在，进度回到待核对
+PASS D10 撤回理由进 change_reason（留痕可追溯）
+PASS D11 详情回到待核对队列，并带撤回痕迹
+PASS D12 撤回后可以重新核对（撤回按钮消失、主按钮可再保存）
+PASS D13 重新核对后回执又是「已保存」
+
+== E. 补录/校正：带 expected_version、版本冲突 409 原文、演示预置失效说明 ==
+PASS E0 补录/校正默认折叠（不占首屏），点开才显示输入框
+PASS E0b 点开后学生步骤输入框可见
+PASS E1 补录保存后页内回执写明旧版本作废、新版本、回到待核对
+PASS E2 内容变化产生新版本（expected_version 走的是真实契约）
+PASS E3 补录后同样的作答不再是 missing_steps（按新内容重新分析）
+PASS E4 版本冲突提示带 409 与 version_conflict
+PASS E4b 409 回执格式统一为「这份作答已被更新（409 version_conflict）：<后端原文>」
+PASS E5 冲突提示是后端原文（逐字）
+PASS E6 冲突后给出「刷新这份作答」入口
+PASS E7 冲突时页面填写内容没有被清掉（不会白填）
+PASS E8 刷新后拿到最新版本，错误提示消失
+PASS E9 演示作答在界面上明确标成合成演示数据
+PASS E10 演示作答显示「预置演示」标记
+PASS E11 演示作答校正后显示「预置已失效、按当前内容重新定位」
+PASS E12 演示作答校正后仍是合成演示数据（隔离不变）
+PASS E13 内容没有实际变化时后端拒绝，界面显示 400 原文
+
+== F. 记录找回：三态筛选、批次范围、唯一主按钮 ==
+PASS F1 记录页四档筛选：原因待判断 / 教师已判断 / 无需判断 / 全部
+PASS F2 默认按「原因待判断」筛选
+PASS F3 记录页标题带条数
+PASS F4 记录页批次范围含「全部批次（本班所有批次）」
+PASS F5 记录页批次下拉也标出演示批次
+PASS F6 「教师已判断」能找回刚才人工改判的那份
+PASS F7 记录行标出原因判断与处理进度
+PASS F8 「无需判断」能找回全程等价那份（后端收口的 not_applicable）
+PASS F9 「全部」把三态都列出来
+PASS F10 记录页主按钮按队列给：有待核对才可点
+PASS F11 从记录能直接打开该份核对页
+
+== G. AI 开关入口：默认关闭、显式开启、关闭时个体入口 403 ai_isolation ==
+PASS G1 AI 设置里有「个体数据外发」开关（默认不勾）
+PASS G2 状态写明默认关闭
+PASS G3 桌面端标明本机可以外发（每次写审计）
+PASS G4 说明里写明每次外发都写审计
+PASS G5 服务层读到默认关闭、且桌面端 ai_egress_available=True
+PASS G6 勾选并保存后账号级开关打开
+PASS G7 保存后状态行显示「已保存：允许个体数据外发」
+PASS G8 关闭后账号级开关回到关闭
+PASS G9 关着的时候桌面端个体 AI 入口被真实拦下（403 ai_isolation）
+
+== H. 1366×768 与 1920×1080：无横向溢出、每页唯一主按钮、首屏可见、截图 ==
+PASS H.1366x768.1 总览视图无横向溢出（横向滚动余量 0）
+PASS H.1366x768.2 总览视图只有一个主按钮
+PASS H.1366x768.3 总览视图主按钮在首屏内可见（不靠滚动）
+PASS H.1366x768.1 单份核对视图无横向溢出（横向滚动余量 0）
+PASS H.1366x768.2 单份核对视图只有一个主按钮
+PASS H.1366x768.3 单份核对视图主按钮在首屏内可见（不靠滚动）
+PASS H.1366x768.4 截图 ui-desktop-check-1366x768.png 已保存且尺寸为 1366x768
+PASS H.1366x768.1 核对记录视图无横向溢出（横向滚动余量 0）
+PASS H.1366x768.2 核对记录视图只有一个主按钮
+PASS H.1366x768.3 核对记录视图主按钮在首屏内可见（不靠滚动）
+PASS H.1366x768.1 保存回执视图无横向溢出（横向滚动余量 0）
+PASS H.1366x768.2 保存回执视图只有一个主按钮
+PASS H.1366x768.3 保存回执视图主按钮在首屏内可见（不靠滚动）
+PASS H.1920x1080.1 总览视图无横向溢出（横向滚动余量 0）
+PASS H.1920x1080.2 总览视图只有一个主按钮
+PASS H.1920x1080.3 总览视图主按钮在首屏内可见（不靠滚动）
+PASS H.1920x1080.1 单份核对视图无横向溢出（横向滚动余量 0）
+PASS H.1920x1080.2 单份核对视图只有一个主按钮
+PASS H.1920x1080.3 单份核对视图主按钮在首屏内可见（不靠滚动）
+PASS H.1920x1080.4 截图 ui-desktop-check-1920x1080.png 已保存且尺寸为 1920x1080
+PASS H.1920x1080.1 核对记录视图无横向溢出（横向滚动余量 0）
+PASS H.1920x1080.2 核对记录视图只有一个主按钮
+PASS H.1920x1080.3 核对记录视图主按钮在首屏内可见（不靠滚动）
+PASS H.1920x1080.1 保存回执视图无横向溢出（横向滚动余量 0）
+PASS H.1920x1080.2 保存回执视图只有一个主按钮
+PASS H.1920x1080.3 保存回执视图主按钮在首屏内可见（不靠滚动）
+
+== I. 既有桌面页保持原样：既有入口与控件都还在 ==
+PASS I1 学生名单仍有入口 newStudentButton
+PASS I1 学生名单仍有入口 editStudentButton
+PASS I1 学生名单仍有入口 deactivateStudentButton
+PASS I1 学生名单仍有入口 activateStudentButton
+PASS I1 学生名单仍有入口 refreshStudentsButton
+PASS I1 学生名单仍有入口 openMistakesButton
+PASS I1 学生名单仍有入口 openStatsButton
+PASS I1 学生名单仍有入口 openStudentInsight
+PASS I1 学生名单仍有入口 openAnswerImport
+PASS I1 学生名单仍有入口 openAnswerReviews
+PASS I2 「作答分析」入口文案未变
+PASS I3 学生名单新增入口没有混进主按钮层级
+PASS I4 FollowupWindow 仍能正常构造
+PASS I4 StudentInsightWindow 仍能正常构造
+PASS I4 AnswerImportWindow 仍能正常构造
+PASS I5 作答核对页不经 service 以外取数：类里没有 SQL、没有 import 业务模块
+PASS I6 作答核对页只调 service.check_*（不自己造通道、不直连数据库）
+PASS I7 既有 34 个页面类都还在（没有为了新页删掉旧页）
+
+== J. 失败路径不崩（403 原文照显示）+ 四种空态各有一条明确文案 ==
+PASS J1 作答分析页列出本班作答（失败路径的入口）
+PASS J2 找到一条还没确认、也不缺测的作答
+PASS J3 开关关闭时「分析这条作答」显示失败提示，没有从任务线程崩出去
+PASS J4 提示里带 403 与业务码 ai_isolation
+PASS J4b 403 回执格式统一为「分析没有完成（403 ai_isolation）：<后端原文>」
+PASS J5 提示里是后端原文（逐字）
+PASS J6 失败后列表还在、窗口还能用（没有被打断）
+PASS J7 队列为空时有明确文案「本批次暂无待核对作答」
+PASS J8 队列为空时总览标记「全部已核对」
+PASS J9 记录为空时有明确文案（本批次暂无满足条件的核对记录）
+PASS J10 队列为空时记录页主按钮不可点并给出原因
+PASS J11 候选为空时有明确文案「暂无候选错因」
+PASS J12 没有可追问的错步时写「暂无适用追问」
+PASS J13 ApiError 的 status/code/message 原样带回界面
+PASS J14 非 ApiError 异常也被兜成一句可见提示（不会从任务线程冒出）
+PASS J15 作答核对页每一次后台调用都经过统一包装
+
+== K. cause_not_applicable：对 correct 判「教师已判断」→ 显示 400 原文与 code，不崩不改状态 ==
+PASS K1 全程等价的作答 applicability=forbidden（只能记「无需判断」）
+PASS K2 打开时页面显示「已核对 · 无需判断」（B 组保存过的状态）
+PASS K3 对 correct 判「教师已判断」→ 界面显示 400 与业务码 cause_not_applicable
+PASS K4 显示的是后端原文（逐字）
+PASS K5 回执格式统一为「保存被拒绝（400 cause_not_applicable）：<后端原文>」
+PASS K6 提示后给出下一步（复用同一错误区，没有新增视觉元素）
+PASS K7 被拒后界面不自动改状态：仍显示「已核对 · 无需判断」
+PASS K8 被拒后窗口没崩、仍在单份核对页且可继续保存
+PASS K9 库里状态没变（cause_state 仍 not_applicable、进度仍 checked、结论与保存前一致）
+PASS K10 service_call 对 400 同样原样带回 status/code/message
+PASS K11 界面为 cause_not_applicable 备了专属下一步提示（auth 文案与 basis_required 分开）
+
+合计 182 项，通过 182，失败 0
+退出码：0

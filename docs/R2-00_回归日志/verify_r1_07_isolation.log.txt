@@ -1,0 +1,105 @@
+时间：2026-11-26T18:26:48+08:00
+命令：python.exe tests\verify_r1_07_isolation.py
+目录：E:\Agent\小挑
+环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
+
+本地模拟模型服务（回环桩）：http://127.0.0.1:61188
+外部模型服务地址（不可达）：https://ai.invalid.example/v1
+PASS  准备数据：作答导入预览可用
+PASS  准备数据：作答导入落库可用
+
+== 一、正向对照：离线工具用途 + 本机回环桩确实能发出去（证明记录器有效） ==
+PASS  正向对照：离线工具用途 + 本机回环地址真的发出了 1 次请求
+PASS  正向对照：请求落在本机回环桩上
+PASS  正向对照：桩返回被解析成结构化结果
+PASS  正向对照：拦截器记录了这次回环请求（不是 0，说明记录器有效）
+拦截日志（正向对照）：[{"url": "http://127.0.0.1:61188/v1/chat/completions", "loopback": true, "bytes": 154718}]
+
+== 二、通道层：同一个 provider 拿个体数据也发不出去（用途判定） ==
+PASS  个体作业（无离线工具用途）在本机回环桩上也被拒绝
+PASS  个体文字请求（作答分析）在本机回环桩上也被拒绝
+PASS  这两次拒绝都没有产生任何请求
+PASS  拒绝文案写明没有把任何内容发出去
+PASS  离线工具用途指向外部地址也被拒绝
+PASS  拒绝时没有发生任何网络尝试
+PASS  拦截器从未看到任何外部地址尝试
+
+== 三、字段白名单：请求体只能出现白名单里的字段 ==
+PASS  白名单接受正常请求体
+PASS  白名单拒绝：多出身份字段 student_name
+PASS  白名单拒绝：消息里多出 student_id
+PASS  白名单拒绝：角色不在白名单
+PASS  白名单拒绝：内容块类型不在白名单
+PASS  白名单拒绝：图片不是受限 data URL
+PASS  白名单拒绝：图片块里多出学校编号
+PASS  作业字段白名单拒绝 student_id
+PASS  作业字段白名单接受正常作业
+
+== 四、旧环境变量放不开业务环境 ==
+PASS  resolve_config({}) 默认仍是模拟（allow_env 默认 False）
+PASS  默认配置不读任何环境变量密钥
+PASS  默认配置的地址不含外部模型地址
+PASS  get_provider() 在旧变量存在时仍给 MockProvider
+PASS  api._analysis_provider(None) 不再回落环境变量
+PASS  MockProvider 仍然没有 chat_text（不可能误走文字通道）
+
+== 五、旧接口直调：配置真实通道时八个入口一律 ai_isolation ==
+PASS  桌面端账号设置指向真实通道（用于本次验证）
+PASS  桌面端 provider 是真实通道而不是 mock
+PASS  入口 /api/mistakes（新建错题）不外发，落库为本地录入
+PASS  新建错题记录里写明 ai_isolation 与原因
+PASS  入口 POST /api/mistakes/{id}/analyze（mistake_id 只传 id）返回 ai_isolation
+PASS  入口 桌面预览分析（api_preview_analysis，未注册进 ROUTES）返回 ai_isolation
+PASS  入口 review/analyse（answer_id 只传 id）返回 ai_isolation
+PASS  入口 insight/advice/generate（student_id 只传 id）返回 ai_isolation
+PASS  入口 followups/suggest（mistake_id 只传 id）返回 ai_isolation
+PASS  入口 followups/{fid}/updates（fid 只传 id）返回 ai_isolation
+PASS  桌面 service.preview_analysis（ui.py:5350 旧路径）返回 ai_isolation
+PASS  桌面 service.analyse_answer 返回 ai_isolation
+PASS  桌面 service.generate_student_advice 返回 ai_isolation
+PASS  桌面 service.suggest_followup 返回 ai_isolation
+PASS  桌面 service.update_followup_causes 返回 ai_isolation
+PASS  桌面 ui.py:4632 试分析（外部地址）不发送并给出业务文案
+PASS  本轮旧接口直调产生 0 次外部请求
+PASS  本轮旧接口直调连本地桩都没有多一次请求
+PASS  本轮旧接口直调没有发生任何网络尝试
+拦截日志（旧接口直调）：0 次外发；错误码统一为 ai_isolation
+
+== 六、网页业务环境（server.py）：旧变量 + 旧接口端到端 ==
+PASS  网页端登录/注册可用
+PASS  网页端口 /api/meta 报告 mock（旧 MISTAKE_AI_MODE=real 无效）
+PASS  网页端口 /api/meta 声明业务隔离
+PASS  网页端发送范围写明「不向生成式模型发送」
+PASS  网页端作答导入照常可用
+PASS  网页端新建错题照常可用
+PASS  网页端旧接口 POST /api/mistakes/1/analyze 不外发（HTTP 200）
+PASS  网页端旧接口 POST .../answers/1/review/analyse 不外发（HTTP 200）
+PASS  网页端旧接口 POST .../insight/advice/generate 不外发（HTTP 409）
+PASS  网页端旧接口 POST .../followups/suggest 不外发（HTTP 403）
+PASS  网页端全部旧接口调用产生 0 次外部请求
+PASS  网页端调用连本地桩都没有多一次请求
+PASS  网页端调用没有发生任何网络尝试
+拦截日志（网页端旧接口）：0 次外发；返回状态 ["POST /api/mistakes/1/analyze → 200", "POST .../answers/1/review/analyse → 200", "POST .../insight/advice/generate → 409", "POST .../followups/suggest → 403"]
+
+== 七、异常路径：模型未配置 / 不可用时业务照常可用 ==
+PASS  模型未配置：作答导入预览可用
+PASS  模型未配置：作答导入落库可用
+PASS  规则定位可用：定位到首个错步
+PASS  规则定位给出错步原文
+PASS  规则定位标注来源为固定规则
+PASS  人工判断可用：保存后返回教师判断
+PASS  人工判断可用：判断依据落库
+PASS  统计可用：核对统计读到 2 份作答
+PASS  统计可用：已核对 1 份、原因已判断 1 份
+PASS  统计可用：正式学情统计仍可计算
+PASS  规则建议可用：生成了班级参考意见
+PASS  核对总览可用（不依赖模型）
+PASS  异常路径全程没有发生任何外部请求
+
+拦截汇总：
+  正向对照（离线工具用途 + 本机回环桩）：1 次请求（证明记录器有效）
+  外部地址尝试次数：0
+  业务路径（八入口 + 五条 id 绕过 + 网页端 + 桌面端）：0 次请求
+
+合计 73 项，通过 73，失败 0
+退出码：0

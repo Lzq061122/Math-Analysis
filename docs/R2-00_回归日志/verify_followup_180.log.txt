@@ -1,0 +1,158 @@
+时间：2026-11-26T18:26:43+08:00
+命令：python.exe tests\verify_followup_180.py
+目录：E:\Agent\小挑
+环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
+
+
+== 一、数据结构与迁移 ==
+PASS 有追问记录表
+PASS 有错因候选表
+PASS 有按学生查的索引
+PASS 有按错题查的索引
+PASS 有按追问查候选的索引
+PASS followups 有 class_id 列
+PASS followups 有 student_id 列
+PASS followups 有 problem 列
+PASS followups 有 mistake_id 列
+PASS followups 有 review_id 列
+PASS followups 有 question 列
+PASS followups 有 source 列
+PASS followups 有 suggest 列
+PASS followups 有 evidence 列
+PASS followups 有 status 列
+PASS followups 有 asked_at 列
+PASS followups 有 answer 列
+PASS followups 有 answered_at 列
+PASS followup_updates 有 followup_id 列
+PASS followup_updates 有 causes 列
+PASS followup_updates 有 note 列
+PASS followup_updates 有 uncertain 列
+PASS followup_updates 有 raw 列
+PASS followup_updates 有 before_json 列
+PASS followup_updates 有 after_json 列
+PASS followup_updates 有 status 列
+PASS followup_updates 有 decided_at 列
+PASS 数据库结构版本为 4
+PASS 旧库升级时留下备份文件
+PASS 旧库升级后表都在
+PASS 再次检查不会重复备份
+PASS 迁移中途失败会报错
+PASS 失败后没有留下半张表
+PASS 失败回滚后原数据还在
+
+== 二、追问依据取原文，且不含身份字段 ==
+PASS 依据里有题目原文
+PASS 依据里有学生步骤原文
+PASS 依据里有已确认错因
+PASS 依据里带审核记录编号
+PASS 提示词不含 张三
+PASS 提示词不含 XY001
+PASS 提示词不含 七年级 1 班
+PASS 提示词不含 teacher
+PASS 提示词带追问标记
+PASS 提示词带题目原文
+PASS 提示词带学生步骤原文
+PASS 没有已确认错题时给明确提示
+
+== 三、候选追问（本地桩） ==
+PASS 真实模式没有确认就不发送
+PASS 没有确认时一条请求都没发
+PASS 勾选同意也换不来外发：生成候选被拦断
+PASS 拦断时不返回任何候选
+PASS 桩一次追问候选请求都没收到（原为收到 1 条）
+PASS 拦断时没有回传提示词草稿（原为「请求标为 followup」）
+PASS 拦断文案写明没有把任何内容发出去（原为「请求细分是候选」）
+PASS 请求不含 张三
+PASS 请求不含 XY001
+PASS 请求不含 七年级 1 班
+PASS 请求不含 teacher
+PASS 候选证据来自原文
+PASS 候选还没记成提问
+
+== 四、编造与证据不足 ==
+PASS 编造依据的候选被丢弃
+PASS 说明里写明依据找不到
+PASS 证据不足时标为不确定
+PASS 不确定时写明原因
+PASS 模型没给候选时列表为空
+
+== 五、老师确认使用才记录 ==
+PASS 空追问不能保存
+PASS 确认后记录一条提问
+PASS 记下来源是老师确认的候选
+PASS 记录了提问时间
+PASS 初始状态是已提问
+PASS 记录了关联的问题
+PASS 记录了关联的错题
+
+== 六、记录学生回答 ==
+PASS 空回答不能保存
+PASS 回答保存成功
+PASS 记录回答时间
+PASS 状态变成已回答
+
+== 七、按回答更新错因候选 ==
+PASS 没记回答时不能更新候选
+PASS 模拟模式不生成错因候选
+PASS 模拟模式没有写候选
+PASS 更新成功
+PASS 桩收到一条错因更新请求
+PASS 请求细分是更新
+PASS 请求带这次追问
+PASS 请求带学生回答
+PASS 更新请求不含 张三
+PASS 更新请求不含 XY001
+PASS 更新请求不含 七年级 1 班
+PASS 更新请求不含 teacher
+PASS 候选状态是待核对
+PASS 候选有更新前的错因
+PASS 候选还没写进错题
+PASS 更新的编造证据被丢弃
+PASS 更新证据不足时标为不确定
+PASS 不确定时写明原因
+
+== 八、老师接受或拒绝 ==
+PASS 拒绝后错题没有被改
+PASS 拒绝后记录标为已拒绝
+PASS 同一条候选不能再处理一次
+PASS 接受后写进错题错因
+PASS 原来的错因还在
+PASS 接受后记录标为已接受
+PASS 不在本追问下的候选不能处理
+PASS 别的学生的追问记录没有被牵连
+
+== 九、AI 失败不覆盖原数据 ==
+PASS 连不上服务时报错
+PASS 失败后追问记录没变
+PASS 失败后错题错因没变
+
+== 十、重开与连续查看 ==
+PASS 重开后追问记录还在
+PASS 重开后按提问时间倒序
+PASS 重开后能连续看到回答
+PASS 重开后能看到候选决定
+PASS 单条追问带回全部候选
+
+== 十一、账号与班级隔离 ==
+PASS 另一个账号看不到这些追问
+PASS 学生不属于这个班级时拒绝
+PASS 换个学生查也拿不到
+
+== 十二、旧数据升级、备份、恢复与导入 ==
+PASS 1.6.0 的库升级后有追问表
+PASS 升级后个人学情还能开
+PASS 备份格式为 6
+PASS 备份清单里有追问条数
+PASS 备份清单里有候选条数
+PASS 备份里带数据库与清单
+PASS 恢复后追问条数一致
+PASS 恢复后追问记录还能看到
+PASS 恢复后回答还在
+PASS 恢复后仍关联着错题
+PASS 跨电脑导入带上追问记录
+PASS 导入后追问还能打开
+PASS 导入后关联的错题编号已换成新库的
+PASS 旧版本读 1.8 备份时给出提示
+
+合计 126 项，通过 126，失败 0
+退出码：0
