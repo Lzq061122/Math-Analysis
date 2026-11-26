@@ -666,6 +666,10 @@ def section_invalidation():
                        revision_reason="重评")
     config = db_mod.load_batch_config(db, 1, BATCH)
     sneaky = dict(config)
+    sneaky["rubrics"] = {str(key): dict(value) for key, value in
+                         (config.get("rubrics") or {}).items() if isinstance(value, dict)}
+    sneaky["rubrics"]["1"] = dict(sneaky["rubrics"].get("1") or {})
+    sneaky["rubrics"]["1"]["criteria"] = "新的标准正文（但版本号没改）"
     sneaky["rubric"] = dict(config["rubric"])
     sneaky["rubric"]["1"] = "新的标准正文（但版本号没改）"
     db_mod.save_batch_config(db, 1, BATCH, sneaky, user_id=UID)
@@ -679,9 +683,12 @@ def section_invalidation():
           and score_row(env, 1)["state"] == "invalidated"
           and score_row(env, 1)["invalidated_reason"] == "rubric_changed",
           json.dumps({k: result[k] for k in ("rubric_version", "invalidated")}, ensure_ascii=False))
-    check("6.9 新标准生效：满分变成 12、家长/统计读到 rubric_version=v2",
+    check("6.9 新标准生效：该题满分变成 12、该题标准版本变成 v2（题级权威）",
           grading.score_full_of(db, cls, BATCH, "1") == 12
-          and db_mod.load_batch_config(db, 1, BATCH)["rubric_version"] == "v2")
+          and grading.question_rubric_version(
+              db_mod.load_batch_config(db, 1, BATCH), "1") == "v2",
+          json.dumps(grading.question_rubric(db_mod.load_batch_config(db, 1, BATCH), "1"),
+                     ensure_ascii=False))
     check("6.10 旧成绩退出正式统计（标准一变，旧分不再可比）",
           grading.confirmed_scores(db, cls, BATCH) == [])
     err = caught(grading.update_rubric, db, cls, BATCH, UID, "1", {"text": "再改"}, "v2")
@@ -707,6 +714,78 @@ def section_invalidation():
           and any(row["answer_version"] != live[0]["answer_version"] for row in rows),
           json.dumps([{k: row[k] for k in ("id", "state", "answer_version")} for row in rows],
                      ensure_ascii=False))
+    section_per_question_rubric()
+
+
+def section_per_question_rubric():
+    """题级标准版本：改一题只失效该题（派单 §2.3 / §2.5「受影响的旧成绩失效」）。"""
+
+    def build(name):
+        env = make_env(name, [
+            {"sid": 1, "qno": "1", "steps": STEPS_BAD, "key": "Q1"},
+            {"sid": 2, "qno": "2", "steps": STEPS_BAD, "key": "Q2"},
+            {"sid": 3, "qno": "3", "steps": STEPS_BAD, "key": "Q3"},
+            {"sid": 4, "qno": "4", "steps": STEPS_BAD, "key": "Q4"},
+            {"sid": 5, "qno": "5", "steps": STEPS_BAD, "key": "Q5"},
+        ], students=5, questions=("1", "2", "3", "4", "5"))
+        verify_all(env)
+        for sid in range(1, 6):
+            grading.save_score(env["db"], env["class_row"], UID, sid, score=7.5,
+                               state="confirmed", confirm=True)
+        return env
+
+    def snapshot(env, sid):
+        row = score_row(env, sid, str(sid))
+        return {key: row[key] for key in ("state", "score", "full_score", "rubric_version",
+                                          "confirmed_at", "history", "answer_version")}
+
+    env = build("06-q3-rubric")
+    before = {sid: snapshot(env, sid) for sid in (1, 2, 4, 5)}
+    check("6.16 改第 3 题前：5 题都是已确认成绩",
+          all(score_row(env, sid, str(sid))["state"] == "confirmed" for sid in range(1, 6)))
+    result = grading.update_rubric(env["db"], env["class_row"], BATCH, UID, "3",
+                                   {"text": "第 3 题新标准：移项与合并各 4 分"},
+                                   "q3-v2", full_score=12)
+    after = {sid: snapshot(env, sid) for sid in (1, 2, 4, 5)}
+    check("6.17 改第 3 题标准 → 第 3 题旧成绩 invalidated",
+          score_row(env, 3, "3")["state"] == "invalidated"
+          and score_row(env, 3, "3")["invalidated_reason"] == "rubric_changed"
+          and result["invalidated"] == 1,
+          "invalidated=%s" % result["invalidated"])
+    check("6.18 第 1/2/4/5 题仍 confirmed，且分数/满分/版本/历史逐字段相等（不受牵连）",
+          after == before,
+          json.dumps({"before": before, "after": after}, ensure_ascii=False)[:300])
+    check("6.19 题级版本各自独立：第 1/2/4/5 题版本仍是 v1，只有第 3 题变 q3-v2",
+          result["question_versions"] == {"1": "v1", "2": "v1", "3": "q3-v2",
+                                          "4": "v1", "5": "v1"},
+          json.dumps(result["question_versions"], ensure_ascii=False))
+    check("6.20 有效确认评分仍为 4 条（只有第 3 题退出正式统计）",
+          len(grading.confirmed_scores(env["db"], env["class_row"], BATCH)) == 4)
+    err = caught(grading.update_rubric, env["db"], env["class_row"], BATCH, UID, "3",
+                 {"text": "又改一版正文"}, "q3-v2")
+    check("6.21 只改第 3 题正文不给新版本号 → 400 rubric_version_unchanged（版本按题比较）",
+          err is not None and err.code == "rubric_version_unchanged", getattr(err, "code", ""))
+    # 反向自证：把「按题比较」换成「拿批次级单版本一刀切」（模拟旧实现的失效判定）
+    # → 没改动的第 1/2/4/5 题会被连带判失效，6.18 的断言必红。
+    env2 = build("06-batch-compare")
+    with patched(grading, "question_rubric_version", lambda config, question: "batched-single-v2"):
+        grading.update_rubric(env2["db"], env2["class_row"], BATCH, UID, "3",
+                              {"text": "第 3 题新标准"}, "q3-v2", full_score=12)
+    check("6.22 反向自证：失效判定改回批次级单版本比较时，没改的第 1/2/4/5 题被连带失效（断言必红）",
+          score_row(env2, 1, "1")["state"] == "invalidated"
+          and score_row(env2, 2, "2")["state"] == "invalidated"
+          and score_row(env2, 4, "4")["state"] == "invalidated"
+          and score_row(env2, 5, "5")["state"] == "invalidated",
+          "q1=%s q2=%s" % (score_row(env2, 1, "1")["state"],
+                           score_row(env2, 2, "2")["state"]))
+    # 历史批次兼容：只有批次级版本、没有题级条目时，回退使用批次级版本
+    legacy = make_env("06-legacy-version", [{"sid": 1, "qno": "1", "steps": STEPS_BAD}],
+                      questions=("1",), version="legacy-v1")
+    legacy_config = db_mod.load_batch_config(legacy["db"], 1, BATCH)
+    check("6.23 历史批次（只有批次级 rubric_version）回退到批次级版本，不当作「无标准」",
+          grading.question_rubric_version(legacy_config, "1") == "legacy-v1"
+          and grading.question_rubric(legacy_config, "1")["text"] != "",
+          json.dumps(legacy_config.get("rubric"), ensure_ascii=False)[:120])
 
 
 # ---------------------------------------------------------------------------

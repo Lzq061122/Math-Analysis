@@ -50,6 +50,78 @@ _RESCORE_PATH = (SCORE_INVALIDATED, SCORE_DRAFT, SCORE_CONFIRMED)
 KNOWLEDGE_UNCLASSIFIED = "未分类"
 KNOWLEDGE_UNCLASSIFIED_NOTE = "知识点：未分类（缺依据，待教师补充）"
 
+# 题级评分标准：权威结构是 `r2_contract`（R2-00.4 起）的
+# `assignment_batches.rubrics[q] = {"full_score","criteria","rubric_version"}`；批次级
+# `rubric_version` 只在题级缺失时作历史兼容回退，不再是权威。
+# 本模块只做两件事：读侧一律走 `r2_contract.question_rubric()`（单一实现），写侧按同一结构落库，
+# 并兼容 R2-00.2 时代的「rubric[q] 存 JSON 对象字符串」写法（本模块上一版落过的数据）。
+_RUBRIC_TEXT_KEYS = ("text", "criteria", "rubric", "standard")
+
+
+def _decode_legacy_entry(raw):
+    """兼容两种历史写法：`rubric[q]` 是纯文本，或是 JSON 对象字符串（旧版本题写入形态）。"""
+    entry = {"text": "", "rubric_version": "", "full_score": None}
+    if isinstance(raw, dict):
+        for key in _RUBRIC_TEXT_KEYS:
+            if raw.get(key):
+                entry["text"] = str(raw.get(key))
+                break
+        entry["rubric_version"] = str(raw.get("rubric_version") or raw.get("version") or "")
+        entry["full_score"] = r2_contract._as_float(raw.get("full_score"))
+        return entry
+    text = str(raw if raw is not None else "")
+    entry["text"] = text
+    stripped = text.strip()
+    if stripped.startswith("{") and stripped.endswith("}"):
+        try:
+            parsed = json.loads(stripped)
+        except (TypeError, ValueError):
+            return entry
+        if isinstance(parsed, dict):
+            return _decode_legacy_entry(parsed)
+    return entry
+
+
+def question_rubric(config, question_no):
+    """某道题的权威标准 `{"text","criteria","rubric_version","full_score"}`。
+
+    委托 `r2_contract.question_rubric()`（R2-00.4 的唯一实现）；旧契约没有该函数时，用本模块
+    的兼容解析（题级 `rubrics` → 旧 `rubric` 文本 → 批次级版本回退）。
+    """
+    contract_fn = getattr(r2_contract, "question_rubric", None)
+    if contract_fn is not None:
+        entry = contract_fn(config, question_no) or {}
+        criteria = str(entry.get("criteria") or "")
+        return {"text": criteria, "criteria": criteria,
+                "rubric_version": str(entry.get("rubric_version") or ""),
+                "full_score": entry.get("full_score")}
+    config = config or {}
+    rubrics = config.get("rubrics") if isinstance(config.get("rubrics"), dict) else {}
+    entry = _decode_legacy_entry(rubrics.get(str(question_no)))
+    if not entry["text"]:
+        legacy = (config.get("rubric") or {}).get(str(question_no))
+        entry["text"] = _decode_legacy_entry(legacy)["text"]
+        entry["rubric_version"] = entry["rubric_version"] or _decode_legacy_entry(legacy)["rubric_version"]
+    if not entry["rubric_version"]:
+        entry["rubric_version"] = str(config.get("rubric_version") or "")
+    if entry["full_score"] is None:
+        entry["full_score"] = r2_contract.full_score_of(config, question_no)
+    return {"text": entry["text"], "criteria": entry["text"],
+            "rubric_version": entry["rubric_version"], "full_score": entry["full_score"]}
+
+
+def question_rubric_version(config, question_no):
+    """某道题当前生效的标准版本串（失效判定一律按题比较，不拿批次级串一刀切）。"""
+    return question_rubric(config, question_no)["rubric_version"]
+
+
+def _rubric_payload(text, version, full_score):
+    """写进 `rubrics[q]` 的题级条目（与 `r2_contract.normalize_batch_config` 的字段名一致）。"""
+    return {"criteria": str(text or ""), "rubric_version": str(version or ""),
+            "full_score": full_score}
+
+
+
 # 本模块写入错题时用的来源标签（与 R1-16 同一常量，避免两套撤回口径 —— R1 遗留 K2）
 MISTAKE_SOURCE = answer_check.MISTAKE_SOURCE
 MISTAKE_RETURNED_REASON = "撤回错因判断：评分与核验各自保留"
@@ -274,16 +346,24 @@ def _cause_state(db, answer, check=None):
 
 
 def _score_state(db, answer, question_no, config):
-    """评分维：只认当前版本 + 当前标准版本的行；其余如实报「已失效（需重评）」。"""
+    """评分维：只认当前版本 + **该题**当前标准版本的行；其余如实报「已失效（需重评）」。"""
     live = _score_live(db, answer, question_no)
     rows = _score_rows(db, answer, question_no)
-    rubric_version = str((config or {}).get("rubric_version") or "")
+    entry = question_rubric(config, question_no)
+    expected_version = entry["rubric_version"]
+    expected_full = entry["full_score"]
     formal = False
     state = SCORE_UNSCORED
     row = live
     if live:
         state = live.get("state") or SCORE_UNSCORED
-        if str(live.get("rubric_version") or "") != rubric_version:
+        stale = False
+        if expected_version and str(live.get("rubric_version") or "") != expected_version:
+            stale = True
+        if expected_full is not None and live.get("full_score") is not None:
+            if abs(float(live.get("full_score")) - float(expected_full)) > 1e-9:
+                stale = True
+        if stale:
             state = SCORE_INVALIDATED
         formal = state == SCORE_CONFIRMED
     elif rows:
@@ -295,6 +375,7 @@ def _score_state(db, answer, question_no, config):
         "score": live.get("score") if live else None,
         "full_score": r2_contract.full_score_of(config or {}, question_no),
         "rubric_version": (live or {}).get("rubric_version") or "",
+        "expected_rubric_version": expected_version,
         "steps": _loads((live or {}).get("steps_json"), []),
         "row_id": (live or {}).get("id"),
         "scored_at": (live or {}).get("scored_at") or "",
@@ -440,7 +521,9 @@ def _dims_from_maps(answer, checks, scores, images, config):
              "code": (check.get("cause_code") or "") if check else "",
              "label_text": (check.get("cause_label") or "") if check else "",
              "source": (check.get("cause_source") or "") if check else ""}
-    rubric_version = str((config or {}).get("rubric_version") or "")
+    rubric_entry = question_rubric(config, answer.get("question_no") or "")
+    rubric_version = rubric_entry["rubric_version"]
+    rubric_full = rubric_entry["full_score"]
     live = None
     for row in score_rows:
         if row.get("state") not in (SCORE_DRAFT, SCORE_CONFIRMED):
@@ -450,7 +533,11 @@ def _dims_from_maps(answer, checks, scores, images, config):
         live = row
     if live:
         score_state = live.get("state") or SCORE_UNSCORED
-        if str(live.get("rubric_version") or "") != rubric_version:
+        stale = bool(rubric_version) and str(live.get("rubric_version") or "") != rubric_version
+        if rubric_full is not None and live.get("full_score") is not None:
+            if abs(float(live.get("full_score")) - float(rubric_full)) > 1e-9:
+                stale = True
+        if stale:
             score_state = SCORE_INVALIDATED
     elif score_rows:
         score_state = SCORE_INVALIDATED
@@ -1075,7 +1162,8 @@ def save_score(db, class_row, user_id, answer_id, score=None, state=SCORE_DRAFT,
             _raise("修改已确认的成绩必须填写修改理由（留痕：谁改、为什么改）。",
                    400, "revision_reason_required")
     now = now_iso()
-    rubric_version = str(config.get("rubric_version") or "")
+    # 评分行记的是**该题**当前生效的标准版本（题级优先，历史批次回退批次级）
+    rubric_version = question_rubric_version(config, question)
     before = _event_state(answer_dimensions(db, class_row, answer_id, question))
     history_entry = {
         "action": "confirm" if target == SCORE_CONFIRMED else "draft",
@@ -1240,10 +1328,14 @@ def invalidate_scores_for_answer(db, class_row, user_id, answer_id, reason="answ
 
 def update_rubric(db, class_row, batch, user_id, question_no, rubric, rubric_version,
                   full_score=None):
-    """改评分标准 / 满分（R2-INV-05）：**必须同时改版本号**，并把该题旧成绩标失效。
+    """改**某一题**的评分标准 / 满分（R2-INV-05）：必须同时给该题的新版本号。
 
-    只改正文不改 `rubric_version` 是最容易犯的错：那样旧成绩不会失效，统计会拿旧标准的分
-    去比新标准。这里两道闸门都上：空版本号直接拒绝；版本号没变也拒绝。
+    派单 §2.3 说标准是**按题**配的，§2.5 说失效的是「**受影响**的旧成绩」。所以：
+      1. 版本下沉到题级：`rubric[q] = {"text","rubric_version","full_score"}`，其余题的版本一字不动；
+      2. 首次改动时把其它题的「当前生效版本」冻结进各自的题级条目（历史批次的批次级版本只在
+         它们还没有题级条目时回退使用），避免批次级 `rubric_version` 一 bump 就把别的题一起判失效；
+      3. 只失效「该题版本/满分与现在不一致」的成绩行，其它题的 `confirmed` 行原样保留；
+      4. 只改正文不给新版本、或版本号没变，一律拒绝（否则旧成绩不会失效）。
     """
     question = str(question_no or "").strip()
     if not question:
@@ -1253,24 +1345,55 @@ def update_rubric(db, class_row, batch, user_id, question_no, rubric, rubric_ver
         _raise("改评分标准要给批次名（同一批次同题统一标准，跨批次不合并）。", 400, "missing_batch")
     version = str(rubric_version or "").strip()
     if not version:
-        _raise("改评分标准必须同时写新的标准版本（rubric_version）；否则旧成绩不会失效。",
+        _raise("改评分标准必须同时写该题的新标准版本（rubric_version）；否则旧成绩不会失效。",
                400, "rubric_version_missing")
     config = _config(db, class_row, batch)
-    if str(config.get("rubric_version") or "") == version:
-        _raise("标准版本号还是「%s」：只改正文不改版本号，旧成绩不会失效，本次拒绝保存。"
-               % version, 400, "rubric_version_unchanged")
-    new_config = dict(config)
-    new_config["rubric"] = dict(config.get("rubric") or {})
-    new_config["rubric"][question] = str((rubric or {}).get("text") or (rubric or {}).get("rubric") or "")
-    new_config["rubric_version"] = version
+    current = question_rubric(config, question)
+    if current["rubric_version"] == version:
+        _raise("题 %s 的标准版本号还是「%s」：只改正文不改版本号，旧成绩不会失效，本次拒绝保存。"
+               % (question, version), 400, "rubric_version_unchanged")
+    text = str((rubric or {}).get("text") or (rubric or {}).get("criteria")
+               or (rubric or {}).get("rubric") or "")
+    full = current["full_score"]
     if full_score is not None:
         number = r2_contract._as_float(full_score)
         if number is None or number <= 0:
             _raise("满分必须是大于 0 的数值。", 400, "full_score_invalid")
         if r2_contract._decimals(number) > r2_contract.MAX_SCORE_DECIMALS:
             _raise("满分最多保留两位小数。", 400, "too_many_decimals")
-        new_config["full_scores"] = dict(config.get("full_scores") or {})
-        new_config["full_scores"][question] = round(number, r2_contract.MAX_SCORE_DECIMALS)
+        full = round(number, r2_contract.MAX_SCORE_DECIMALS)
+    new_config = dict(config)
+    new_config["rubrics"] = {str(key): dict(value) for key, value in
+                             (config.get("rubrics") or {}).items() if isinstance(value, dict)}
+    new_config["rubric"] = dict(config.get("rubric") or {})
+    new_config["full_scores"] = dict(config.get("full_scores") or {})
+    # 冻结其它题的当前生效版本：题级条目已存在的原样保留，缺的按当前生效版本补齐，
+    # 这样题级版本一旦落地，批次级 `rubric_version` 再也不会被当成「所有题共用的版本」。
+    questions = []
+    for source in (r2_contract.expected_question_nos(config),
+                   r2_contract.scored_question_nos(config),
+                   tuple((config.get("full_scores") or {}).keys()),
+                   tuple((config.get("rubric") or {}).keys())):
+        for item in source:
+            key = str(item).strip()
+            if key and key not in questions:
+                questions.append(key)
+    for item in questions:
+        if item == question:
+            continue
+        entry = question_rubric(config, item)
+        new_config["rubrics"][item] = _rubric_payload(entry["text"], entry["rubric_version"],
+                                                      entry["full_score"])
+        # 旧列保留原文镜像（R2-00.2 及以前的读法仍能读到文字；权威仍以 rubrics 为准）
+        new_config["rubric"][item] = entry["text"]
+    new_config["rubrics"][question] = _rubric_payload(text, version, full)
+    new_config["rubric"][question] = text
+    if full_score is not None:
+        new_config["full_scores"][question] = full
+    # 批次级 `rubric_version` 只在它本来就为空时补一个值（历史兼容显示用）；
+    # 有题级条目以后它不再是权威，绝不拿它去 bump 别的题。
+    if not str(config.get("rubric_version") or "").strip():
+        new_config["rubric_version"] = version
     try:
         saved = save_batch_config(db, class_row["id"], batch, new_config, user_id=user_id)
     except ValueError as exc:
@@ -1280,39 +1403,42 @@ def update_rubric(db, class_row, batch, user_id, question_no, rubric, rubric_ver
         "batch": batch,
         "question_no": question,
         "rubric_version": version,
+        "question_versions": {item: question_rubric_version(saved, item)
+                              for item in questions},
         "config": saved,
         "invalidated": invalidated,
         "actions": r2_contract.apply_event(
             "rubric_changed",
-            {r2_contract.DIM_SCORE: {"state": SCORE_CONFIRMED,
-                                     "rubric_version": config.get("rubric_version") or ""}},
-            {"rubric_version": version},
+            {r2_contract.DIM_SCORE: {"state": SCORE_CONFIRMED, "question_no": question,
+                                     "rubric_version": current["rubric_version"] or ""}},
+            {"rubric_version": version, "question_no": question},
         )["actions"],
     }
 
 
 def _invalidate_rubric_scores(db, class_row, user_id, batch, question, config):
-    """标准/满分变化后让旧成绩失效。
+    """标准/满分变化后让**受影响**的成绩失效（派单 §2.5「受影响的旧成绩失效」）。
 
-    `rubric_version` 是**批次级**的单个版本串（契约 §3.1），所以标准一改，整个批次的
-    既有成绩都不再是「按当前标准评的」——若只失效改动的那一题，同批次别的题会挂着旧版本号
-    继续参与平均分，等于把两套标准的分数混在一起比（§10 硬口径「不合并不可比」）。
-    因此这里失效**该批次**全部 `draft/confirmed` 行；行与扣分项都留着，教师确认可直接重评。
+    判定按题比：把每一条 `draft/confirmed` 行的 `rubric_version`/`full_score` 与该行题号的
+    **当前生效版本**（`question_rubric()`：题级优先、历史批次回退批次级）比较，不一致才失效。
+    改第 3 题时，第 1/2/4/5 题的版本号没动 → 它们保持 `confirmed`，分数一字不变。
     """
     rows = db.query(
         "SELECT * FROM answer_scores WHERE class_id=? AND batch=?"
         " AND state IN ('draft','confirmed')", (class_row["id"], batch),
     )
-    version = str(config.get("rubric_version") or "")
     now = now_iso()
     count = 0
     for raw in rows:
         row = dict(raw)
-        same_question = str(row.get("question_no") or "") == str(question)
-        full = r2_contract.full_score_of(config, row.get("question_no") or "")
-        if not same_question and str(row.get("rubric_version") or "") == version \
-                and row.get("full_score") == full:
-            # 其它题的标准与满分都没动、版本号也对得上（理论上不会发生：批次版本已变）
+        row_question = str(row.get("question_no") or "")
+        expected_version = question_rubric_version(config, row_question)
+        expected_full = question_rubric(config, row_question)["full_score"]
+        version_ok = (not expected_version
+                      or str(row.get("rubric_version") or "") == expected_version)
+        full_ok = (expected_full is None or row.get("full_score") is None
+                   or abs(float(row.get("full_score")) - float(expected_full)) <= 1e-9)
+        if version_ok and full_ok:
             continue
         r2_contract.transition_state(r2_contract.DIM_SCORE, row["state"], SCORE_INVALIDATED)
         history = _append_history(row.get("history"), {
@@ -1320,8 +1446,8 @@ def _invalidate_rubric_scores(db, class_row, user_id, batch, question, config):
             "from": row["state"],
             "to": SCORE_INVALIDATED,
             "reason": "rubric_changed",
-            "rubric_version": version,
-            "full_score": full,
+            "rubric_version": expected_version,
+            "full_score": expected_full,
             "changed_question": question,
             "by": user_id,
             "at": now,
@@ -1416,16 +1542,15 @@ def current_scores(db, class_row, batch="", question_no=""):
     """当前有效评分行（正式统计只用 `confirmed`；`draft` 回显但不进分子）。
 
     判据三层，缺一不可：`state IN ('draft','confirmed')`、`answer_version = answers.fingerprint`、
-    `rubric_version = assignment_batches.rubric_version`（标准改过而没失效的行不算数）。
+    `rubric_version` 与**该题**当前生效版本一致（改别的题的标准不会牵连本题）。
     """
     sql = (
         "SELECT s.id, s.answer_id, s.student_id, s.batch, s.question_no, s.score, s.full_score,"
         " s.state, s.answer_version, s.rubric_version, s.steps_json, s.scored_by, s.scored_at,"
         " s.confirmed_by, s.confirmed_at, s.revision_reason, s.history, a.question_no AS"
-        " answer_question_no, COALESCE(b.rubric_version,'') AS current_rubric_version"
+        " answer_question_no"
         " FROM answer_scores s"
         " JOIN answers a ON a.id=s.answer_id AND a.class_id=s.class_id"
-        " LEFT JOIN assignment_batches b ON b.class_id=s.class_id AND b.batch=s.batch"
         " WHERE s.class_id=? AND s.state IN ('draft','confirmed')"
         " AND s.answer_version=a.fingerprint"
     )
@@ -1437,11 +1562,22 @@ def current_scores(db, class_row, batch="", question_no=""):
         sql += " AND s.question_no=?"
         params.append(str(question_no))
     sql += " ORDER BY s.answer_id ASC, s.id DESC"
+    configs = {}
     rows = []
     for raw in db.query(sql, tuple(params)):
         row = dict(raw)
-        row["formal"] = row["state"] == SCORE_CONFIRMED and \
-            str(row.get("rubric_version") or "") == str(row.get("current_rubric_version") or "")
+        name = row.get("batch") or ""
+        if name not in configs:
+            configs[name] = _config(db, class_row, name)
+        entry = question_rubric(configs[name], row.get("question_no") or "")
+        expected_version = entry["rubric_version"]
+        full_ok = (entry["full_score"] is None or row.get("full_score") is None
+                   or abs(float(row.get("full_score")) - float(entry["full_score"])) <= 1e-9)
+        row["current_rubric_version"] = expected_version
+        row["formal"] = (row["state"] == SCORE_CONFIRMED
+                         and (not expected_version
+                              or str(row.get("rubric_version") or "") == expected_version)
+                         and full_ok)
         row["steps"] = _loads(row.pop("steps_json", "[]"), [])
         rows.append(row)
     return rows
@@ -1712,6 +1848,7 @@ __all__ = [
     "score_full_of", "score_row", "save_score", "confirm_score", "retract_score",
     "update_rubric", "invalidate_scores_for_answer", "update_answer_content",
     "score_completeness_of", "score_sheet", "scoring_progress", "current_checks", "current_scores",
+    "question_rubric", "question_rubric_version",
     "effective_rows", "valid_verifications", "confirmed_scores", "confirmed_causes",
     "filter_options",
 ]
