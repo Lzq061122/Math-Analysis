@@ -969,12 +969,16 @@ class AnswerImportWindow(QMainWindow):
         self.template_button = QPushButton("下载模板")
         self.template_button.setObjectName("answerTemplateButton")
         self.template_button.clicked.connect(self.save_template)
+        self.zip_button = QPushButton("导入作答压缩包…")
+        self.zip_button.setObjectName("openAnswerZipImport")
+        self.zip_button.clicked.connect(self.open_zip_import)
 
         file_row = QHBoxLayout()
         file_row.addWidget(QLabel("文件"))
         file_row.addWidget(self.file_label, 1)
         file_row.addWidget(self.choose_button)
         file_row.addWidget(self.template_button)
+        file_row.addWidget(self.zip_button)
 
         self.hint = QLabel(
             "先在软件里核对每一行，再点「确认导入」。CSV 只在本机读取；导入不会调用 AI，"
@@ -1079,6 +1083,18 @@ class AnswerImportWindow(QMainWindow):
             self.status.setText("保存失败：%s" % exc)
             return
         self.status.setText("模板已保存：%s" % path)
+
+    # ------------------------------------------------------- R2-01 压缩包导入
+    # CSV 之外的另一条入口：一个 ZIP 里带 answers.csv 与 images/，图片按相对路径
+    # 关联到作答（多图用分号分隔）。两个入口互不影响，本页行为一行未改。
+    def open_zip_import(self):
+        from desktop.ui_import_zip import ZipImportWindow
+
+        window = ZipImportWindow(self.service, self.class_row, parent=self)
+        window.setAttribute(Qt.WA_DeleteOnClose, True)
+        self._zip_import_window = window
+        window.show()
+        return window
 
     # ---------------------------------------------------------------- 预览
     def preview(self):
@@ -7656,6 +7672,11 @@ class ClassesWindow(QMainWindow):
         self.check_button.setEnabled(False)
         self.check_button.setToolTip("按批次核对本班作答：先看哪个能判、哪个要问一句，再逐份核对")
         self.check_button.clicked.connect(self.open_check)
+        self.teaching_button = QPushButton("教学建议与练习")
+        self.teaching_button.setObjectName("openTeachingButton")
+        self.teaching_button.setEnabled(False)
+        self.teaching_button.setToolTip("按已确认错因检索已发布的教学资源：教学建议、三级提示与举一反三练习")
+        self.teaching_button.clicked.connect(self.open_teaching)
         self.ai_settings_button = QPushButton("AI 设置")
         self.ai_settings_button.setObjectName("openAiSettingsButton")
         self.ai_settings_button.setToolTip("配置云端视觉服务地址、模型和本次登录的密钥；默认不启用云端分析")
@@ -7675,6 +7696,7 @@ class ClassesWindow(QMainWindow):
         tools.addWidget(self.students_button)
         tools.addWidget(self.class_stats_button)
         tools.addWidget(self.check_button)
+        tools.addWidget(self.teaching_button)
         tools.addWidget(self.ai_settings_button)
         tools.addWidget(self.ai_trial_button)
         tools.addWidget(self.refresh_button)
@@ -7775,6 +7797,7 @@ class ClassesWindow(QMainWindow):
         self.students_button.setEnabled(enabled)
         self.class_stats_button.setEnabled(enabled)
         self.check_button.setEnabled(enabled)
+        self.teaching_button.setEnabled(enabled)
 
     def open_selected_class(self, *_):
         row = self._selected_class()
@@ -7798,6 +7821,21 @@ class ClassesWindow(QMainWindow):
         self._check_window = CheckWindow(self.service, row, parent=self)
         self._check_window.show()
         self._check_window.raise_()
+
+    def open_teaching(self):
+        """R2-05：教学建议 / 三级提示 / 举一反三 / 辅导任务 / 纸笔 PDF。"""
+        from desktop.ui_teaching import TeachingWindow
+
+        row = self._selected_class()
+        if row is None:
+            self.status.setText("先在列表里点一个班级")
+            return
+        window = TeachingWindow(self.service, row, parent=self)
+        window.setAttribute(Qt.WA_DeleteOnClose, True)
+        self._teaching_window = window
+        window.show()
+        window.raise_()
+        return window
 
     def open_ai_settings(self):
         dialog = AISettingsDialog(self.service, self)

@@ -10,9 +10,10 @@ import time
 import urllib.parse
 import uuid
 
-from app import analysis, backup, vision
+from app import analysis, answer_import_zip, backup, grading, vision
 from app.api import (
     ApiError,
+    owned_class,
     api_answer_analyse,
     api_answer_review_confirm,
     api_answer_review_get,
@@ -821,6 +822,106 @@ class DesktopService:
     def check_demo_reset(self, class_id):
         """重置合成演示数据：返回体（deleted/by_batch…）原样返回，不裁剪。"""
         return api_check_demo_reset(self._ctx(params={"id": class_id}, body={}))
+
+    # ================================================ R2（1.9.0）接线：captain 独占
+    # R2 的五个业务模块（answer_import_zip / grading / r2_stats / report_pdf /
+    # teaching_resources）都在 app 层完成校验与写入，但「这个班级是不是当前账号的」
+    # 必须在桌面端入口先判一次：直接复用网页端同一个 owned_class（越权一律 404），
+    # 不另写一套归属规则。副作用是权限判定与网页端逐字一致，R2-04「导出非所属班级
+    # → 拒绝」因此天然成立，而不是靠界面把按钮藏起来。
+    def owned_class_row(self, class_id):
+        """取当前账号名下的班级行；不是自己的班 → 404（与网页端同一处判据）。"""
+        return owned_class(self.db, self.user, class_id)
+
+    # ------------------------------------------------- R2-01 压缩包批量导入
+    # 预览只读、不写正式数据；六类分类（有效/重复/冲突/缺测/未匹配学生/文件异常）
+    # 全部在 app.answer_import_zip 里判，本层不重新分类、不改写错误语义。
+    def zip_answers_preview(self, class_id, data, batch=""):
+        cls = self.owned_class_row(class_id)
+        return answer_import_zip.preview(self.db, cls["id"], data, batch or "")
+
+    def zip_answers_import(self, class_id, data, batch="", selections=None, overwrite=False):
+        """确认导入：单事务提交，异常回滚并清理本次新增的孤立图片。"""
+        cls = self.owned_class_row(class_id)
+        return answer_import_zip.commit(
+            self.db, cls["id"], data, batch or "", selections, bool(overwrite), self.uploads)
+
+    def zip_import_template(self):
+        """标准 ZIP 模板（bytes）：与 tests/fixtures/R2_ZIP模板.zip 逐字节一致。"""
+        return answer_import_zip.template_zip()
+
+    # ------------------------------------------------- R2-02 批量核验与教师评分
+    # 失败一律抛 grading.GradingError（中文 message + status + code），本层不吞不改；
+    # batch_verify / retry 逐条返回结果、不抛异常。
+    def grading_queue(self, class_id, batch="", scope="pending", answer_ids=None):
+        cls = self.owned_class_row(class_id)
+        return grading.batch_rows(self.db, cls, batch or "", scope=scope, answer_ids=answer_ids)
+
+    def grading_progress(self, class_id, batch=""):
+        cls = self.owned_class_row(class_id)
+        return grading.review_progress(self.db, cls, batch or "")
+
+    def grading_scoring_progress(self, class_id, batch):
+        """评分进度：覆盖率分母走 r2_contract.scoring_students（与看板/PDF 同一口径）。"""
+        cls = self.owned_class_row(class_id)
+        return grading.scoring_progress(self.db, cls, batch)
+
+    def grading_batch_verify(self, class_id, batch="", scope="pending", answer_ids=None,
+                             on_result=None, cancel_check=None):
+        cls = self.owned_class_row(class_id)
+        return grading.batch_verify(self.db, cls, self.user["id"], batch or "", scope=scope,
+                                    answer_ids=answer_ids, on_result=on_result,
+                                    cancel_check=cancel_check)
+
+    def grading_retry(self, class_id, failed_ids, on_result=None, cancel_check=None):
+        cls = self.owned_class_row(class_id)
+        return grading.retry_failed(self.db, cls, self.user["id"], failed_ids,
+                                    on_result=on_result, cancel_check=cancel_check)
+
+    def grading_detail(self, class_id, answer_id, question_no=None):
+        cls = self.owned_class_row(class_id)
+        return {
+            "dimensions": grading.answer_dimensions(self.db, cls, answer_id, question_no),
+            "score": grading.score_row(self.db, cls, answer_id, question_no),
+            "candidates": grading.cause_candidates(self.db, cls, answer_id),
+            "mistake": grading.mistake_of(self.db, cls, answer_id),
+        }
+
+    def grading_confirm_cause(self, class_id, answer_id, cause_label, cause_code="",
+                              basis_note="", knowledge_point="", expected_version=None):
+        cls = self.owned_class_row(class_id)
+        return grading.confirm_cause(self.db, cls, self.user["id"], answer_id,
+                                     cause_code=cause_code, cause_label=cause_label,
+                                     basis_note=basis_note, knowledge_point=knowledge_point,
+                                     expected_version=expected_version)
+
+    def grading_retract_cause(self, class_id, answer_id, reason=""):
+        cls = self.owned_class_row(class_id)
+        return grading.retract_cause(self.db, cls, self.user["id"], answer_id, reason)
+
+    def grading_save_score(self, class_id, answer_id, score, state="draft", steps=None,
+                           revision_reason="", confirm=False, question_no=None,
+                           expected_version=None):
+        cls = self.owned_class_row(class_id)
+        return grading.save_score(self.db, cls, self.user["id"], answer_id, score, state=state,
+                                  steps=steps, revision_reason=revision_reason,
+                                  question_no=question_no, confirm=confirm,
+                                  expected_version=expected_version)
+
+    def grading_retract_score(self, class_id, answer_id, reason="", question_no=None):
+        cls = self.owned_class_row(class_id)
+        return grading.retract_score(self.db, cls, self.user["id"], answer_id, reason, question_no)
+
+    def grading_update_rubric(self, class_id, batch, question_no, text, rubric_version,
+                              full_score=None):
+        """改某题评分标准：必须带新版本号（否则旧成绩不会失效）；只让该题旧成绩失效。"""
+        cls = self.owned_class_row(class_id)
+        return grading.update_rubric(self.db, cls, batch, self.user["id"], question_no,
+                                     {"text": text}, rubric_version, full_score)
+
+    def grading_score_sheet(self, class_id, batch, question_no=""):
+        cls = self.owned_class_row(class_id)
+        return grading.score_sheet(self.db, cls, batch, question_no)
 
     # ------------------------------------------------- 个体 AI 开关（R1-T14/T18）
     def ai_individual_state(self):
