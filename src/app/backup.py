@@ -164,6 +164,13 @@ def create_backup(data_dir, zip_path, user_id, app_version=VERSION):
                     raise BackupError("账号不存在，无法备份")
                 target.execute("DELETE FROM classes WHERE user_id<>?", (user_id,))
                 target.execute("DELETE FROM sessions")
+                # R2：报告导出历史是按账号存的，不跟班级走，所以删别人的班级删不掉它。
+                # 不清这一行，另一位老师的 title/purpose/path/sha256 会被塞进这份备份包，
+                # 而 _counts() 报的也会是全表条数。恢复侧没有这个问题（按班级遍历 + 重映射）。
+                tables_in_target = {r[0] for r in target.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'")}
+                if "r2_report_exports" in tables_in_target:
+                    target.execute("DELETE FROM r2_report_exports WHERE user_id<>?", (user_id,))
                 target.execute("DELETE FROM users WHERE id<>?", (user_id,))
                 target.execute("UPDATE users SET pwd_hash='' WHERE id=?", (user_id,))
                 target.commit()

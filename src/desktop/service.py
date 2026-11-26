@@ -966,8 +966,12 @@ class DesktopService:
             generated_at=generated_at, user=self.user, purpose=purpose, limit=limit)
 
     def r2_report_history(self):
-        """导出历史（账号/时间/用途/类型/筛选范围）：只读。"""
-        return report_pdf.load_history(self.db.path)
+        """导出历史（账号/时间/用途/类型/筛选范围）：只读，**按当前账号过滤**。
+
+        历史存在库里的 r2_report_exports；不传账号会读到同机其他账号的导出记录，
+        所以这里必须带 ``self.user["id"]``（账号隔离，见契约 §6.3）。
+        """
+        return report_pdf.load_history(self.db.path, user_id=(self.user or {}).get("id"))
 
     # ------------------------------------------------- 个体 AI 开关（R1-T14/T18）
     def ai_individual_state(self):

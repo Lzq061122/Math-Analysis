@@ -366,9 +366,12 @@ def main():
         manifest = json.loads(bundle.read("manifest.json").decode("utf-8"))
     counts_in_manifest = manifest.get("counts") or {}
     present = [t for t in C.R2_TABLE_NAMES if t in counts_in_manifest]
-    check("I3 备份清单里十个 R2 表条数齐全（批次配置至少 1 条）",
+    # 导出历史已入库（R2-04 fix），所以这里不只是"表在清单里"，还要真有条数：
+    # H3 那次导出必须在清单里体现出来，否则就是备份侧没带上。
+    check("I3 备份清单里十个 R2 表条数齐全（批次配置与导出历史都 ≥1 条）",
           len(present) == len(C.R2_TABLE_NAMES)
-          and counts_in_manifest.get("assignment_batches", 0) >= 1,
+          and counts_in_manifest.get("assignment_batches", 0) >= 1
+          and counts_in_manifest.get("r2_report_exports", 0) >= 1,
           "齐全 %d/%d，批次 %s 条，导出历史 %s 条" % (
               len(present), len(C.R2_TABLE_NAMES),
               counts_in_manifest.get("assignment_batches"),

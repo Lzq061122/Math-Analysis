@@ -278,6 +278,36 @@ def main():
     except Exception as exc:
         check("W38 报告预览窗口能直接构造并完成一次预览", False, repr(exc)[:80])
 
+    # --- 备份包的账号边界 -------------------------------------------------------
+    # W39 一位老师的备份包里绝不能出现另一位老师的导出历史（title/purpose/path/sha256
+    # 都是他的工作痕迹）。这条不是理论问题：导出历史按账号存、不跟班级走，
+    # 所以"删别人的班级"删不掉它。
+    from app import backup as backup_mod, db as db_mod
+
+    cid_b = other.create_class("B 班")["id"]
+    db_mod.add_report_export(other.db, other.user["id"], cid_b, "class", purpose="存档",
+                             path=r"D:\B老师\报告.pdf", sha256="bbb", bytes=1,
+                             generated_at="2026-11-26T19:00:00", title="B 老师的导出",
+                             data_version="1.9.0")
+    db_mod.add_report_export(owner.db, owner.user["id"], cid, "class", purpose="存档",
+                             path=r"D:\A老师\报告.pdf", sha256="aaa", bytes=1,
+                             generated_at="2026-11-26T19:00:00", title="A 老师的导出",
+                             data_version="1.9.0")
+    bak_dir = tempfile.mkdtemp(prefix="r2wire-bak-")
+    bak_path = os.path.join(bak_dir, "备份.zip")
+    manifest = backup_mod.create_backup(owner.data_dir, bak_path, owner.user["id"])
+    n_hist = (manifest.get("counts") or {}).get("r2_report_exports")
+    with __import__("zipfile").ZipFile(bak_path) as bundle:
+        inner_tmp = os.path.join(bak_dir, "inner.db")
+        with open(inner_tmp, "wb") as fh:
+            fh.write(bundle.read("app.db"))
+    inner = Database(inner_tmp, create=False)
+    leaked = inner.query("SELECT user_id, title FROM r2_report_exports WHERE user_id<>?",
+                         (owner.user["id"],))
+    check("W39 备份包不含其他账号的导出历史（清单条数也只数本人）",
+          n_hist == 1 and not leaked,
+          "清单 %s 条；泄漏 %d 条 %s" % (n_hist, len(leaked), [r["title"] for r in leaked]))
+
     total = len(ITEMS)
     passed = sum(1 for _, ok in ITEMS if ok)
     print("")

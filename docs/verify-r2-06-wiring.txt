@@ -1,5 +1,5 @@
 ﻿python.exe : QFontDatabase: Cannot find font directory E:/Agent/venv-desktop/Lib/site-packages/PySide6/lib/fonts.
-所在位置 行:2 字符: 1
+所在位置 行:46 字符: 1
 + & E:\Agent\venv-desktop\Scripts\python.exe tests\verify_r2_06_wiring. ...
 + ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     + CategoryInfo          : NotSpecified: (QFontDatabase: ...ide6/lib/fonts.:String) [], RemoteException
@@ -54,5 +54,6 @@ PASS  W35 报告方法同样被归属闸门拦住
 PASS  W36 原版班级学情页有「导出报告」入口
 PASS  W37 原版个人学情页有「导出报告」入口
 PASS  W38 报告预览窗口能直接构造并完成一次预览 | err=None
+PASS  W39 备份包不含其他账号的导出历史（清单条数也只数本人） | 清单 1 条；泄漏 0 条 []
 
-合计 38 项，通过 38 项，失败 0 项
+合计 39 项，通过 39 项，失败 0 项
