@@ -1,4 +1,4 @@
-"""R2-00 公共契约与数据入口验收（1.9.0）。
+﻿"""R2-00 公共契约与数据入口验收（1.9.0）。
 
 覆盖：
   1. 契约文档与代码双向核对（文档缺 key / 代码多 key 都红）；
@@ -10,7 +10,7 @@
   6. 失效规则 11 条逐条断言（含把规则摘掉后同一断言必须变红的反向自证）；
   7. 数据隔离与 AI 外发边界（R2 流程恒拒绝，开关无效；含反向自证）；
   8. 18 项统计口径（数量、key 唯一、缺数据文案、演示隔离口径）；
-  9. 迁移：新库自动建 9 张表、旧库（1.6.0 夹具）迁移不丢数据、幂等、重复迁移不报错、
+  9. 迁移：新库自动建 R2 表（含导出历史）、旧库（1.6.0 夹具）迁移不丢数据、幂等、重复迁移不报错、
      R1 既有表结构逐列不变、同名历史批次维持原归属、没有预留表（含反向自证）。
 
 运行：C:\\Python314\\python.exe tests\\verify_r2_00_contract.py
@@ -182,7 +182,7 @@ def section_contract_doc():
     check("1.8 2 项排序结论 key 全部写进文档", not missing_rank, missing_rank)
 
     missing_tables = [name for name in C.R2_TABLE_NAMES if name not in text]
-    check("1.9 9 张新表名全部写进文档", not missing_tables and len(C.R2_TABLE_NAMES) == 9,
+    check("1.9 %d 张新表名全部写进文档" % len(C.R2_TABLE_NAMES), not missing_tables,
           missing_tables)
 
     states = [state for mapping in C.STATES.values() for state in mapping]
@@ -894,8 +894,9 @@ def section_migration():
         "users", "sessions", "classes", "students", "mistakes", "advice", "app_meta",
         "answers", "answer_reviews", "tutor_advice", "followups", "followup_updates",
         "answer_checks", "answer_followups", "ai_egress_audit",
+        "sqlite_sequence",     # SQLite 给 AUTOINCREMENT 自动建，不算我们的表
     }
-    check("8.1 新库直接建好 9 张 R2 表且没有多建（无预留表）",
+    check("8.1 新库直接建好 %d 张 R2 表且没有多建（无预留表）" % len(C.R2_TABLE_NAMES),
           new_tables == set(C.R2_TABLE_NAMES), sorted(new_tables))
     check("8.2 新库 r2_schema_ready 为真", DB.r2_schema_ready(fresh) is True, "")
     check("8.3 新库 ensure_r2_schema 返回 None（已就绪不写库）",
@@ -922,9 +923,9 @@ def section_migration():
     check("8.6 旧库迁移成功并留下一致性备份（文件名带时间戳+随机后缀）",
           bool(backup) and os.path.exists(backup) and ".bak-" in backup, backup)
     after = table_snapshot(legacy)
-    check("8.7 迁移后 R2 表齐备（9 张，一张不多）",
-          set(after) - set(before) == set(C.R2_TABLE_NAMES),
-          sorted(set(after) - set(before)))
+    added_tables = set(after) - set(before) - {"sqlite_sequence"}
+    check("8.7 迁移后 R2 表齐备（%d 张，一张不多）" % len(C.R2_TABLE_NAMES),
+          added_tables == set(C.R2_TABLE_NAMES), sorted(added_tables))
     check("8.8 迁移后 r2_schema_ready 为真", DB.r2_schema_ready(legacy) is True, "")
 
     changed = []
@@ -1033,7 +1034,7 @@ def section_migration():
         restore_bytes(db_path, original)
     check("8.24 反向自证：少建一张表时迁移必须抛 MigrationError（8.7 断言不恒真）",
           "没有生效" in raised and mutant_ready is False, raised)
-    check("8.25 恢复实现后同一份夹具迁移成功、9 张表齐备",
+    check("8.25 恢复实现后同一份夹具迁移成功、%d 张表齐备" % len(C.R2_TABLE_NAMES),
           bool(DB.ensure_r2_schema(os.path.join(work, "mutant", "app.db")))
           and DB.r2_schema_ready(os.path.join(work, "mutant", "app.db")) is True, "")
 
@@ -1155,10 +1156,139 @@ def section_rubric_versions():
     check("9.11 契约写明「修改某题 → 只失效该题」并点明批次级比较属实现错误",
           "只" in text and "按题" in text and "实现错误" in text
           and "改**某题**评分标准" in text, "")
-    check("9.12 契约版本已升到 %s（版本记录含 R2-00.4 与受影响任务）"
+    check("9.12 契约版本已升到 %s（版本记录含 R2-00.4/00.5 与受影响任务）"
           % C.R2_CONTRACT_VERSION,
-          C.R2_CONTRACT_VERSION == "R2-00.4" and "R2-00.4" in text
+          C.R2_CONTRACT_VERSION == "R2-00.5" and "R2-00.4" in text and "R2-00.5" in text
           and "受影响任务" in text, C.R2_CONTRACT_VERSION)
+
+
+# ---------------------------------------------------------------------------
+# 十、导出历史入库（R2-00.5）
+# ---------------------------------------------------------------------------
+def section_report_exports():
+    section("十、学情报告导出历史入库（R2-00.5：随 app.db 一起备份）")
+    work = tmpdir("r2-00-exports-")
+    path = os.path.join(work, "app.db")
+    database = DB.Database(path)
+    try:
+        with database.tx() as conn:
+            conn.execute("INSERT INTO users(username,display_name,pwd_salt,pwd_hash,iterations,"
+                         "created_at,backup_key) VALUES('u1','师1','s','h',1,'now','')")
+            conn.execute("INSERT INTO users(username,display_name,pwd_salt,pwd_hash,iterations,"
+                         "created_at,backup_key) VALUES('u2','师2','s','h',1,'now','')")
+            conn.execute("INSERT INTO classes(user_id,name,created_at,updated_at)"
+                         " VALUES(1,'初三1班','now','now')")
+
+        snapshot = table_snapshot(path)
+        columns = list(snapshot.get("r2_report_exports", ([], 0))[0])
+        check("10.1 新库直接建好 r2_report_exports 表", "r2_report_exports" in snapshot,
+              sorted(snapshot))
+        check("10.2 字段齐全且与 R2_REQUIRED_COLUMNS 一致（15 列，含 title / data_version）",
+              set(DB.R2_REQUIRED_COLUMNS["r2_report_exports"]) == set(columns)
+              and len(columns) == 15, columns)
+        indexes = index_names(path)
+        check("10.3 两个索引都在（(user_id, created_at DESC) 与 (class_id, kind)）",
+              {"idx_report_exports_user", "idx_report_exports_class"} <= indexes,
+              sorted(indexes))
+        check("10.4 契约表名清单与 db 判定一致（R2_TABLE_NAMES 含本表）",
+              "r2_report_exports" in C.R2_TABLE_NAMES
+              and "r2_report_exports" in DB.R2_REQUIRED_COLUMNS, C.R2_TABLE_NAMES)
+
+        first = DB.add_report_export(
+            database, 1, 1, "class", purpose="家长会",
+            scope={"batch": "9月", "kp": ["去括号"]}, batch="9月第1次作业",
+            path=r"D:\导出\班级.pdf", sha256="a" * 64, bytes=2048,
+            generated_at="2026-11-26T10:00:00+08:00", title="初三1班 · 学情分析报告",
+            data_version="统计 R2-03.1 / 契约 R2-00.4",
+            created_at="2026-11-26T10:00:01+08:00")
+        second = DB.add_report_export(
+            database, 1, 1, "student", student_id=2, purpose="约谈", scope="{}",
+            path=r"D:\导出\个人.pdf", sha256="b" * 64, bytes=1024,
+            generated_at="2026-11-26T11:00:00+08:00", title="李四 · 学情分析报告",
+            data_version="统计 R2-03.1", created_at="2026-11-26T11:00:01+08:00")
+        rows = DB.list_report_exports(database, 1)
+        check("10.5 插入返回自增 id，按 (created_at DESC, id DESC) 倒序读回 2 条",
+              first == 1 and second == 2 and [row["id"] for row in rows] == [2, 1],
+              [row["id"] for row in rows])
+        newest = rows[0]
+        check("10.6 读回字段与写入一一相等（title / data_version / bytes / sha256 / path）",
+              newest["kind"] == "student" and newest["student_id"] == 2
+              and newest["title"] == "李四 · 学情分析报告"
+              and newest["data_version"] == "统计 R2-03.1"
+              and newest["bytes"] == 1024 and newest["sha256"] == "b" * 64
+              and newest["path"] == r"D:\导出\个人.pdf"
+              and newest["generated_at"] == "2026-11-26T11:00:00+08:00", newest)
+        oldest = rows[1]
+        check("10.7 scope 传 dict 时存成 JSON 串（读回可解析，键不丢）",
+              oldest["scope"] == '{"batch": "9月", "kp": ["去括号"]}'
+              and json.loads(oldest["scope"]) == {"batch": "9月", "kp": ["去括号"]},
+              oldest["scope"])
+        check("10.8 班级报告的 student_id 存 0（不用 NULL，省掉三值判断）",
+              oldest["kind"] == "class" and oldest["student_id"] == 0, oldest)
+
+        third = DB.add_report_export(database, 2, 1, "class", purpose="别人",
+                                     created_at="2026-11-26T12:00:00+08:00")
+        mine = [row["id"] for row in DB.list_report_exports(database, 1)]
+        others = [row["id"] for row in DB.list_report_exports(database, 2)]
+        check("10.9 不同账号互相读不到（u1 只见 1/2，u2 只见 3）",
+              mine == [2, 1] and others == [3], (mine, others, third))
+        check("10.10 class_id / kind 可在同账号内再过滤",
+              [row["id"] for row in DB.list_report_exports(database, 1, class_id=1,
+                                                           kind="student")] == [2], "")
+        check("10.11 limit 只限制读取条数、不删除任何行",
+              [row["id"] for row in DB.list_report_exports(database, 1, limit=1)] == [2]
+              and database.scalar("SELECT COUNT(*) FROM r2_report_exports") == 3, "")
+
+        legacy_work = tmpdir("r2-00-exports-legacy-")
+        legacy = os.path.join(legacy_work, "app.db")
+        legacy_db = DB.Database(legacy)
+        with legacy_db.tx() as conn:
+            conn.execute("INSERT INTO users(username,display_name,pwd_salt,pwd_hash,iterations,"
+                         "created_at,backup_key) VALUES('u9','师9','s','h',1,'now','')")
+            conn.execute("INSERT INTO classes(user_id,name,created_at,updated_at)"
+                         " VALUES(1,'旧班','now','now')")
+            conn.execute("INSERT INTO assignment_batches(class_id, batch, name, created_at,"
+                         " updated_at) VALUES(1,'历史批次','历史批次','now','now')")
+        legacy_db.conn.close()
+        with sqlite3.connect(legacy) as conn:
+            conn.execute("DROP TABLE r2_report_exports")
+        before = table_snapshot(legacy)
+        check("10.12 老 R2 库被判「未就绪」（缺本表 → r2_schema_ready False）",
+              "r2_report_exports" not in before and DB.r2_schema_ready(legacy) is False,
+              sorted(before))
+        backup = DB.ensure_r2_schema(legacy)
+        after = table_snapshot(legacy)
+        check("10.13 迁移后表已建好、既有 assignment_batches 行一条没丢",
+              bool(backup) and "r2_report_exports" in after
+              and after["assignment_batches"][1] == before["assignment_batches"][1] == 1,
+              (bool(backup), after.get("assignment_batches")))
+        check("10.14 重复迁移幂等（第二次返回 None 且结构不变）",
+              DB.ensure_r2_schema(legacy) is None and table_snapshot(legacy) == after, "")
+        legacy_db2 = DB.Database(legacy, create=False)
+        try:
+            exports_legacy = DB.list_report_exports(legacy_db2, 1)
+            check("10.15 迁移后读写可用（空历史读回 []，写入后能读回）",
+                  exports_legacy == []
+                  and DB.add_report_export(legacy_db2, 1, 1, "class", title="补建后写入") == 1
+                  and len(DB.list_report_exports(legacy_db2, 1)) == 1, exports_legacy)
+        finally:
+            legacy_db2.conn.close()
+
+        probe_work = tmpdir("r2-00-exports-probe-")
+        probe = os.path.join(probe_work, "app.db")
+        DB.Database(probe).conn.close()
+        with sqlite3.connect(probe) as conn:
+            conn.execute("DROP TABLE r2_report_exports")
+        check("10.16 删掉本表后 r2_schema_ready 立刻为 False（就绪判定真的看这张表）",
+              DB.r2_schema_ready(probe) is False, "")
+        probe_db = DB.Database(probe, create=False)
+        try:
+            check("10.17 表不存在时 list_report_exports 返回 []（读侧安全退化，不抛异常）",
+                  DB.list_report_exports(probe_db, 1) == [], "")
+        finally:
+            probe_db.conn.close()
+    finally:
+        database.conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -1181,6 +1311,7 @@ def main():
         section_stats()
         section_migration()
         section_rubric_versions()
+        section_report_exports()
     finally:
         leftover = emergency_restore()
         if leftover:

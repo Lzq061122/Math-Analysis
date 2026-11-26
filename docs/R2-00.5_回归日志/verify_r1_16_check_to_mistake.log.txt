@@ -1,0 +1,53 @@
+数智伴学｜R1-16 作答核对 → 原版错题（幂等落库 + 四页可见 + 撤回可回滚）
+时间：2026-11-26T19:20:13+08:00
+命令：python.exe tests\verify_r1_16_check_to_mistake.py
+目录：E:\Agent\小挑
+环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
+PASS 0.0 夹具就绪：2 份作答、0 条错题
+PASS 0.1 这份作答的定位结论是规则首处错步（first_bad），可以判错因
+
+== 一、判错因 → mistakes 多出且仅多出一条 confirmed 错题 ==
+PASS 1.1 保存成功且回执是 saved（不是 retracted）
+PASS 1.2 mistakes 多出一条
+PASS 1.3 这条是 status='confirmed'
+PASS 1.4 来源可辨：source_type=作答核对
+PASS 1.5 owner 正确（class/student 都是这份作答的）
+PASS 1.6 绑定了 answer_id（幂等键）
+PASS 1.7 error_type 用的是教师判断的原因
+PASS 1.8 observed_errors 抄的是教师写的错步
+PASS 1.9 note 写清来源与判断依据（可追溯）
+PASS 1.10 没写任何 AI 字段（不调用生成式模型）
+
+== 二、重复保存不产生重复错题；改判更新同一条（幂等） ==
+PASS 2.1 连存两次仍然只有一条错题
+PASS 2.2 改判后仍是同一条（id 不变），不是新建
+PASS 2.3 改判后错因跟着更新
+
+== 三、撤回 → 回到判前状态（四页不再计入），再判能恢复 ==
+PASS 3.1 撤回回执是 retracted、进度回到 pending
+PASS 3.2 撤回后没有 confirmed 错题（四页看不到它）
+PASS 3.3 行还在、只是置 returned（原版语义，可追溯）
+PASS 3.4 再判一次 → 还是那一条，状态回到 confirmed（幂等复活）
+
+== 四、已由「作答分析」生成过错题时：更新那一条并绑定 answer_id ==
+PASS 4.0 这份『作答分析已建过错题』的作答，定位结论同样是 first_bad
+PASS 4.1 作答分析确认后先生成了一条错题（source_type=作答分析）
+PASS 4.2 那条错题的 answer_id 还是空的（作答分析不写这个列）
+PASS 4.3 作答核对判完后错题条数没变（没插第二条）
+PASS 4.4 那一条被更新并绑定了 answer_id
+PASS 4.5 来源仍是原来的（作答分析），note 里注明沿用
+
+== 五、四处真实函数读到它（不 mock 数据源） ==
+PASS 5.1 tutor.summary（个人学情）读到这条已确认错题
+PASS 5.2 stats.build_stats（班级统计）读到并计数了这条错题
+PASS 5.3 advice.refresh（个性化辅导 / 班级建议）真的生成了建议
+PASS 5.4 错题管理页（api_list_mistakes）能列出这条错题
+
+== 六、旧库升级 + 反向自证 ==
+PASS 6.0 造好旧库替身：mistakes 没有 answer_id 列、没有唯一索引
+PASS 6.1 旧库升级补上 answer_id 与唯一索引（有备份）
+PASS 6.2 升级后再跑一次不再迁移（幂等，返回 None）
+PASS 6.3 反向自证：不补列就写 answer_id 必然报 no such column（断言不恒真）
+
+合计 33 项，通过 33，失败 0
+退出码：0

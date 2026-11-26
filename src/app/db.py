@@ -561,6 +561,37 @@ HINT_USAGES_DDL = (
     "CREATE INDEX IF NOT EXISTS idx_hints_student ON hint_usages(student_id)",
 )
 
+# 学情报告导出历史（R2-00.5）：随 app.db 一起备份/恢复。
+# 为什么必须入库：R2-04 起初把历史写在数据目录的侧车文件 r2_report_exports.json，
+# 但 `backup.py` 的备份包只收 manifest.json + app.db + uploads/，侧车文件不在范围内 →
+# 老师「备份 → 换机器恢复」后导出历史整批静默消失（派单 §9.2 要求新增业务数据可备份恢复，
+# §6.2 要求记录导出历史）。放进库里之后，备份/恢复天然覆盖，不需要第二套机制。
+# 本表只存「谁在什么时候导出了什么」，不存报告内容；报告内容正确性由 report_pdf 负责，
+# 归档上限也由调用方决定（db 层不截断，避免「看起来 50 条、其实被悄悄删了」）。
+REPORT_EXPORTS_DDL = (
+    """CREATE TABLE IF NOT EXISTS r2_report_exports (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      INTEGER NOT NULL,
+    class_id     INTEGER NOT NULL,
+    kind         TEXT NOT NULL DEFAULT 'class',
+    student_id   INTEGER NOT NULL DEFAULT 0,
+    title        TEXT NOT NULL DEFAULT '',
+    purpose      TEXT NOT NULL DEFAULT '',
+    data_version TEXT NOT NULL DEFAULT '',
+    scope        TEXT NOT NULL DEFAULT '',
+    batch        TEXT NOT NULL DEFAULT '',
+    path         TEXT NOT NULL DEFAULT '',
+    sha256       TEXT NOT NULL DEFAULT '',
+    bytes        INTEGER NOT NULL DEFAULT 0,
+    generated_at TEXT NOT NULL DEFAULT '',
+    created_at   TEXT NOT NULL
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_report_exports_user"
+    " ON r2_report_exports(user_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_report_exports_class"
+    " ON r2_report_exports(class_id, kind)",
+)
+
 R2_DDL = (
     ASSIGNMENT_BATCH_DDL
     + ANSWER_IMAGES_DDL
@@ -569,6 +600,7 @@ R2_DDL = (
     + TEACHING_RESOURCES_DDL
     + TEACHING_TASKS_DDL
     + HINT_USAGES_DDL
+    + REPORT_EXPORTS_DDL
 )
 
 # 「R2 结构就绪」的判据（与 r2_contract.R2_TABLE_NAMES 一一对应）：
@@ -614,6 +646,11 @@ R2_REQUIRED_COLUMNS = {
         "student_fixed", "full_solution_provided", "independent_before_solution",
         "resource_key", "resource_version", "note", "created_at", "updated_at",
     ],
+    "r2_report_exports": [
+        "id", "user_id", "class_id", "kind", "student_id", "title", "purpose",
+        "data_version", "scope", "batch", "path", "sha256", "bytes", "generated_at",
+        "created_at",
+    ],
 }
 
 # 后续契约版本给 R2 表补的列（R2-00.4 起）：老 R2 库缺列时由 ensure_r2_schema /
@@ -647,6 +684,8 @@ R2_REQUIRED_INDEXES = (
     "idx_hints_answer",
     "idx_hints_task",
     "idx_hints_student",
+    "idx_report_exports_user",
+    "idx_report_exports_class",
 )
 
 SCHEMA = """
@@ -1883,6 +1922,92 @@ def ensure_batch_config(db, class_id, batch, origin=None, user_id=None):
          "config_state": contract.BATCH_CONFIG_STATE_UNCONFIGURED},
         user_id=user_id,
     )
+
+
+# ---------------------------------------------------------------------------
+# R2-00.5：学情报告导出历史的读写（只做插入与按账号倒序读，不做业务判断）
+# ---------------------------------------------------------------------------
+REPORT_EXPORT_COLUMNS = (
+    "id", "user_id", "class_id", "kind", "student_id", "title", "purpose",
+    "data_version", "scope", "batch", "path", "sha256", "bytes", "generated_at", "created_at",
+)
+
+
+def report_exports_ready(db):
+    """只读判断当前库有没有导出历史表（旧库还没升级时读侧要能安全退化）。"""
+    names = {row["name"] for row in db.query("SELECT name FROM sqlite_master WHERE type='table'")}
+    return "r2_report_exports" in names
+
+
+def add_report_export(db, user_id, class_id, kind, student_id=0, purpose="", scope="",
+                      batch="", path="", sha256="", bytes=0, generated_at="", title="",
+                      data_version="", created_at=None):
+    """记一条「谁在什么时候导出了哪份报告」，返回新行 id。
+
+    参数口径（与 R2-04 的报告元数据一一对应）：
+      user_id      导出账号（`users.id`）
+      class_id     所属班级
+      kind         `class`（班级报告）/ `student`（个人报告）
+      student_id   个人报告的学生；班级报告传 0（不用 NULL，省掉一处三值判断）
+      title        导出时的**报告标题原样快照**：班级/学生后来改名，历史标题不能跟着变
+      purpose      老师填的导出用途
+      data_version 导出时的数据版本串（如「统计 R2-03.1 / 契约 R2-00.4」）——这是历史事实，
+                   不能用当前常量反推，否则 R2-06 升版后旧记录会被改写成新版本
+      scope        筛选范围（dict 会转成 JSON 串；字符串原样存）
+      batch        批次（空 = 未指定）
+      path         保存路径
+      sha256       导出文件校验值
+      bytes        文件字节数
+      generated_at 报告生成时间（快照时间，不是写入时间）
+      created_at   入库时间，缺省取当前时间
+
+    **不做任何业务判断**（不校验 kind 取值、不检查班级归属、不截断历史）：那些属于
+    `report_pdf`/`api` 的职责；db 层只保证「写进去的东西一字不差地读得出来」。
+    表不存在时先建表（幂等，照 `ensure_ai_egress_audit` 的既有做法），这样老库在
+    captain 接线完成前也不会因为少一张表而丢历史。
+    """
+    if scope and not isinstance(scope, str):
+        scope = json.dumps(scope, ensure_ascii=False, sort_keys=True)
+    stamp = created_at or now_iso()
+    payload = (
+        int(user_id), int(class_id), str(kind or "class"), int(student_id or 0),
+        str(title or ""), str(purpose or ""), str(data_version or ""),
+        str(scope or ""), str(batch or ""), str(path or ""),
+        str(sha256 or ""), int(bytes or 0), str(generated_at or ""), stamp,
+    )
+    with db.tx() as conn:
+        for ddl in REPORT_EXPORTS_DDL:
+            conn.execute(ddl)
+        cursor = conn.execute(
+            "INSERT INTO r2_report_exports(user_id, class_id, kind, student_id, title,"
+            " purpose, data_version, scope, batch, path, sha256, bytes, generated_at,"
+            " created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", payload)
+        return int(cursor.lastrowid)
+
+
+def list_report_exports(db, user_id, limit=50, class_id=None, kind=None):
+    """按账号倒序列出最近 `limit` 条导出历史（表不存在时返回 []，不抛异常）。
+
+    `user_id` **必填**：导出历史是账号级数据，不提供「不传账号就读全部」的入口
+    （避免调用方一不留神跨账号读出别人的导出记录）。同账号内可用 `class_id` / `kind`
+    再过滤，界面「本班历史」就用这两个参数。
+    `limit` 只影响**读取条数**，不删除任何行：归档上限由调用方决定（派单要求留痕 ≥ 六个月，
+    所以 db 层绝不静默截断）。排序用 `(created_at DESC, id DESC)`，同一秒内多次导出也有稳定顺序。
+    """
+    if not report_exports_ready(db):
+        return []
+    limit = max(1, int(limit or 1))
+    sql = ("SELECT * FROM r2_report_exports WHERE user_id=?")
+    params = [int(user_id)]
+    if class_id is not None:
+        sql += " AND class_id=?"
+        params.append(int(class_id))
+    if kind:
+        sql += " AND kind=?"
+        params.append(str(kind))
+    sql += " ORDER BY created_at DESC, id DESC LIMIT ?"
+    params.append(limit)
+    return db.query(sql, tuple(params))
 
 
 class Database:

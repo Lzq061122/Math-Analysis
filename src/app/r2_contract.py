@@ -28,7 +28,7 @@ import re
 TARGET_APP_VERSION = "1.9.0"
 
 # 契约版本：正文与代码同步修改时必须一起升。测试断言正文里出现同一字符串。
-R2_CONTRACT_VERSION = "R2-00.4"
+R2_CONTRACT_VERSION = "R2-00.5"
 
 # **不改** `app.db.SCHEMA_VERSION`（R1 起一直是 "4"）。理由（这是硬口径，别动）：
 # `src/desktop/data_dir.py::_db_problem()` 用 `version != SCHEMA_VERSION` 判断旧库
@@ -48,6 +48,7 @@ R2_TABLE_NAMES = (
     "teaching_resource_reviews",    # 双审核记录（数学正确性 / 教学适切性）
     "teaching_tasks",           # 教学任务（个人/班级辅导任务与状态）
     "hint_usages",              # 三级提示使用记录（P1/P2/P3 + 独立尝试/修正结果）
+    "r2_report_exports",        # 学情报告导出历史（R2-00.5；随 app.db 一起备份）
 )
 
 # 演示数据的来源标记（与 `db.DEMO_SOURCE`、`demo_answers` 同一份口径）。

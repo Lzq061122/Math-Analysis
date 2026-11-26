@@ -1,20 +1,20 @@
-时间：2026-11-26T18:55:17+08:00
+时间：2026-11-26T19:19:54+08:00
 命令：python.exe tests\verify_r2_00_contract.py
 目录：E:\Agent\小挑
 环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
-套件：R2-00 公共契约与数据入口（契约版本 R2-00.4）
+套件：R2-00 公共契约与数据入口（契约版本 R2-00.5）
 
 
 == 一、契约文档与代码双向核对 ==
 PASS  1.1 契约正文存在：docs/R2_接口契约.md
 PASS  1.2 R1 契约仍在（本轮只读，不许删）
-PASS  1.3 文档写着同一个契约版本号 R2-00.4
+PASS  1.3 文档写着同一个契约版本号 R2-00.5
 PASS  1.4 代码里没有偷偷升 SCHEMA_VERSION（app_meta 口径仍是 4）
 PASS  1.5 11 条失效规则 id 全部写进文档
 PASS  1.6 10 个触发词全部写进文档
 PASS  1.7 18 项统计口径 key 全部写进文档
 PASS  1.8 2 项排序结论 key 全部写进文档
-PASS  1.9 9 张新表名全部写进文档
+PASS  1.9 10 张新表名全部写进文档
 PASS  1.10 四维状态值全部写进文档
 PASS  1.11 R1 遗留归属编号全部写进文档
 PASS  1.12 派单 §二 的八条与迁移/统计/兼容小节都在正文里
@@ -177,13 +177,13 @@ PASS  7.9 筛选口径写明知识点/错因不改变班级人数、总分、平
 PASS  7.10 硬口径写进了 student_priority_issues（历史错题不推算掌握率）
 
 == 八、增量迁移（新库 / 旧库 / 幂等 / R1 表不变 / 同名批次归属） ==
-PASS  8.1 新库直接建好 9 张 R2 表且没有多建（无预留表）
+PASS  8.1 新库直接建好 10 张 R2 表且没有多建（无预留表）
 PASS  8.2 新库 r2_schema_ready 为真
 PASS  8.3 新库 ensure_r2_schema 返回 None（已就绪不写库）
 PASS  8.4 新库结构版本仍是 4（不升版，1.8.1 客户端仍可打开）
 PASS  8.5 夹具确实是旧库（没有 R2 表）
 PASS  8.6 旧库迁移成功并留下一致性备份（文件名带时间戳+随机后缀）
-PASS  8.7 迁移后 R2 表齐备（9 张，一张不多）
+PASS  8.7 迁移后 R2 表齐备（10 张，一张不多）
 PASS  8.8 迁移后 r2_schema_ready 为真
 PASS  8.9 R1/1.8.1 既有表的结构与行数逐表不变（不删列、不改语义）
 PASS  8.10 24 个 R2 索引全部建好
@@ -201,7 +201,7 @@ PASS  8.21 再次导入同一批次不覆盖老师已有配置（ensure 不 clob
 PASS  8.22 批次配置可列出（供 R2-01/R2-03 下拉）
 PASS  8.23 create=False 打开旧库不迁移（迁移必须显式调用，接线片段见契约 §12）
 PASS  8.24 反向自证：少建一张表时迁移必须抛 MigrationError（8.7 断言不恒真）
-PASS  8.25 恢复实现后同一份夹具迁移成功、9 张表齐备
+PASS  8.25 恢复实现后同一份夹具迁移成功、10 张表齐备
 PASS  8.26 备份环节故障 → 抛 MigrationError 且原库一行未动
 PASS  8.27 故障注入失败时不留残缺备份文件
 
@@ -217,7 +217,26 @@ PASS  9.8 回退只作兼容：题级给了版本时批次级旧值不覆盖它
 PASS  9.9 有标准但题级与批次级都没版本 → rubric_version_missing（不允许静默）
 PASS  9.10 满分权威在题级：rubrics[q].full_score 覆盖 full_scores 的旧值
 PASS  9.11 契约写明「修改某题 → 只失效该题」并点明批次级比较属实现错误
-PASS  9.12 契约版本已升到 R2-00.4（版本记录含 R2-00.4 与受影响任务）
+PASS  9.12 契约版本已升到 R2-00.5（版本记录含 R2-00.4/00.5 与受影响任务）
 
-合计 196 项，通过 196 项，失败 0 项
+== 十、学情报告导出历史入库（R2-00.5：随 app.db 一起备份） ==
+PASS  10.1 新库直接建好 r2_report_exports 表
+PASS  10.2 字段齐全且与 R2_REQUIRED_COLUMNS 一致（15 列，含 title / data_version）
+PASS  10.3 两个索引都在（(user_id, created_at DESC) 与 (class_id, kind)）
+PASS  10.4 契约表名清单与 db 判定一致（R2_TABLE_NAMES 含本表）
+PASS  10.5 插入返回自增 id，按 (created_at DESC, id DESC) 倒序读回 2 条
+PASS  10.6 读回字段与写入一一相等（title / data_version / bytes / sha256 / path）
+PASS  10.7 scope 传 dict 时存成 JSON 串（读回可解析，键不丢）
+PASS  10.8 班级报告的 student_id 存 0（不用 NULL，省掉三值判断）
+PASS  10.9 不同账号互相读不到（u1 只见 1/2，u2 只见 3）
+PASS  10.10 class_id / kind 可在同账号内再过滤
+PASS  10.11 limit 只限制读取条数、不删除任何行
+PASS  10.12 老 R2 库被判「未就绪」（缺本表 → r2_schema_ready False）
+PASS  10.13 迁移后表已建好、既有 assignment_batches 行一条没丢
+PASS  10.14 重复迁移幂等（第二次返回 None 且结构不变）
+PASS  10.15 迁移后读写可用（空历史读回 []，写入后能读回）
+PASS  10.16 删掉本表后 r2_schema_ready 立刻为 False（就绪判定真的看这张表）
+PASS  10.17 表不存在时 list_report_exports 返回 []（读侧安全退化，不抛异常）
+
+合计 213 项，通过 213 项，失败 0 项
 退出码：0
