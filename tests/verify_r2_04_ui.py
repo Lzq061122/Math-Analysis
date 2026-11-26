@@ -42,6 +42,7 @@ WORK = os.path.join(ROOT, "tests", ".tmp-r2-04-ui")
 LINES = []
 RESULTS = {"pass": 0, "fail": 0}
 TODAY = "2026-11-26"
+AT = "2026-11-26T19:30:00+08:00"
 TEACHER = {"id": 1, "username": "teacher"}
 
 
@@ -76,7 +77,8 @@ def pdf_text(path):
 
 def make_window(db, **overrides):
     options = {"kind": "class", "class_name": "初二(3)班", "batch": BATCH, "today": TODAY,
-               "user": TEACHER, "db_file": os.path.join(WORK, "app.db"), "auto_exec": False}
+               "user": TEACHER, "db_file": os.path.join(WORK, "app.db"), "auto_exec": False,
+               "generated_at": AT}
     options.update(overrides)
     return ui_report.ReportPreviewWindow(db, 1, **options)
 
@@ -180,7 +182,16 @@ def main():
           hashlib.sha256(open(os.path.join(WORK, "class-report-4.pdf"), "rb").read()).hexdigest())
     first = window.preview.toPlainText()
     window.refresh()
-    equal("7.3 同一数据刷新两次预览逐字相同", window.preview.toPlainText(), first)
+    equal("7.3 同一数据、同一生成时间刷新两次预览逐字相同",
+          window.preview.toPlainText(), first)
+    loose = make_window(env["db"], db_file=env["db_file"], generated_at="")
+    before_lines = loose.preview.toPlainText().splitlines()
+    loose.refresh()
+    after_lines = loose.preview.toPlainText().splitlines()
+    equal("7.3b 不固定生成时间时，除时间戳外内容逐行相同",
+          [line for line in after_lines if "T19:" not in line and "T19" not in line],
+          [line for line in before_lines if "T19:" not in line and "T19" not in line])
+    loose.close()
     window.resize(1366, 768)
     app.processEvents()
     check("7.4 1366×768 下最小尺寸不超出屏幕",

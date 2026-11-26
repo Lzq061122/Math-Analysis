@@ -43,7 +43,7 @@ class ReportPreviewWindow(QMainWindow):
 
     def __init__(self, db, class_id, kind="class", student_id=None, class_name="",
                  batch="", filters=None, today="", user=None, db_file=None,
-                 purpose="存档", parent=None, auto_exec=True):
+                 purpose="存档", parent=None, auto_exec=True, generated_at=""):
         super().__init__(parent)
         self.db = db
         self.class_id = int(class_id)
@@ -56,6 +56,8 @@ class ReportPreviewWindow(QMainWindow):
         self.user = user
         self.db_file = db_file
         self.purpose = purpose if purpose in report_pdf.PURPOSES else report_pdf.PURPOSES[0]
+        # 生成时间：界面可显式给定（导出/复现）；留空才由 report_pdf 回落当前时间
+        self.generated_at = str(generated_at or "")
         self.auto_exec = auto_exec          # 测试里置 False：不弹文件对话框
         self.report = None
         self.last_export = None
@@ -126,7 +128,8 @@ class ReportPreviewWindow(QMainWindow):
     def build_report(self):
         """报告对象只在这里构造一次；预览与导出都用它（同一份快照）。"""
         options = {"batch": self.batch, "filters": self.filters, "today": self.today,
-                   "user": self.user, "purpose": self.purpose}
+                   "user": self.user, "purpose": self.purpose,
+                   "generated_at": self.generated_at}
         if self.kind == "student":
             return report_pdf.build_student_report(self.db, self.class_id, self.student_id,
                                                    **options)
