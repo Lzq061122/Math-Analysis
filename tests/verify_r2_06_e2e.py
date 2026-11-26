@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from app import pdf_canvas, r2_contract as C, report_pdf, teaching_resources as TR  # noqa: E402
 from app.db import (  # noqa: E402
-    Database, ensure_answer_check_schema, load_batch_config, save_batch_config,
+    Database, ensure_answer_check_schema, ensure_r2_schema, load_batch_config, save_batch_config,
 )
 from desktop.service import DesktopService  # noqa: E402
 
@@ -373,6 +373,51 @@ def main():
               len(present), len(C.R2_TABLE_NAMES),
               counts_in_manifest.get("assignment_batches"),
               counts_in_manifest.get("r2_report_exports")))
+
+    # I4 真实备份 → 换机恢复：R2 的导出历史必须跟着走，且 class_id 要映射成新库的 id。
+    # 这条是「静默丢数据」的硬证据：备份侧带走、恢复侧不搬，界面上就是历史突然空了。
+    from app import db as db_mod
+
+    hist_src = svc2.db.query("SELECT COUNT(*) AS n FROM r2_report_exports WHERE user_id=?",
+                             (svc2.user["id"],))[0]["n"]
+    if hist_src == 0:
+        # 历史尚未切到库里时也照样测恢复路径：直接写两条，模拟 R2-04 修订后的写入。
+        for kind, sid_ in (("class", 0), ("student", sids[STUDENTS[0][0]])):
+            db_mod.add_report_export(svc2.db, svc2.user["id"], cid, kind, student_id=sid_,
+                                     purpose="存档", scope={"batch": BATCH},
+                                     path=r"D:\旧机器\报告.pdf", sha256="e2e", bytes=10,
+                                     generated_at=GEN, title="E2E 导出记录",
+                                     data_version="1.9.0")
+        hist_src = 2
+
+    dst_root = tempfile.mkdtemp(prefix="r2e2e-restore-")
+    dst_dir = os.path.join(dst_root, "data")
+    os.makedirs(dst_dir)
+    dst_path = os.path.join(dst_dir, "app.db")
+    Database(dst_path)
+    ensure_answer_check_schema(dst_path)
+    ensure_r2_schema(dst_path)
+    dst_db = Database(dst_path, create=False)
+    src_key = svc2.db.scalar("SELECT backup_key FROM users WHERE id=?", (svc2.user["id"],))
+    with dst_db.tx() as conn:
+        conn.execute(
+            "INSERT INTO users(username, display_name, pwd_salt, pwd_hash, iterations, created_at)"
+            " VALUES(?,?,?,?,?,?)", ("tea", "老师", "salt", "hash", 1000, "2026-01-01"))
+        dst_uid = conn.execute("SELECT id FROM users").fetchone()["id"]
+        conn.execute("UPDATE users SET backup_key=? WHERE id=?", (src_key, dst_uid))
+    staging = os.path.join(dst_root, "staging")
+    os.makedirs(staging)
+    user_row = dict(dst_db.query_one(
+        "SELECT id, username, backup_key FROM users WHERE id=?", (dst_uid,)))
+    backup.inspect_backup(zip_path, staging, user_row)
+    receipt = backup.apply_staged(staging, dst_dir, dst_uid, mode="restore",
+                                  legacy_confirmed=True)
+    restored = db_mod.list_report_exports(Database(dst_path, create=False), dst_uid)
+    check("I4 备份→换机恢复后导出历史一条不少，class_id 已映射到新库",
+          len(restored) == hist_src and hist_src >= 1
+          and all(r["class_id"] != 0 for r in restored),
+          "源 %d 条 → 恢复 %d 条；receipt=%s" % (
+              hist_src, len(restored), (receipt.get("counts") or {}).get("r2_report_exports")))
 
     total = len(ITEMS)
     passed = sum(1 for _, ok in ITEMS if ok)

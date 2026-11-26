@@ -887,6 +887,30 @@ def apply_staged(staging_dir, data_dir, user_id, app_version=VERSION, mode="rest
                             (new_class, new_student, new_answer, new_check)
                             + _row_values(fol2, ANSWER_FOLLOWUP_COLUMNS),
                         )
+                if "r2_report_exports" in src_tables:
+                    # R2 报告导出历史：class_id 换成本库新 id，student_id 过 student_map
+                    # （班级报告的 student_id 固定存 0，用 .get(..., 0) 兜住，不要求该生
+                    # 在本次备份的学生名单里）。path 记的是「导出当时本机的保存路径」，
+                    # 换机器后它自然不存在——那是事实，不跟着改，也不因路径失效就丢这条历史。
+                    # 目标库没有这张表（更老的库尚未迁移）时整段跳过，不让恢复失败。
+                    dst_tables = {r[0] for r in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'")}
+                    if "r2_report_exports" in dst_tables:
+                        for exp in src.execute(
+                            "SELECT * FROM r2_report_exports WHERE class_id=? ORDER BY id",
+                            (row["id"],)
+                        ):
+                            _insert(
+                                conn, "r2_report_exports",
+                                ("user_id", "class_id", "kind", "student_id", "title", "purpose",
+                                 "data_version", "scope", "batch", "path", "sha256", "bytes",
+                                 "generated_at", "created_at"),
+                                (user_id, new_class, exp["kind"],
+                                 student_map.get(exp["student_id"], 0),
+                                 exp["title"], exp["purpose"], exp["data_version"],
+                                 exp["scope"], exp["batch"], exp["path"], exp["sha256"],
+                                 exp["bytes"], exp["generated_at"], exp["created_at"]),
+                            )
                 review_map = {}
                 if "answer_reviews" in src_tables:
                     # 审核记录跟着作答和错题一起搬：两边的 id 都换成本库的新 id。
