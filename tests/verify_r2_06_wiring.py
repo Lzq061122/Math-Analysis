@@ -226,6 +226,58 @@ def main():
           str([p for p in panels if not hasattr(gw, p)]) or "3 个齐全")
     gw.close()
 
+    # --- R2-04 报告导出 ---------------------------------------------------------
+    rep_methods = ["r2_class_report", "r2_student_report", "r2_report_history"]
+    missing_rep = [n for n in rep_methods if not hasattr(DesktopService, n)]
+    check("W31 R2-04 三个方法齐备", not missing_rep,
+          "缺 %s" % missing_rep if missing_rep else "3 个")
+
+    creport = owner.r2_class_report(cid, today="2026-11-26", generated_at="2026-11-26T19:00:00")
+    check("W32 班级报告可生成（快照对象，预览/导出同源）",
+          creport is not None and hasattr(creport, "get"), type(creport).__name__)
+
+    sreport = owner.r2_student_report(cid, student_id, today="2026-11-26",
+                                      generated_at="2026-11-26T19:00:00")
+    check("W33 个人报告可生成", sreport is not None and hasattr(sreport, "get"),
+          type(sreport).__name__)
+
+    hist = owner.r2_report_history()
+    check("W34 导出历史可读（账号/时间/用途/类型/筛选范围）", isinstance(hist, (list, dict)),
+          type(hist).__name__)
+
+    rep_leaks = []
+    for name in ("r2_class_report", "r2_student_report"):
+        try:
+            fn = getattr(DesktopService, name)
+            if name == "r2_student_report":
+                fn(other, cid, student_id)
+            else:
+                fn(other, cid)
+            rep_leaks.append(name)
+        except Exception as exc:
+            if getattr(exc, "status", None) != 404:
+                rep_leaks.append("%s:%s" % (name, getattr(exc, "status", "?")))
+    check("W35 报告方法同样被归属闸门拦住", not rep_leaks, "; ".join(rep_leaks))
+
+    check("W36 原版班级学情页有「导出报告」入口",
+          "open_report" in ui_mod.ClassStatsWindow.__dict__)
+    check("W37 原版个人学情页有「导出报告」入口",
+          "open_report" in ui_mod.StudentStatsWindow.__dict__)
+
+    rw = owner_rw = None
+    try:
+        import desktop.ui_report as ui_report_mod
+
+        rw = ui_report_mod.ReportPreviewWindow(
+            owner.db, cid, kind="class", class_name="初二(1)班", today="2026-11-26",
+            user=owner.user, db_file=owner.db.path, auto_exec=False,
+            generated_at="2026-11-26T19:00:00")
+        ok = rw.report is not None and (rw.last_error in (None, ""))
+        check("W38 报告预览窗口能直接构造并完成一次预览", ok, "err=%s" % (rw.last_error,))
+        rw.close()
+    except Exception as exc:
+        check("W38 报告预览窗口能直接构造并完成一次预览", False, repr(exc)[:80])
+
     total = len(ITEMS)
     passed = sum(1 for _, ok in ITEMS if ok)
     print("")

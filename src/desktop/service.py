@@ -10,7 +10,7 @@ import time
 import urllib.parse
 import uuid
 
-from app import analysis, answer_import_zip, backup, grading, r2_stats, vision
+from app import analysis, answer_import_zip, backup, grading, r2_stats, report_pdf, vision
 from app.api import (
     ApiError,
     owned_class,
@@ -946,6 +946,28 @@ class DesktopService:
         return r2_stats.student_snapshot(self.db, cls["id"], student_id, batch=batch or "",
                                          filters=filters, today=today,
                                          group_scores=group_scores)
+
+    # ------------------------------------------------- R2-04 学情报告（PDF）
+    # 报告模块只吃 build_*_report() 产出的那一份 report 对象：预览、导出、打印
+    # 共用同一次数据快照，所以「预览后改数据再导出，PDF 仍对应原预览」是结构保证，
+    # 不是靠界面记得别重新查库。today / generated_at 由界面传入（报告不读系统时钟）。
+    def r2_class_report(self, class_id, batch="", filters=None, today="", generated_at="",
+                        purpose="存档", limit=6):
+        cls = self.owned_class_row(class_id)
+        return report_pdf.build_class_report(
+            self.db, cls["id"], batch=batch or "", filters=filters, today=today,
+            generated_at=generated_at, user=self.user, purpose=purpose, limit=limit)
+
+    def r2_student_report(self, class_id, student_id, batch="", filters=None, today="",
+                          generated_at="", purpose="存档", limit=6):
+        cls = self.owned_class_row(class_id)
+        return report_pdf.build_student_report(
+            self.db, cls["id"], student_id, batch=batch or "", filters=filters, today=today,
+            generated_at=generated_at, user=self.user, purpose=purpose, limit=limit)
+
+    def r2_report_history(self):
+        """导出历史（账号/时间/用途/类型/筛选范围）：只读。"""
+        return report_pdf.load_history(self.db.path)
 
     # ------------------------------------------------- 个体 AI 开关（R1-T14/T18）
     def ai_individual_state(self):

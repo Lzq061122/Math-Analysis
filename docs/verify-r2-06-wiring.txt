@@ -46,5 +46,13 @@ PASS  W27 未选班级时点击只提示、不抛异常 | 先在列表里点一�
 PASS  W28 选中班级后核验按钮启用
 PASS  W29 点它能开出 GradingWindow | GradingWindow
 PASS  W30 GradingWindow 三块面板都在 | []
+PASS  W31 R2-04 三个方法齐备 | 3 个
+PASS  W32 班级报告可生成（快照对象，预览/导出同源） | dict
+PASS  W33 个人报告可生成 | dict
+PASS  W34 导出历史可读（账号/时间/用途/类型/筛选范围） | list
+PASS  W35 报告方法同样被归属闸门拦住
+PASS  W36 原版班级学情页有「导出报告」入口
+PASS  W37 原版个人学情页有「导出报告」入口
+PASS  W38 报告预览窗口能直接构造并完成一次预览 | err=None
 
-合计 30 项，通过 30 项，失败 0 项
+合计 38 项，通过 38 项，失败 0 项

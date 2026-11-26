@@ -2887,6 +2887,10 @@ class StudentStatsWindow(QMainWindow):
         self.dashboard_button.setObjectName("statsOpenDashboard")
         self.dashboard_button.setToolTip("个人看板：知识点/错因分布、重复错误明细、重点问题排序")
         self.dashboard_button.clicked.connect(self.open_dashboard)
+        self.report_button = QPushButton("导出报告")
+        self.report_button.setObjectName("statsExportReport")
+        self.report_button.setToolTip("预览个人学情报告并导出 PDF / 打印")
+        self.report_button.clicked.connect(self.open_report)
         self.status = QLabel("")
         self.status.setObjectName("statsStatus")
 
@@ -2898,6 +2902,7 @@ class StudentStatsWindow(QMainWindow):
         filters.addWidget(self.query_button)
         filters.addWidget(self.reset_button)
         filters.addWidget(self.dashboard_button)
+        filters.addWidget(self.report_button)
         filters.addWidget(self.status, 1)
 
         self.summary = QLabel("")
@@ -3212,6 +3217,26 @@ class StudentStatsWindow(QMainWindow):
             return
         self.open_mistake.emit(self.student, item["id"])
 
+    def open_report(self):
+        """R2-04：个人学情报告（不含他人记录；预览/导出/打印同一份快照）。"""
+        from desktop.ui_report import ReportPreviewWindow
+
+        try:
+            self.service.owned_class_row(self.class_row["id"])
+        except Exception as exc:
+            self.status.setText(getattr(exc, "message", "") or "打开失败")
+            return
+        window = ReportPreviewWindow(
+            self.service.db, self.class_row["id"], kind="student",
+            student_id=self.student["id"],
+            class_name=self.class_row.get("name", ""),
+            today=QDate.currentDate().toString("yyyy-MM-dd"),
+            user=self.service.user, db_file=self.service.db.path, parent=self)
+        self._report_window = window
+        window.show()
+        window.raise_()
+        return window
+
     def open_dashboard(self):
         """R2-03：个人学情看板（原版这个页面保留，看板是并列入口）。"""
         from desktop.ui_dashboard import StudentDashboardWindow
@@ -3309,6 +3334,10 @@ class ClassStatsWindow(QMainWindow):
         self.dashboard_button.setObjectName("classStatsOpenDashboard")
         self.dashboard_button.setToolTip("交互式看板：知识点/错因分布、热力图、完整成绩分布、各题得分率")
         self.dashboard_button.clicked.connect(self.open_dashboard)
+        self.report_button = QPushButton("导出报告")
+        self.report_button.setObjectName("classStatsExportReport")
+        self.report_button.setToolTip("预览班级学情报告并导出 PDF / 打印")
+        self.report_button.clicked.connect(self.open_report)
         self.status = QLabel("")
         self.status.setObjectName("classStatsStatus")
 
@@ -3320,6 +3349,7 @@ class ClassStatsWindow(QMainWindow):
         filters.addWidget(self.query_button)
         filters.addWidget(self.reset_button)
         filters.addWidget(self.dashboard_button)
+        filters.addWidget(self.report_button)
         filters.addWidget(self.status, 1)
 
         self.summary = QLabel("")
@@ -3734,6 +3764,25 @@ class ClassStatsWindow(QMainWindow):
                 "active": 0 if student_id in self._inactive_student_ids else 1,
             }
         self.open_mistake.emit(student, item["id"])
+
+    def open_report(self):
+        """R2-04：班级学情报告（预览 / 导出 PDF / 打印，三者共用同一份快照）。"""
+        from desktop.ui_report import ReportPreviewWindow
+
+        try:
+            self.service.owned_class_row(self.class_row["id"])
+        except Exception as exc:
+            self.status.setText(getattr(exc, "message", "") or "打开失败")
+            return
+        window = ReportPreviewWindow(
+            self.service.db, self.class_row["id"], kind="class",
+            class_name=self.class_row.get("name", ""),
+            today=QDate.currentDate().toString("yyyy-MM-dd"),
+            user=self.service.user, db_file=self.service.db.path, parent=self)
+        self._report_window = window
+        window.show()
+        window.raise_()
+        return window
 
     def open_dashboard(self):
         """R2-03：班级学情看板（原版按日期的错题分布保留，看板是并列入口）。"""
