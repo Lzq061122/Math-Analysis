@@ -152,6 +152,80 @@ def main():
     check("W14 点它能开出 TeachingWindow", type(tw).__name__ == "TeachingWindow", type(tw).__name__)
     tw.close()
 
+    # --- R2-03 看板 -------------------------------------------------------------
+    dash_methods = ["r2_list_batches", "r2_class_snapshot", "r2_student_snapshot"]
+    missing_dash = [n for n in dash_methods if not hasattr(DesktopService, n)]
+    check("W15 R2-03 三个只读方法齐备", not missing_dash,
+          "缺 %s" % missing_dash if missing_dash else "3 个")
+
+    batches = owner.r2_list_batches(cid)
+    check("W16 批次自选可用（R1 遗留 C1 的关闭点）", isinstance(batches, (list, dict)),
+          type(batches).__name__)
+
+    snap = owner.r2_class_snapshot(cid, today="2026-11-26")
+    check("W17 班级快照可算（18 项指标 + 两项排序）",
+          isinstance(snap, dict) and bool(snap), "keys=%d" % len(snap or {}))
+
+    student_id = owner.db.scalar("SELECT id FROM students WHERE class_id=? ORDER BY id", (cid,))
+    ssnap = owner.r2_student_snapshot(cid, student_id, today="2026-11-26")
+    check("W18 个人快照可算", isinstance(ssnap, dict) and bool(ssnap), "keys=%d" % len(ssnap or {}))
+
+    dash_leaks = []
+    for name in dash_methods:
+        fn = getattr(DesktopService, name)
+        try:
+            if name == "r2_student_snapshot":
+                fn(other, cid, student_id)
+            elif name == "r2_class_snapshot":
+                fn(other, cid)
+            else:
+                fn(other, cid)
+            dash_leaks.append(name)
+        except Exception as exc:
+            if getattr(exc, "status", None) != 404:
+                dash_leaks.append("%s:%s" % (name, getattr(exc, "status", "?")))
+    check("W19 三个只读方法同样被归属闸门拦住", not dash_leaks, "; ".join(dash_leaks))
+
+    check("W20 班级页有「学情看板」按钮",
+          classes.dashboard_button.objectName() == "openDashboardButton",
+          classes.dashboard_button.text())
+    classes._selected_class = lambda: None
+    classes._sync_buttons()
+    check("W21 未选班级时看板按钮停用", classes.dashboard_button.isEnabled() is False)
+    classes._selected_class = lambda: class_row
+    classes._sync_buttons()
+    dw = classes.open_dashboard()
+    check("W22 点它能开出 ClassDashboardWindow", type(dw).__name__ == "ClassDashboardWindow",
+          type(dw).__name__)
+    dw.close()
+
+    # 派单 §5 要求「扩展现有学情页面」：原版两个学情页各要有并列入口
+    check("W23 原版班级学情页有「数据看板」入口",
+          "open_dashboard" in ui_mod.ClassStatsWindow.__dict__)
+    check("W24 原版个人学情页有「数据看板」入口",
+          "open_dashboard" in ui_mod.StudentStatsWindow.__dict__)
+
+    # --- R2-02 批量核验与评分窗口 ----------------------------------------------
+    check("W25 班级页有「批量核验与评分」按钮",
+          classes.grading_button.objectName() == "openGradingButton", classes.grading_button.text())
+    classes._selected_class = lambda: None
+    classes._sync_buttons()
+    check("W26 未选班级时核验按钮停用", classes.grading_button.isEnabled() is False)
+    classes.open_grading_window()
+    check("W27 未选班级时点击只提示、不抛异常",
+          classes.status.text() == "先在列表里点一个班级", classes.status.text())
+    classes._selected_class = lambda: class_row
+    classes._sync_buttons()
+    check("W28 选中班级后核验按钮启用", classes.grading_button.isEnabled() is True)
+    gw = classes.open_grading_window()
+    check("W29 点它能开出 GradingWindow", type(gw).__name__ == "GradingWindow", type(gw).__name__)
+    # 窗口对外暴露的四块面板（界面交付说明 §5 的对外契约）
+    panels = ("verify_panel", "review_panel", "score_panel")
+    check("W30 GradingWindow 三块面板都在",
+          all(hasattr(gw, p) for p in panels),
+          str([p for p in panels if not hasattr(gw, p)]) or "3 个齐全")
+    gw.close()
+
     total = len(ITEMS)
     passed = sum(1 for _, ok in ITEMS if ok)
     print("")

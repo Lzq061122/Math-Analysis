@@ -2883,6 +2883,10 @@ class StudentStatsWindow(QMainWindow):
         self.reset_button = QPushButton("重置")
         self.reset_button.setObjectName("statsResetButton")
         self.reset_button.clicked.connect(self.reset_filters)
+        self.dashboard_button = QPushButton("数据看板")
+        self.dashboard_button.setObjectName("statsOpenDashboard")
+        self.dashboard_button.setToolTip("个人看板：知识点/错因分布、重复错误明细、重点问题排序")
+        self.dashboard_button.clicked.connect(self.open_dashboard)
         self.status = QLabel("")
         self.status.setObjectName("statsStatus")
 
@@ -2893,6 +2897,7 @@ class StudentStatsWindow(QMainWindow):
         filters.addWidget(self.to_date)
         filters.addWidget(self.query_button)
         filters.addWidget(self.reset_button)
+        filters.addWidget(self.dashboard_button)
         filters.addWidget(self.status, 1)
 
         self.summary = QLabel("")
@@ -3207,6 +3212,24 @@ class StudentStatsWindow(QMainWindow):
             return
         self.open_mistake.emit(self.student, item["id"])
 
+    def open_dashboard(self):
+        """R2-03：个人学情看板（原版这个页面保留，看板是并列入口）。"""
+        from desktop.ui_dashboard import StudentDashboardWindow
+
+        try:
+            self.service.owned_class_row(self.class_row["id"])
+        except Exception as exc:
+            self.status.setText(getattr(exc, "message", "") or "打开失败")
+            return
+        window = StudentDashboardWindow(
+            self.service.db, self.class_row["id"], self.student["id"],
+            today=QDate.currentDate().toString("yyyy-MM-dd"), parent=self)
+        window.setAttribute(Qt.WA_DeleteOnClose, True)
+        self._dashboard_window = window
+        window.show()
+        window.raise_()
+        return window
+
     def closeEvent(self, event):
         self._closed = True
         super().closeEvent(event)
@@ -3282,6 +3305,10 @@ class ClassStatsWindow(QMainWindow):
         self.reset_button = QPushButton("重置")
         self.reset_button.setObjectName("classStatsResetButton")
         self.reset_button.clicked.connect(self.reset_filters)
+        self.dashboard_button = QPushButton("数据看板")
+        self.dashboard_button.setObjectName("classStatsOpenDashboard")
+        self.dashboard_button.setToolTip("交互式看板：知识点/错因分布、热力图、完整成绩分布、各题得分率")
+        self.dashboard_button.clicked.connect(self.open_dashboard)
         self.status = QLabel("")
         self.status.setObjectName("classStatsStatus")
 
@@ -3292,6 +3319,7 @@ class ClassStatsWindow(QMainWindow):
         filters.addWidget(self.to_date)
         filters.addWidget(self.query_button)
         filters.addWidget(self.reset_button)
+        filters.addWidget(self.dashboard_button)
         filters.addWidget(self.status, 1)
 
         self.summary = QLabel("")
@@ -3706,6 +3734,25 @@ class ClassStatsWindow(QMainWindow):
                 "active": 0 if student_id in self._inactive_student_ids else 1,
             }
         self.open_mistake.emit(student, item["id"])
+
+    def open_dashboard(self):
+        """R2-03：班级学情看板（原版按日期的错题分布保留，看板是并列入口）。"""
+        from desktop.ui_dashboard import ClassDashboardWindow
+
+        try:
+            self.service.owned_class_row(self.class_row["id"])
+        except Exception as exc:
+            self.status.setText(getattr(exc, "message", "") or "打开失败")
+            return
+        window = ClassDashboardWindow(
+            self.service.db, self.class_row["id"],
+            class_name=self.class_row.get("name", ""),
+            today=QDate.currentDate().toString("yyyy-MM-dd"), parent=self)
+        window.setAttribute(Qt.WA_DeleteOnClose, True)
+        self._dashboard_window = window
+        window.show()
+        window.raise_()
+        return window
 
     def closeEvent(self, event):
         self._closed = True
@@ -7672,6 +7719,16 @@ class ClassesWindow(QMainWindow):
         self.check_button.setEnabled(False)
         self.check_button.setToolTip("按批次核对本班作答：先看哪个能判、哪个要问一句，再逐份核对")
         self.check_button.clicked.connect(self.open_check)
+        self.grading_button = QPushButton("批量核验与评分")
+        self.grading_button.setObjectName("openGradingButton")
+        self.grading_button.setEnabled(False)
+        self.grading_button.setToolTip("按批次批量核验、逐条确认错因、录入与确认教师评分")
+        self.grading_button.clicked.connect(self.open_grading_window)
+        self.dashboard_button = QPushButton("学情看板")
+        self.dashboard_button.setObjectName("openDashboardButton")
+        self.dashboard_button.setEnabled(False)
+        self.dashboard_button.setToolTip("交互式看板：指标卡片、知识点/错因分布、热力图、完整成绩分布")
+        self.dashboard_button.clicked.connect(self.open_dashboard)
         self.teaching_button = QPushButton("教学建议与练习")
         self.teaching_button.setObjectName("openTeachingButton")
         self.teaching_button.setEnabled(False)
@@ -7696,6 +7753,8 @@ class ClassesWindow(QMainWindow):
         tools.addWidget(self.students_button)
         tools.addWidget(self.class_stats_button)
         tools.addWidget(self.check_button)
+        tools.addWidget(self.grading_button)
+        tools.addWidget(self.dashboard_button)
         tools.addWidget(self.teaching_button)
         tools.addWidget(self.ai_settings_button)
         tools.addWidget(self.ai_trial_button)
@@ -7797,6 +7856,8 @@ class ClassesWindow(QMainWindow):
         self.students_button.setEnabled(enabled)
         self.class_stats_button.setEnabled(enabled)
         self.check_button.setEnabled(enabled)
+        self.grading_button.setEnabled(enabled)
+        self.dashboard_button.setEnabled(enabled)
         self.teaching_button.setEnabled(enabled)
 
     def open_selected_class(self, *_):
@@ -7821,6 +7882,44 @@ class ClassesWindow(QMainWindow):
         self._check_window = CheckWindow(self.service, row, parent=self)
         self._check_window.show()
         self._check_window.raise_()
+
+    def open_grading_window(self):
+        """R2-02：批量核验与评分（原版「作答核对」逐份核对的并列入口，两者并存）。"""
+        from desktop.ui_grading import GradingWindow
+
+        row = self._selected_class()
+        if row is None:
+            self.status.setText("先在列表里点一个班级")
+            return
+        window = GradingWindow(self.service, row, parent=self)
+        window.setAttribute(Qt.WA_DeleteOnClose, True)
+        self._grading_window = window
+        window.show()
+        window.raise_()
+        return window
+
+    def open_dashboard(self):
+        """R2-03：班级学情看板（与「班级学情」并存，那个是原版按日期的错题分布）。"""
+        from desktop.ui_dashboard import ClassDashboardWindow
+
+        row = self._selected_class()
+        if row is None:
+            self.status.setText("先在列表里点一个班级")
+            return
+        # 归属闸门：越权时 404，不让看板用别人的班级 id 打开。
+        try:
+            self.service.owned_class_row(row["id"])
+        except Exception as exc:
+            self.status.setText(getattr(exc, "message", "") or "打开失败")
+            return
+        window = ClassDashboardWindow(
+            self.service.db, row["id"], class_name=row.get("name", ""),
+            today=QDate.currentDate().toString("yyyy-MM-dd"), parent=self)
+        window.setAttribute(Qt.WA_DeleteOnClose, True)
+        self._dashboard_window = window
+        window.show()
+        window.raise_()
+        return window
 
     def open_teaching(self):
         """R2-05：教学建议 / 三级提示 / 举一反三 / 辅导任务 / 纸笔 PDF。"""

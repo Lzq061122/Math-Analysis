@@ -10,7 +10,7 @@ import time
 import urllib.parse
 import uuid
 
-from app import analysis, answer_import_zip, backup, grading, vision
+from app import analysis, answer_import_zip, backup, grading, r2_stats, vision
 from app.api import (
     ApiError,
     owned_class,
@@ -925,6 +925,27 @@ class DesktopService:
     def grading_score_sheet(self, class_id, batch, question_no=""):
         cls = self.owned_class_row(class_id)
         return grading.score_sheet(self.db, cls, batch, question_no)
+
+    # ------------------------------------------------- R2-03 学情看板（只读快照）
+    # 统计全部落在 app.r2_stats：18 项指标、唯一取数入口（演示隔离在取数时一次做完）、
+    # today 由界面传入（统计模块不读系统时钟，同一数据两次算与重启后必须一致）。
+    # 本层只做归属闸门 + 透传，不重算任何指标。
+    def r2_list_batches(self, class_id):
+        """批次自选（含历史批次）：R1 遗留 C1 的关闭点，界面用它填下拉框。"""
+        cls = self.owned_class_row(class_id)
+        return r2_stats.list_batches(self.db, cls["id"])
+
+    def r2_class_snapshot(self, class_id, batch="", filters=None, today="", group_scores=False):
+        cls = self.owned_class_row(class_id)
+        return r2_stats.class_snapshot(self.db, cls["id"], batch=batch or "", filters=filters,
+                                       today=today, group_scores=group_scores)
+
+    def r2_student_snapshot(self, class_id, student_id, batch="", filters=None, today="",
+                            group_scores=True):
+        cls = self.owned_class_row(class_id)
+        return r2_stats.student_snapshot(self.db, cls["id"], student_id, batch=batch or "",
+                                         filters=filters, today=today,
+                                         group_scores=group_scores)
 
     # ------------------------------------------------- 个体 AI 开关（R1-T14/T18）
     def ai_individual_state(self):

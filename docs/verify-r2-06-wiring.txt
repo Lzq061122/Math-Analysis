@@ -1,5 +1,5 @@
 ﻿python.exe : QFontDatabase: Cannot find font directory E:/Agent/venv-desktop/Lib/site-packages/PySide6/lib/fonts.
-所在位置 行:21 字符: 1
+所在位置 行:2 字符: 1
 + & E:\Agent\venv-desktop\Scripts\python.exe tests\verify_r2_06_wiring. ...
 + ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     + CategoryInfo          : NotSpecified: (QFontDatabase: ...ide6/lib/fonts.:String) [], RemoteException
@@ -7,6 +7,10 @@
  
 Note that Qt no longer ships fonts. Deploy some (from https://dejavu-fonts.github.io/ for example) or switch to fontcon
 fig.
+This plugin does not support propagateSizeHints()
+This plugin does not support raise()
+This plugin does not support propagateSizeHints()
+This plugin does not support raise()
 This plugin does not support propagateSizeHints()
 This plugin does not support raise()
 数智伴学｜R2-06 集成套件（一）：桌面端接线（service 闸门 + ui 入口）
@@ -26,5 +30,21 @@ PASS  W11 未选班级时按钮停用（与既有三按钮一致）
 PASS  W12 未选班级时点击只提示、不抛异常 | 先在列表里点一个班级
 PASS  W13 选中班级后按钮启用
 PASS  W14 点它能开出 TeachingWindow | TeachingWindow
+PASS  W15 R2-03 三个只读方法齐备 | 3 个
+PASS  W16 批次自选可用（R1 遗留 C1 的关闭点） | list
+PASS  W17 班级快照可算（18 项指标 + 两项排序） | keys=12
+PASS  W18 个人快照可算 | keys=12
+PASS  W19 三个只读方法同样被归属闸门拦住
+PASS  W20 班级页有「学情看板」按钮 | 学情看板
+PASS  W21 未选班级时看板按钮停用
+PASS  W22 点它能开出 ClassDashboardWindow | ClassDashboardWindow
+PASS  W23 原版班级学情页有「数据看板」入口
+PASS  W24 原版个人学情页有「数据看板」入口
+PASS  W25 班级页有「批量核验与评分」按钮 | 批量核验与评分
+PASS  W26 未选班级时核验按钮停用
+PASS  W27 未选班级时点击只提示、不抛异常 | 先在列表里点一个班级
+PASS  W28 选中班级后核验按钮启用
+PASS  W29 点它能开出 GradingWindow | GradingWindow
+PASS  W30 GradingWindow 三块面板都在 | []
 
-合计 14 项，通过 14 项，失败 0 项
+合计 30 项，通过 30 项，失败 0 项
