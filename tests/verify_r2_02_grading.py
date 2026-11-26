@@ -608,6 +608,9 @@ def section_score():
     check("5.19 撤回后有效确认评分为 0（退出平均分/得分率/覆盖率/完整成绩）",
           grading.confirmed_scores(db, cls, BATCH) == []
           and grading.score_completeness_of(db, cls, BATCH, 1)["complete"] is False)
+    check("5.19b 撤回后四维读出来是「未评分」而不是「已失效」（R2-INV-06 与失效是两件事）",
+          grading.answer_dimensions(db, cls, 1)["dimensions"]["score"]["state"] == "unscored",
+          grading.answer_dimensions(db, cls, 1)["dimensions"]["score"]["state"])
     err = caught(grading.retract_score, db, cls, UID, 1)
     check("5.20 没有可撤回的成绩时明确拒绝", err is not None and err.code == "nothing_to_retract")
     err = caught(grading.save_score, db, cls, UID, 1, score=9, state="confirmed",

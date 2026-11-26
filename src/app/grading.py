@@ -345,6 +345,17 @@ def _cause_state(db, answer, check=None):
     }
 
 
+def _score_floor_state(rows):
+    """没有「活着的」成绩行时，评分维该报什么。
+
+    `invalidated`（失效，需重评）与 `unscored`（撤回后回到未评分）是两件事：
+    撤回行仍是 `unscored`，不能因为「行还在」就报成失效（R2-INV-06）。
+    """
+    if any((row.get("state") or "") == SCORE_INVALIDATED for row in rows or []):
+        return SCORE_INVALIDATED
+    return SCORE_UNSCORED
+
+
 def _score_state(db, answer, question_no, config):
     """评分维：只认当前版本 + **该题**当前标准版本的行；其余如实报「已失效（需重评）」。"""
     live = _score_live(db, answer, question_no)
@@ -367,7 +378,7 @@ def _score_state(db, answer, question_no, config):
             state = SCORE_INVALIDATED
         formal = state == SCORE_CONFIRMED
     elif rows:
-        state = SCORE_INVALIDATED
+        state = _score_floor_state(rows)
     return {
         "state": state,
         "label": r2_contract.STATE_LABELS.get(state, state),
@@ -540,7 +551,7 @@ def _dims_from_maps(answer, checks, scores, images, config):
         if stale:
             score_state = SCORE_INVALIDATED
     elif score_rows:
-        score_state = SCORE_INVALIDATED
+        score_state = _score_floor_state(score_rows)
     else:
         score_state = SCORE_UNSCORED
     score = {"state": score_state, "formal": score_state == SCORE_CONFIRMED,
