@@ -1,0 +1,158 @@
+对数智伴学 R2-02 后端（批量核验 / 教师评分 / 失效链 / 错题与知识点）做业务路径验收
+时间：2026-11-26T18:47:15+08:00
+命令：python.exe tests\verify_r2_02_grading.py
+目录：E:\Agent\小挑
+环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
+
+== 1. 结构与批次配置 ==
+PASS 1.1 R2 结构就绪（9 表 + 索引齐备）
+PASS 1.2 9 张 R2 表全部落库
+PASS 1.3 批次配置读回：configured + 满分 10 + 标准版本 v1
+PASS 1.4 未登记批次是 unconfigured 且满分 None（显示暂无，不猜 100）
+PASS 1.5 加分前：scored_question_nos 取配置
+PASS 1.6 四维空值：作答 valid / 核验 unverified / 错因 undecided / 评分 unscored
+
+== 2. 四维读取（作答/核验/错因/评分互相独立） ==
+PASS 2.1 正确作答 → 核验 verified_rule + 错因 not_applicable
+PASS 2.2 错误作答 → 核验 verified_rule + 错因 undecided（可归因待判断）
+PASS 2.3 缺测 → 作答 missing（R1 的 missing 优先于内容量）
+PASS 2.4 仅照片 → 作答 insufficient（不猜内容够不够）
+PASS 2.5 缺测与仅照片都不能判错因（无需判断）
+PASS 2.6 评分维与核验维互不影响（error: unscored；缺测: unscored）
+PASS 2.7 跨班/不存在的作答按 404 拒绝（跨班不可见）
+PASS 2.8 同名批次的他班作答不可见（class_id 收口）
+
+== 3. 批量核验调度 ==
+PASS 3.1 待核验队列含全部 4 条，顺序按 answers.id
+PASS 3.2 队列行带四维状态与 source/batch（统计不必再猜）
+PASS 3.3 核验前进度：pending=4 / verified=0
+PASS 3.4 逐条核验：4 条全部 verified，失败 0
+PASS 3.5 逐条回调按进度顺序触发（界面进度条数据源）
+PASS 3.6 重复点击核验：已核验的不再进待核验队列
+PASS 3.7 结果逐条落库（4 条当前版本结论都在库里）
+PASS 3.8 指定记录模式只取给定 id，且按传入顺序
+PASS 3.9 取消：只处理 1 条，其余留作未处理
+PASS 3.10 取消前已完成的结果已保存（不因取消回滚）
+PASS 3.11 单条失败不阻塞：1 条 failed，其余 2 条 verified（已完成结果正常保存）
+PASS 3.12 失败记录的错误码与消息回给界面（可判可重试）
+PASS 3.13 重试失败记录：只重跑失败的那条，且这次成功
+PASS 3.14 重复核验不覆盖：已判错因与已确认成绩一字不变（跳过原因可解释）
+PASS 3.15 反向自证：去掉保护闸（裸调 answer_check.save）后错因被清空，断言必红
+PASS 3.16 人工核验结论不被重复核验覆盖（verify_source=manual，updated_at 未变）
+PASS 3.17 强制重跑也只重算规则，教师观察到的错步与依据保留
+
+== 4. 错因判断（确认 / 撤回 / 独立性） ==
+PASS 4.1 未核验先判错因被拒（STATE_GATES cause.decided）
+PASS 4.2 候选错因走本地只读桥（真实作答无预置候选，给证据与适用范围）
+PASS 4.3 判错因必须写原因说明
+PASS 4.4 确认错因：cause=decided，核验仍 verified_rule
+PASS 4.5 确认错因同步错题：status confirmed + 来源「作答核对」+ 依据可追溯
+PASS 4.6 未给知识点时 knowledge_points 是空数组（未分类，不编造知识点名）
+PASS 4.7 错题备注标「未分类（缺依据，待教师补充）」
+PASS 4.8 撤回错因：cause→undecided，核验 verified_rule、评分 confirmed 独立保留
+PASS 4.9 撤回错因的动作来自契约（cause_history / 错题退回 / 频次重算）
+PASS 4.10 撤回后错题退回（我方写的那条），错题管理不再计它为已确认
+PASS 4.11 撤回只影响错因：统计里有效确认错因为 0，但有效确认评分仍为 1
+PASS 4.12 没有可撤回的错因时明确拒绝
+PASS 4.13 反向自证：整条撤回核验后 verify→unverified（而 retract_cause 不会）
+
+== 5. 教师评分（范围 / 小数 / 草稿 / 确认 / 步骤扣分 / 撤回） ==
+PASS 5.1 满分来自批次配置（同批次同题统一）
+PASS 5.2 满分 10 录 7.5 通过并计入正式统计
+PASS 5.3 7.5 落库（answer_scores.score=7.5，state=confirmed，带作答版本）
+PASS 5.4 不完整成绩不进平均分（缺第 2 题 → complete=False、total=None）
+PASS 5.5 拒绝越界分数 11（above_full）
+PASS 5.5 拒绝越界分数 -1（out_of_range）
+PASS 5.5 拒绝越界分数 7.555（too_many_decimals）
+PASS 5.6 拒绝非数值分数
+PASS 5.7 未勾选确认的正式得分被拒（正式得分须教师明确确认）
+PASS 5.8 无分数不得确认（无依据时建议得分留空 → 只能存草稿）
+PASS 5.9 草稿允许保存但不进正式统计（formal=False，confirmed_scores 不含）
+PASS 5.10 存草稿把已确认分改成草稿：confirmed_at 清空、state=draft
+PASS 5.11 草稿→确认不需要修改理由（草稿不是「已确认分」，改的只是待定分）
+PASS 5.12 改已确认的分数不写理由被拒（revision_reason_required）
+PASS 5.13 写明理由后改分成功，history 留住改分人与理由
+PASS 5.14 步骤扣分与总分一致（10−2.5=7.5）时保存成功并落扣分项
+PASS 5.15 步骤扣分与总分不一致被拒（10−1≠8），库内仍是 7.5（不改库）
+PASS 5.16 反向自证：去掉一致性校验后 8 分被写入（证明 5.15 的拦截是真闸门）
+PASS 5.17 恢复一致性后重新保存成功（闸门可恢复，不是一次性的）
+PASS 5.18 撤回成绩：state→unscored、退出正式统计、历史与扣分项保留
+PASS 5.19 撤回后有效确认评分为 0（退出平均分/得分率/覆盖率/完整成绩）
+PASS 5.20 没有可撤回的成绩时明确拒绝
+PASS 5.21 版本不符拒绝（409 version_conflict），不拿旧版本覆盖新内容
+PASS 5.22 非法评分状态拒绝
+PASS 5.23 扣分项缺说明拒绝（不静默丢老师的输入）
+
+== 6. 失效链（改内容 / 改标准） ==
+PASS 6.1 改作答内容：核验→stale（旧结论退出当前视图）
+PASS 6.2 改作答内容：错因→undecided（旧判断不再作为当前结论）
+PASS 6.3 改作答内容：评分→invalidated（不删行，留历史）
+PASS 6.4 失效动作来自契约 R2-INV-01
+PASS 6.5 失效后旧成绩退出正式统计（confirmed_scores 为空）
+PASS 6.6 重跑核验后核验恢复 verified_rule（stale→verified_rule 是合法迁移）
+PASS 6.7 反向自证：只改标准正文、不改 rubric_version 时旧成绩仍是 confirmed（不会自动失效）
+PASS 6.8 改标准 + 版本号 → 旧成绩立即失效（invalidated_reason=rubric_changed）
+PASS 6.9 新标准生效：满分变成 12、家长/统计读到 rubric_version=v2
+PASS 6.10 旧成绩退出正式统计（标准一变，旧分不再可比）
+PASS 6.11 版本号没变时拒绝改标准（否则旧成绩不会失效）
+PASS 6.12 空版本号拒绝
+PASS 6.13 缺批次拒绝（跨批次不合并标准）
+PASS 6.14 失效后可重评（invalidated→draft→confirmed 走状态机，同一版本只留一条活行）
+PASS 6.15 旧作答版本的失效行保留（不删行，历史可追溯）
+
+== 7. 错题同步与知识点（K1/K2/K3 + 缺测/内容不足/无法核验不得落错题） ==
+PASS 7.1 15 条作答的定位结论是 first_bad
+PASS 7.2 确认 15 条错误 → 15 条正式错题（confirmed，来源作答核对）
+PASS 7.3 断言 A：错题行数 == first_bad 且 cause=decided 的条数
+PASS 7.4 断言 B：缺测/仅照片/无法核验在 mistakes 里零行（不是「行存在但不算」）
+PASS 7.5 无法核验的作答：定位 out_of_scope、错因无需判断、不得计为错误
+PASS 7.6 无法核验的作答上强判错因先被「人工核验依据」闸门拦下（basis_required）
+PASS 7.6b 无法核验的作答上判了错因也不得落 mistakes 行（定位不是可归因错步）
+PASS 7.7 反向自证：未分类（knowledge_points=[]）时原版统计查不到任何知识点
+PASS 7.8 确认知识点后原版学情页面可查询（stats.confirmed_mistakes 读同一列）
+PASS 7.9 知识点依据写进错题备注（可追溯：依据 + 谁在什么时候补录）
+PASS 7.10 有效确认错因带上知识点（R2-03 的知识点频次直接用 effective_rows）
+PASS 7.11 knowledge_point 过滤只命中该知识点的行
+PASS 7.12 缺测记录没有错题行，补知识点被明确拒绝（不凭空造错题）
+PASS 7.13 撤回 1 条错因 → 有效确认错题少 1 条，错题行退回但保留
+PASS 7.14 撤回的那条仍保留核验结论（K3：错因退出不等于核验失效）
+PASS 7.15 断言 C：缺测补录后作答变 valid、核验 first_bad 可归因
+PASS 7.16 断言 C：补录并确认错误后才出现 1 条新的错题行
+
+== 8. 只读接口（确定性 / 跨班隔离 / 覆盖率分母） ==
+PASS 8.1 current_checks 只返回当前版本结论（每条作答一条）
+PASS 8.2 current_checks 字段齐备（locate/cause/verify/teacher_*）
+PASS 8.3 current_scores：confirmed 行 formal=True，draft 行 formal=False
+PASS 8.4 valid_verifications：count=3 且按来源拆分（rule=3）
+PASS 8.5 confirmed_causes：只含 decided 且核验仍有效的行（1 条）
+PASS 8.6 effective_rows 每行都带 source / batch / occurred_on / knowledge_points（统计不必再猜）
+PASS 8.7 只读接口确定性：两次调用结果完全一致
+PASS 8.8 filter_options 给批次/题号/学生/核验范围候选值
+PASS 8.9 score_sheet：第 1 题 confirmed=2、average=8.75、满分 10
+PASS 8.10 覆盖率分母 = 应参与评分学生数（名单 10 人，其中 7 人完全没交，分母仍是 10）
+PASS 8.11 覆盖率分子只认完整成绩（本题 2 人确认但都缺另一题 → 0 人完整）
+PASS 8.12 完整成绩判定：两题都确认的学生才 complete（这里都没有 → 暂无）
+PASS 8.13 筛选参数生效：question_no / cause_state / score_state
+PASS 8.14 跨班隔离：他班同批次作答不进本班只读结果
+
+== 9. 外发闸门（R2 一律本地，不读 ai_individual_allowed） ==
+PASS 9.1 批量核验/评分的本地决策恒为 deny（ai_isolation）
+PASS 9.2 带 provider/model 的批改请求被 403 拒绝
+PASS 9.3 携带禁止外发字段被拒（学生姓名/作答原文）
+PASS 9.4 打开账号级 ai_individual_allowed 后仍然 403（R2 流程不读这个开关）
+PASS 9.5 契约层同样拒绝：egress_decision(flow, individual_allowed=True) 仍 allowed=False
+PASS 9.6 批量核验全程不产生外发审计（本地规则，一次都没发）
+
+== 10. R1 分析生成的错题经更新/校正/撤回后下游不留失效判断 ==
+PASS 10.1 R1 分析确认后生成 1 条错题（来源「作答分析」，不含知识点）
+PASS 10.2 分析来的错题不算「有效确认错因」（没有教师判断，cause=undecided）
+PASS 10.3 教师确认错因复用同一条错题（不插第二条），来源保持不变
+PASS 10.4 确认后有效确认错因为 1 条（统计与详情一致）
+PASS 10.5 撤回错因：「作答分析」生成的错题不被我方退回（只退我方那条）
+PASS 10.6 撤回后下游没有失效判断：有效确认错因 0、有效确认评分 0
+PASS 10.7 校正内容后：核验 stale、错因 undecided，下游不再显示旧结论
+PASS 10.8 校正后有效确认错因仍为 0（旧判断没有借旧版本复活）
+
+== 汇总 ==
+通过 129 / 失败 0
+退出码：0
