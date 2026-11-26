@@ -454,10 +454,19 @@ def group_permission_and_refresh():
            if not entry.get(key) and key != "filters"], [])
     equal("6.10 历史条目类型与批次正确",
           (entry["kind"], entry["batch"]), ("class", BATCH))
-    equal("6.11 历史文件落在库文件同目录且真实存在",
+    # 6.11 改写（R2-04 fix / t10）：
+    #   原断言：导出历史写在库文件同目录的 r2_report_exports.json，断言该文件真实存在。
+    #   原依据：t6 时历史落侧车 JSON。
+    #   改写原因：侧车文件不在 backup.py 的备份范围内，「备份→换机恢复」后历史整批丢失；
+    #             t10 起历史写进 app.db 的 r2_report_exports 表，侧车文件不再是写入目标，
+    #             继续断言它存在等于把已废弃的存储方式固化。
+    #   现断言：history_path() 仍是「库同目录」的兼容路径且**不被创建**；历史真实落在表里
+    #           （COUNT(*) == 2），load_history 读回的两条与导出记录逐字段一致（见第十组）。
+    equal("6.11 历史已入库：兼容路径仍在库同目录、侧车文件不再被写入、表里确有 2 条",
           (os.path.dirname(report_pdf.history_path(env["db_file"])),
-           os.path.exists(report_pdf.history_path(env["db_file"]))),
-          (os.path.dirname(os.path.abspath(env["db_file"])), True))
+           os.path.exists(report_pdf.history_path(env["db_file"])),
+           env["db"].scalar("SELECT COUNT(*) FROM r2_report_exports")),
+          (os.path.dirname(os.path.abspath(env["db_file"])), False, 2))
 
 
 # ---------------------------------------------------------------------------
@@ -611,6 +620,158 @@ def group_history_and_samples():
 
 
 # ---------------------------------------------------------------------------
+# 十、R2-04 fix（t10）：导出历史入库（随 app.db 一起备份恢复）
+# ---------------------------------------------------------------------------
+
+
+def group_history_db():
+    section("十、导出历史入库（t10）：字段/账号隔离/备份恢复/上限/侧车迁移")
+    env = build_env("history-db")
+    seed_dataset(env)
+    report = class_report(env["db"])
+    path_one = out_path("history-db-1.pdf")
+    path_two = out_path("history-db-2.pdf")
+    first = report_pdf.export_pdf(dict(report, purpose="存档"), path_one,
+                                  db_file=env["db_file"])
+    second = report_pdf.export_pdf(dict(report, purpose="教学研究"), path_two,
+                                   db_file=env["db_file"])
+
+    entries = report_pdf.load_history(env["db_file"], user_id=1)
+    equal("10.1 两次导出留下两条独立记录（最前在前）",
+          [item["purpose"] for item in entries], ["教学研究", "存档"])
+    equal("10.2 两条路径与 sha256 各自独立",
+          (entries[0]["path"], entries[0]["sha256"] != entries[1]["sha256"]),
+          (os.path.abspath(path_two), True))
+    keys = ("at", "kind", "title", "purpose", "filters", "batch", "path", "bytes",
+            "sha256", "user", "data_version")
+    equal("10.3 读回条目与导出记录逐字段相等（结构不变）",
+          {key: entries[0][key] for key in keys},
+          {key: second["entry"][key] for key in keys})
+    equal("10.4 账号名从 users 表补回（不是空串）", entries[0]["user"], "teacher")
+    equal("10.5 表里就是两行（不再有侧车文件）",
+          (env["db"].scalar("SELECT COUNT(*) FROM r2_report_exports"),
+           os.path.exists(report_pdf.history_path(env["db_file"]))), (2, False))
+
+    # 账号隔离：另一个账号各导出一次
+    from app.db import now_iso
+    with env["db"].tx() as conn:
+        conn.execute("INSERT INTO users(id, username, display_name, pwd_salt, pwd_hash,"
+                     " iterations, created_at) VALUES (2,'other','李老师','s','h',1,?)",
+                     (now_iso(),))
+    # 账号 2 必须有**自己的班级**：伪造越权报告会把别的账号的历史混进本班备份，
+    # 那不是真实的账号隔离场景。
+    with env["db"].tx() as conn:
+        conn.execute("INSERT INTO classes(id, user_id, name, created_at, updated_at)"
+                     " VALUES (2, 2, '初一(2)班', ?, ?)", (now_iso(), now_iso()))
+    other = report_pdf.build_class_report(env["db"], 2, today=TODAY, generated_at=AT,
+                                          user={"id": 2, "username": "other"},
+                                          purpose="家长沟通")
+    report_pdf.export_pdf(other, out_path("history-db-other.pdf"), db_file=env["db_file"])
+    equal("10.6 账号隔离：账号 1 只读到自己那两条",
+          [item["purpose"] for item in report_pdf.load_history(env["db_file"], user_id=1)],
+          ["教学研究", "存档"])
+    equal("10.7 账号隔离：账号 2 只读到自己那一条",
+          [item["purpose"] for item in report_pdf.load_history(env["db_file"], user_id=2)],
+          ["家长沟通"])
+    equal("10.8 不传账号时保持旧行为（整表读取，不倒退）",
+          len(report_pdf.load_history(env["db_file"])), 3)
+
+    # 备份 → 换一个空数据目录恢复 → 历史仍在（本任务存在的理由）
+    import shutil
+    import sqlite3
+    from app import backup
+    work = os.path.join(WORK, "history-backup")
+    shutil.rmtree(work, ignore_errors=True)
+    os.makedirs(work)
+    data_dir = os.path.dirname(os.path.abspath(env["db_file"]))
+    zip_path = os.path.join(work, "backup.zip")
+    manifest = backup.create_backup(data_dir, zip_path, 1, app_version="1.9.0")
+    staging = os.path.join(work, "staging")
+    os.makedirs(staging)
+    _, relation = backup.inspect_backup(
+        zip_path, staging, {"id": 1, "username": "teacher",
+                            "backup_key": manifest["owner"]["backup_key"]})
+    check("10.9 备份清单里带 r2_report_exports 条数（账号 1 有 2 条）",
+          manifest["counts"].get("r2_report_exports", 0) >= 2,
+          manifest["counts"].get("r2_report_exports"))
+    equal("10.10 备份与当前账号匹配（same_key）", bool(relation.get("same_key")), True)
+
+    # 模拟「换电脑后的空库」：新建同账号（同 backup_key）的空库，业务数据全无
+    target = os.path.join(work, "restored")
+    os.makedirs(target)
+    from app.db import Database
+    from app.db import now_iso as _now_iso
+    backup_key = env["db"].scalar("SELECT backup_key FROM users WHERE id=1") or ""
+    blank_db = Database(os.path.join(target, "app.db"))
+    with blank_db.tx() as conn:
+        conn.execute("INSERT INTO users(id, username, display_name, pwd_salt, pwd_hash,"
+                     " iterations, created_at, backup_key)"
+                     " VALUES (1,'teacher','张老师','s','h',1,?,?)", (_now_iso(), backup_key))
+    result = backup.apply_staged(staging, target, 1, mode="restore")
+    restored_db = os.path.join(target, "app.db")
+    restored = report_pdf.load_history(restored_db, user_id=1)
+    equal("10.11 恢复后导出历史仍在（2 条、用途顺序不变）",
+          [item["purpose"] for item in restored], ["教学研究", "存档"])
+    equal("10.12 恢复后条目字段完好（标题/类型/用途/筛选范围/sha256/路径）",
+          (restored[0]["title"], restored[0]["kind"], restored[0]["filters"].startswith("批次="),
+           restored[0]["sha256"] == second["entry"]["sha256"],
+           restored[0]["path"] == os.path.abspath(path_two)),
+          (report["title"], "class", True, True, True))
+    equal("10.13 恢复结果的 counts 里也能核对导出历史条数",
+          result["counts"].get("r2_report_exports"), 2)
+    equal("10.14 恢复不把别的账号的导出历史算进本账号",
+          [item["purpose"] for item in report_pdf.load_history(restored_db, user_id=2)], [])
+
+    # 上限：写入侧裁到 50 条
+    env2 = build_env("history-limit")
+    seed_dataset(env2)
+    report2 = class_report(env2["db"])
+    for index in range(55):
+        report_pdf.export_pdf(dict(report2, purpose="教学研究"),
+                              out_path("limit-%02d.pdf" % index), db_file=env2["db_file"],
+                              )
+        env2["db"].tx().__enter__().execute(
+            "UPDATE r2_report_exports SET created_at=? WHERE id=(SELECT MAX(id) FROM r2_report_exports)",
+            ("2026-11-26T20:%02d:%02d+08:00" % (index // 60, index % 60),))
+    rows = env2["db"].scalar("SELECT COUNT(*) FROM r2_report_exports")
+    listed = report_pdf.load_history(env2["db_file"], user_id=1)
+    equal("10.15 连续导出 55 次后表里只留最近 50 条", rows, 50)
+    equal("10.16 读回也是 50 条且最新在前", len(listed), 50)
+    earliest_now = min(item["at"] for item in listed)
+    equal("10.17 被裁掉的是最旧的 5 条（读回里不含最早的时间）",
+          earliest_now >= report2["generated_at"], True)
+    equal("10.18 读取上限不删数据（limit=5 后表里仍是 50 行）",
+          (len(report_pdf.load_history(env2["db_file"], user_id=1, limit=5)),
+           env2["db"].scalar("SELECT COUNT(*) FROM r2_report_exports")), (5, 50))
+
+    # 侧车迁移：老用户的 r2_report_exports.json 一次性搬进表
+    env3 = build_env("history-sidecar")
+    seed_dataset(env3)
+    legacy = [{
+        "at": "2026-11-01T08:00:00+08:00", "kind": "class",
+        "title": "初二(3)班 · 学情分析报告", "purpose": "存档",
+        "filters": "批次=第一次作业", "batch": "第一次作业",
+        "path": "C:/old/report.pdf", "bytes": 1000, "sha256": "old-sha",
+        "user": "teacher", "data_version": "统计 R2-03.1 / 契约 R2-00.4",
+        "user_id": 1, "class_id": 1, "student_id": 0,
+    }]
+    with open(report_pdf.history_path(env3["db_file"]), "w", encoding="utf-8") as handle:
+        json.dump(legacy, handle, ensure_ascii=False)
+    moved = report_pdf.import_sidecar_history(env3["db_file"])
+    equal("10.19 旧侧车 JSON 一次性搬进表（1 条）", moved, 1)
+    equal("10.20 侧车文件改名为 .imported 留证据（不删）",
+          (os.path.exists(report_pdf.history_path(env3["db_file"]) + ".imported"),
+           os.path.exists(report_pdf.history_path(env3["db_file"]))), (True, False))
+    migrated = report_pdf.load_history(env3["db_file"], user_id=1)
+    equal("10.21 迁移后的条目字段与旧 JSON 一致",
+          (migrated[0]["at"], migrated[0]["path"], migrated[0]["filters"]),
+          ("2026-11-01T08:00:00+08:00", "C:/old/report.pdf", "批次=第一次作业"))
+    equal("10.22 迁移只成功一次：再调一次不重复导入（返回 0、表里仍 1 条）",
+          (report_pdf.import_sidecar_history(env3["db_file"]),
+           env3["db"].scalar("SELECT COUNT(*) FROM r2_report_exports")), (0, 1))
+
+
+# ---------------------------------------------------------------------------
 # 入口
 # ---------------------------------------------------------------------------
 
@@ -627,6 +788,7 @@ def main():
     group_demo()
     group_content_rules()
     group_history_and_samples()
+    group_history_db()
     log("")
     log("合计 %d 项，通过 %d，失败 %d" % (RESULTS["pass"] + RESULTS["fail"], RESULTS["pass"],
                                           RESULTS["fail"]))

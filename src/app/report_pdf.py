@@ -21,6 +21,7 @@ import json
 import os
 from datetime import datetime
 
+from . import db as store
 from . import pdf_canvas
 from . import r2_stats
 
@@ -545,30 +546,120 @@ def export_pdf(report, path, db_file=None, purpose=None):
         os.makedirs(folder, exist_ok=True)
     with open(path, "wb") as handle:
         handle.write(data)
+    scope = report["scope"]
+    user = report.get("user") or {}
     entry = {
         "at": report["generated_at"],
         "kind": report["kind"],
         "title": report["title"],
         "purpose": report.get("purpose") or PURPOSES[0],
-        "filters": report["scope"].get("filter_text") or "",
-        "batch": report["scope"].get("batch") or "",
+        "filters": scope.get("filter_text") or "",
+        "batch": scope.get("batch") or "",
         "path": os.path.abspath(path),
         "bytes": len(data),
         "sha256": hashlib.sha256(data).hexdigest(),
-        "user": (report.get("user") or {}).get("username") or "",
+        "user": user.get("username") or "",
         "data_version": report["data_version"],
+        # 入库定位用（备份恢复时 class_id/student_id 会被重映射，报告内容本身不变）
+        "user_id": user.get("id"),
+        "class_id": scope.get("class_id"),
+        "student_id": scope.get("student_id") or 0,
     }
     if db_file:
-        entry["user_id"] = (report.get("user") or {}).get("id")
         save_history(db_file, entry)
     return {"path": os.path.abspath(path), "bytes": len(data), "entry": entry}
 
 
 def history_path(db_file):
+    """历史侧车文件路径（**只保留兼容用途**）。
+
+    R2-04 fix 起导出历史写进 `app.db` 的 `r2_report_exports` 表（随备份/恢复一起走），
+    这里不再写入任何文件；保留函数是因为旧调用方与旧数据迁移仍会用到这个路径。
+    """
     return os.path.join(os.path.dirname(os.path.abspath(db_file)), HISTORY_FILE)
 
 
-def load_history(db_file):
+def _open_db(db_file):
+    """按库文件打开只读写用的 Database（历史入库后需要它）。"""
+    from .db import Database
+    return Database(db_file, create=False)
+
+
+def _filters_text(scope):
+    """`scope` 列存的是筛选范围：优先取其中的 text（人话），否则原样返回。"""
+    raw = scope or ""
+    if isinstance(raw, str) and raw.startswith("{"):
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            return raw
+        if isinstance(data, dict):
+            return str(data.get("text") or "")
+    return raw if isinstance(raw, str) else ""
+
+
+def _entry_of(row, username=""):
+    """把表行还原成**与旧侧车 JSON 完全一致的 entry 结构**（界面已依赖这些键）。"""
+    return {
+        "at": row.get("generated_at") or "",
+        "kind": row.get("kind") or "",
+        "title": row.get("title") or "",
+        "purpose": row.get("purpose") or "",
+        "filters": _filters_text(row.get("scope")),
+        "batch": row.get("batch") or "",
+        "path": row.get("path") or "",
+        "bytes": int(row.get("bytes") or 0),
+        "sha256": row.get("sha256") or "",
+        "user": username or "",
+        "data_version": row.get("data_version") or "",
+        "user_id": row.get("user_id"),
+        "class_id": row.get("class_id"),
+        "student_id": row.get("student_id") or 0,
+        "id": row.get("id"),
+        "created_at": row.get("created_at") or "",
+    }
+
+
+def _usernames(db, user_ids):
+    ids = sorted({int(value) for value in user_ids if value})
+    if not ids:
+        return {}
+    names = {}
+    try:
+        rows = db.query("SELECT id, username FROM users WHERE id IN (%s)"
+                        % ",".join("?" for _ in ids), tuple(ids))
+    except Exception:  # noqa: BLE001 - 用户表缺失时历史照样要能读（只是没有用户名）
+        return {}
+    for row in rows:
+        names[int(row["id"])] = row["username"] or ""
+    return names
+
+
+def load_history(db_file, user_id=None, limit=HISTORY_LIMIT):
+    """导出历史（最新在前），字段与旧侧车版本**逐字段一致**。
+
+    - `user_id` 给定 → 只读该账号的历史（账号隔离，服务层传当前登录账号）；
+    - 不传 `user_id` → 兼容旧的 `load_history(db_file)` 调用：读该库全部历史
+      （旧实现也是不分账号的，行为不倒退；新代码应尽量传账号）；
+    - 历史表还没有（老库未迁移）→ 退回读侧车 JSON，保证升级路径上历史不丢。
+    """
+    try:
+        database = _open_db(db_file)
+    except (OSError, FileNotFoundError):
+        return _load_sidecar(db_file)
+    if not store.report_exports_ready(database):
+        return _load_sidecar(db_file)
+    if user_id is not None:
+        rows = store.list_report_exports(database, int(user_id), limit=limit)
+    else:
+        rows = database.query(
+            "SELECT * FROM r2_report_exports ORDER BY created_at DESC, id DESC LIMIT ?",
+            (max(1, int(limit or 1)),))
+    names = _usernames(database, [row.get("user_id") for row in rows])
+    return [_entry_of(row, names.get(int(row.get("user_id") or 0), "")) for row in rows]
+
+
+def _load_sidecar(db_file):
     path = history_path(db_file)
     if not os.path.exists(path):
         return []
@@ -580,18 +671,91 @@ def load_history(db_file):
     return data if isinstance(data, list) else []
 
 
-def save_history(db_file, entry):
-    """追加一条导出历史（原子写：临时文件 + os.replace，坏文件不会写半个）。"""
-    items = load_history(db_file)
-    items.insert(0, entry)
-    items = items[:HISTORY_LIMIT]
+def import_sidecar_history(db_file, database=None):
+    """把旧的侧车 JSON 一次性搬进表里（搬完改名 `.imported`，留证据不删）。
+
+    只在**写入路径**调用（`save_history`），不做「读一下就偷偷写库」这种事；
+    返回值 = 搬进去的条数。
+    """
     path = history_path(db_file)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    temp = path + ".tmp"
-    with open(temp, "w", encoding="utf-8") as handle:
-        json.dump(items, handle, ensure_ascii=False, indent=2, sort_keys=True)
-    os.replace(temp, path)
-    return items
+    if not os.path.exists(path):
+        return 0
+    items = _load_sidecar(db_file)
+    moved = 0
+    database = database or _open_db(db_file)
+    if not store.report_exports_ready(database):
+        return 0
+    existing = {int(row["user_id"]) for row in database.query(
+        "SELECT DISTINCT user_id FROM r2_report_exports")}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        # 闸门：**该账号在表里已经有行就整批跳过**——迁移只许成功一次，
+        # 上次搬到一半崩了也不能把老条目再插一遍（翻倍比丢几条更难查）。
+        owner = int(item.get("user_id") or 0)
+        if owner in existing:
+            continue
+        _write_entry(database, item)
+        moved += 1
+    try:
+        os.replace(path, path + ".imported")
+    except OSError:
+        pass
+    return moved
+
+
+def _write_entry(database, entry):
+    """把一条 entry 写进 `r2_report_exports`（缺账号/班级时用 0，绝不整条丢）。"""
+    scope = {"text": entry.get("filters") or ""}
+    for key in ("student_ids", "knowledge_point", "cause", "date_from", "date_to"):
+        if entry.get(key):
+            scope[key] = entry[key]
+    return store.add_report_export(
+        database,
+        int(entry.get("user_id") or 0),
+        int(entry.get("class_id") or 0),
+        str(entry.get("kind") or "class"),
+        student_id=int(entry.get("student_id") or 0),
+        purpose=str(entry.get("purpose") or ""),
+        scope=scope,
+        batch=str(entry.get("batch") or ""),
+        path=str(entry.get("path") or ""),
+        sha256=str(entry.get("sha256") or ""),
+        bytes=int(entry.get("bytes") or 0),
+        generated_at=str(entry.get("at") or entry.get("generated_at") or ""),
+        title=str(entry.get("title") or ""),
+        data_version=str(entry.get("data_version") or ""),
+        created_at=entry.get("created_at") or None,
+    )
+
+
+def _trim_history(database, user_id, limit=HISTORY_LIMIT):
+    """**写入侧**裁剪：同一账号只留最近 `limit` 条（db 层不删数据，这里显式删）。"""
+    if not user_id:
+        return 0
+    with database.tx() as conn:
+        cursor = conn.execute(
+            "DELETE FROM r2_report_exports WHERE user_id=? AND id NOT IN ("
+            " SELECT id FROM r2_report_exports WHERE user_id=?"
+            " ORDER BY created_at DESC, id DESC LIMIT ?)",
+            (int(user_id), int(user_id), int(limit)))
+        return cursor.rowcount or 0
+
+
+def save_history(db_file, entry):
+    """追加一条导出历史，返回**该账号**最新的历史列表（界面直接拿去重画）。
+
+    写进 `app.db` 的 `r2_report_exports`（随备份/恢复一起走），上限 50 条在写入侧裁；
+    首次写入前先把旧侧车 JSON 搬进表（改名 `.imported`），老用户的历史不会丢。
+    """
+    database = _open_db(db_file)
+    import_sidecar_history(db_file, database)
+    _write_entry(database, entry)
+    user_id = int(entry.get("user_id") or 0)
+    if user_id:
+        _trim_history(database, user_id)
+        return load_history(db_file, user_id=user_id)
+    return load_history(db_file)
 
 
 __all__ = [
@@ -599,5 +763,5 @@ __all__ = [
     "PER_KNOWLEDGE_LIMIT", "ReportError",
     "build_class_report", "build_student_report", "representative_mistakes",
     "preview_lines", "render_pdf", "export_pdf",
-    "history_path", "load_history", "save_history",
+    "history_path", "load_history", "save_history", "import_sidecar_history",
 ]
