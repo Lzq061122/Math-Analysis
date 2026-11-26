@@ -1,0 +1,20 @@
+{
+  "unit": "合成验收单元",
+  "knowledge_point": "合成验收知识点",
+  "cause_code": "SYN-001",
+  "source": "合成测试（自动化验收专用，不进入正式推荐）",
+  "resources": [
+    {"kind": "hint", "title": "合成提示 P1：自动化验收用",
+     "body": {"level": "P1", "text": "合成测试提示：如果这条出现在正式推荐里，说明合成资源隔离失效。"},
+     "conditions": {"set": "合成三级提示", "level": "P1"}},
+    {"kind": "hint", "title": "合成提示 P2：自动化验收用",
+     "body": {"level": "P2", "text": "合成测试提示第二级：正式推荐不得包含合成测试资源。"},
+     "conditions": {"set": "合成三级提示", "level": "P2"}},
+    {"kind": "exercise", "title": "合成练习：隔离断言用",
+     "body": {"stem": "合成练习题干（不应出现在正式推荐与正式 PDF 中）", "answer": "合成答案", "solution": "合成解析", "difficulty": "基础", "purpose": "concept", "answer_lines": 2},
+     "conditions": {"phase": "guided"}},
+    {"kind": "advice", "title": "合成建议：隔离断言用",
+     "body": {"text": "合成教学建议（只用于验收合成资源不进正式推荐）。", "timing": "验收", "watch_for": "隔离失效"},
+     "conditions": {}}
+  ]
+}
