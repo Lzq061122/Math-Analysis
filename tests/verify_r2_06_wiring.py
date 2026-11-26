@@ -68,8 +68,8 @@ def main():
               "%s %s" % (getattr(exc, "status", "?"), getattr(exc, "message", "")[:24]))
 
     r2_methods = [
-        ("zip_answers_preview", lambda s: s.zip_answers_preview(cid, b"")),
-        ("zip_answers_import", lambda s: s.zip_answers_import(cid, b"")),
+        ("preview_zip_answers", lambda s: s.preview_zip_answers(cid, b"")),
+        ("import_zip_answers", lambda s: s.import_zip_answers(cid, b"")),
         ("grading_queue", lambda s: s.grading_queue(cid)),
         ("grading_progress", lambda s: s.grading_progress(cid)),
         ("grading_scoring_progress", lambda s: s.grading_scoring_progress(cid, "9月第1次作业")),
@@ -110,22 +110,46 @@ def main():
           imp.zip_button.objectName() == "openAnswerZipImport", imp.zip_button.text())
     win = imp.open_zip_import()
     check("W7 点它能开出 ZipImportWindow", type(win).__name__ == "ZipImportWindow", type(win).__name__)
+
+    # W8：窗口按方法名探测 service；对不上就会「静默退回直连 app 模块」，
+    # 那样归属闸门被绕过而按钮照样能用——所以必须逐个证明探测得到的都是 service。
+    probe_names = ("preview_zip_answers", "import_zip_answers", "zip_import_template")
+    missing_probe = [n for n in probe_names if not callable(getattr(owner, n, None))]
+    check("W8 窗口探测的三个方法名都接在 service 上（不会静默退回直连）",
+          not missing_probe, "缺 %s" % missing_probe if missing_probe else "3 个齐全")
+
+    hits = []
+    real_gate = owner.owned_class_row
+
+    def spy_gate(class_id):
+        hits.append(class_id)
+        return real_gate(class_id)
+
+    owner.owned_class_row = spy_gate
+    try:
+        try:
+            win._call("preview_zip_answers", b"")
+        except Exception:
+            pass  # 空字节不是合法 zip，业务层会拒；这里只关心闸门有没有被走过
+    finally:
+        owner.owned_class_row = real_gate
+    check("W9 窗口调用真的经过归属闸门", hits == [cid], "闸门命中 %s" % hits)
     win.close()
 
     classes = ui_mod.ClassesWindow(owner)
-    check("W8 班级页有「教学建议与练习」按钮",
+    check("W10 班级页有「教学建议与练习」按钮",
           classes.teaching_button.objectName() == "openTeachingButton", classes.teaching_button.text())
     classes._selected_class = lambda: None
     classes._sync_buttons()
-    check("W9 未选班级时按钮停用（与既有三按钮一致）", classes.teaching_button.isEnabled() is False)
+    check("W11 未选班级时按钮停用（与既有三按钮一致）", classes.teaching_button.isEnabled() is False)
     classes.open_teaching()
-    check("W10 未选班级时点击只提示、不抛异常",
+    check("W12 未选班级时点击只提示、不抛异常",
           classes.status.text() == "先在列表里点一个班级", classes.status.text())
     classes._selected_class = lambda: class_row
     classes._sync_buttons()
-    check("W11 选中班级后按钮启用", classes.teaching_button.isEnabled() is True)
+    check("W13 选中班级后按钮启用", classes.teaching_button.isEnabled() is True)
     tw = classes.open_teaching()
-    check("W12 点它能开出 TeachingWindow", type(tw).__name__ == "TeachingWindow", type(tw).__name__)
+    check("W14 点它能开出 TeachingWindow", type(tw).__name__ == "TeachingWindow", type(tw).__name__)
     tw.close()
 
     total = len(ITEMS)

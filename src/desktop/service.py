@@ -836,11 +836,14 @@ class DesktopService:
     # ------------------------------------------------- R2-01 压缩包批量导入
     # 预览只读、不写正式数据；六类分类（有效/重复/冲突/缺测/未匹配学生/文件异常）
     # 全部在 app.answer_import_zip 里判，本层不重新分类、不改写错误语义。
-    def zip_answers_preview(self, class_id, data, batch=""):
+    # 注意：方法名必须与 ui_import_zip 的 _call() 探测名逐字一致
+    # （preview_zip_answers / import_zip_answers / zip_import_template）——
+    # 它对不上就会「静默退回直连 app 模块」，那样归属闸门就被绕过了。
+    def preview_zip_answers(self, class_id, data, batch=""):
         cls = self.owned_class_row(class_id)
         return answer_import_zip.preview(self.db, cls["id"], data, batch or "")
 
-    def zip_answers_import(self, class_id, data, batch="", selections=None, overwrite=False):
+    def import_zip_answers(self, class_id, data, batch="", selections=None, overwrite=False):
         """确认导入：单事务提交，异常回滚并清理本次新增的孤立图片。"""
         cls = self.owned_class_row(class_id)
         return answer_import_zip.commit(

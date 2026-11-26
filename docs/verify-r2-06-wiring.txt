@@ -1,5 +1,5 @@
 ﻿python.exe : QFontDatabase: Cannot find font directory E:/Agent/venv-desktop/Lib/site-packages/PySide6/lib/fonts.
-所在位置 行:2 字符: 1
+所在位置 行:21 字符: 1
 + & E:\Agent\venv-desktop\Scripts\python.exe tests\verify_r2_06_wiring. ...
 + ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     + CategoryInfo          : NotSpecified: (QFontDatabase: ...ide6/lib/fonts.:String) [], RemoteException
@@ -19,10 +19,12 @@ PASS  W4 13 个方法逐个传别人的班级都被 404 拦住
 PASS  W5 标准 ZIP 模板可下载 | 1468 bytes
 PASS  W6 CSV 导入页有「导入作答压缩包」按钮 | 导入作答压缩包…
 PASS  W7 点它能开出 ZipImportWindow | ZipImportWindow
-PASS  W8 班级页有「教学建议与练习」按钮 | 教学建议与练习
-PASS  W9 未选班级时按钮停用（与既有三按钮一致）
-PASS  W10 未选班级时点击只提示、不抛异常 | 先在列表里点一个班级
-PASS  W11 选中班级后按钮启用
-PASS  W12 点它能开出 TeachingWindow | TeachingWindow
+PASS  W8 窗口探测的三个方法名都接在 service 上（不会静默退回直连） | 3 个齐全
+PASS  W9 窗口调用真的经过归属闸门 | 闸门命中 [1]
+PASS  W10 班级页有「教学建议与练习」按钮 | 教学建议与练习
+PASS  W11 未选班级时按钮停用（与既有三按钮一致）
+PASS  W12 未选班级时点击只提示、不抛异常 | 先在列表里点一个班级
+PASS  W13 选中班级后按钮启用
+PASS  W14 点它能开出 TeachingWindow | TeachingWindow
 
-合计 12 项，通过 12 项，失败 0 项
+合计 14 项，通过 14 项，失败 0 项
