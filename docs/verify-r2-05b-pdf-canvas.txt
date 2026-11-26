@@ -1,6 +1,6 @@
 R2-05b pdf_canvas 验收：中文回读 / 分页 / 长表格 / 图表 / 空态 / 两种输出
-时间：2026-11-26T19:06:15+08:00
-命令：python.exe tests\verify_r2_05b_pdf_canvas.py
+时间：2026-11-26T19:38:46+08:00
+命令：python.exe E:\Agent\小挑\tests\verify_r2_05b_pdf_canvas.py
 目录：E:\Agent\小挑
 环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
 

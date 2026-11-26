@@ -1,6 +1,6 @@
 R2-03 统计套件（R2-03.1）
-时间：2026-11-26T19:02:49+08:00
-命令：python.exe tests\verify_r2_03_stats.py
+时间：2026-11-26T19:38:18+08:00
+命令：python.exe E:\Agent\小挑\tests\verify_r2_03_stats.py
 目录：E:\Agent\小挑
 环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
 

@@ -1,6 +1,6 @@
 对数智伴学 R2-02 后端（批量核验 / 教师评分 / 失效链 / 错题与知识点）做业务路径验收
-时间：2026-11-26T19:03:31+08:00
-命令：python.exe tests\verify_r2_02_grading.py
+时间：2026-11-26T19:38:10+08:00
+命令：python.exe E:\Agent\小挑\tests\verify_r2_02_grading.py
 目录：E:\Agent\小挑
 环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
 

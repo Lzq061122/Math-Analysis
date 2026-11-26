@@ -516,7 +516,8 @@ def main():
         exe_data = archive.read(exe_name)
     check("包内 EXE 存在", exe_name in names, exe_name)
     log("包内 EXE：%d 字节  SHA-256 %s" % (len(exe_data), hashlib.sha256(exe_data).hexdigest().upper()))
-    check("版本号为 1.8.1", VERSION == "1.8.1", VERSION)
+    # R2（1.9.0）：版本号断言随正式版本升级更新预期（派单 §9.2）；判定内容不变。
+    check("版本号为 1.9.0", VERSION == "1.9.0", VERSION)
     check("数据结构版本仍为 4", str(SCHEMA_VERSION) == "4", str(SCHEMA_VERSION))
 
     work = os.path.join(ROOT, "tests", ".tmp-test", "layout-exe-" + uuid.uuid4().hex[:6])

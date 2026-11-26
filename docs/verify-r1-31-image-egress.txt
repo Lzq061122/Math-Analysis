@@ -1,6 +1,6 @@
 数智伴学｜R1-T31 授权后的图片外发（mock 永不读图 · 未授权零读取）
-时间：2026-11-25T22:34:28+08:00
-命令：python.exe tests\verify_r1_31_image_egress.py
+时间：2026-11-26T19:39:20+08:00
+命令：python.exe E:\Agent\小挑\tests\verify_r1_31_image_egress.py
 目录：E:\Agent\小挑
 环境：Python 3.14.7 / Windows-11-10.0.26300-SP0
 PASS 0.1 夹具就绪：错题有照片且文件真的存在

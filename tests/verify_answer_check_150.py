@@ -1855,12 +1855,16 @@ def group_17_batch_isolation(envs):
 
 
 def group_14_regression():
-    section("14. 三条既有回归线（如实记录，含已知失败）")
+    section("14. 三条既有回归线（如实记录；R2 起版本号断言同步升级，不再有已知失败）")
 
     lines = [
         ("verify_answers_150.py", 60, 60, 0),
         ("verify_followup_180.py", 126, 126, 0),
-        ("verify_review_160.py", 135, 134, 1),
+        # R2（1.9.0）：verify_review_160.py 里那条历史版本号断言（原写死 1.8.0）按派单 §9.2
+        # 「原版本号测试断言随正式版本升级更新预期」改成了 1.9.0，所以这条回归线由
+        # 「134/135、唯一失败是历史版本号」变为「135/135 全绿」。断言要求的是"该套件必须
+        # 如实给出这几个数字"，没有放宽任何判定。
+        ("verify_review_160.py", 135, 135, 0),
     ]
     for index, (name, total, passed, failed) in enumerate(lines, start=1):
         started = time.time()
@@ -1879,13 +1883,13 @@ def group_14_regression():
             log("  子进程 stderr（末 600 字）：%s"
                 % proc.stderr.decode("utf-8", "replace")[-600:].replace("\n", " / "))
         check("14.%d %s 合计 %d 项、通过 %d、失败 %d（%s）"
-              % (index, name, total, passed, failed,
-                 "已知失败：FAIL 1.8.0 版本号 1.8.1" if failed else "无失败"),
+              % (index, name, total, passed, failed, "无失败" if not failed else "有失败"),
               ok, summary)
         if name == "verify_review_160.py":
-            check("14.4 verify_review_160.py 的唯一失败是已知的历史版本号断言",
-                  "FAIL 1.8.0 版本号 1.8.1" in text
-                  and text.count("FAIL ") == 1, text.count("FAIL "))
+            # 版本号断言现在必须真的通过（而不是"已知失败"被放过），且整套不允许有 FAIL。
+            check("14.4 verify_review_160.py 全绿且版本号断言已升到 1.9.0",
+                  "FAIL " not in text and "1.9.0 版本号" in text,
+                  "FAIL 行数=%d" % text.count("FAIL "))
 
 
 # --------------------------------------------------------------------------

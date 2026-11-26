@@ -1,0 +1,39 @@
+# R2-06 全量回归原始日志
+
+- 生成时间：2026-11-26T19:38:06
+- git 提交：5809bdf（分支 r2-work）
+- app 解释器：`C:\Python314\python.exe` → Python 3.14.7
+- Qt 解释器：`E:\Agent\venv-desktop\Scripts\python.exe` → Python 3.12.10
+- 环境：QT_QPA_PLATFORM=offscreen（Qt 套件）
+
+| 套件 | 分组 | 项数 | 通过 | 失败 | 退出码 |
+|---|---|---|---|---|---|
+| verify_r2_00_contract.py | r2 | 213 | 213 | 0 | 0 |
+| verify_r2_01_zip_import.py | r2 | 88 | 88 | 0 | 0 |
+| verify_r2_02_grading.py | r2 | 138 | 138 | 0 | 0 |
+| verify_r2_02_ui.py | r2 | 72 | 72 | 0 | 0 |
+| verify_r2_03_stats.py | r2 | 141 | 141 | 0 | 0 |
+| verify_r2_03_ui.py | r2 | 60 | 60 | 0 | 0 |
+| verify_r2_04_pdf.py | r2 | 101 | 101 | 0 | 0 |
+| verify_r2_04_ui.py | r2 | 33 | 33 | 0 | 0 |
+| verify_r2_05_resources.py | r2 | 102 | 102 | 0 | 0 |
+| verify_r2_05_ui.py | r2 | 25 | 25 | 0 | 0 |
+| verify_r2_05b_pdf_canvas.py | r2 | 39 | 39 | 0 | 0 |
+| verify_r2_06_wiring.py | r2 | 39 | 39 | 0 | 0 |
+| verify_r2_06_e2e.py | r2 | 31 | 31 | 0 | 0 |
+| verify_core_150.py | legacy | 18 | 18 | 0 | 0 |
+| verify_answers_150.py | legacy | 60 | 60 | 0 | 0 |
+| verify_answer_check_150.py | legacy | 172 | 172 | 0 | 0 |
+| verify_tutor_170.py | legacy | 98 | 98 | 0 | 0 |
+| verify_followup_180.py | legacy | 126 | 126 | 0 | 0 |
+| verify_r1_15_backup_tables.py | legacy | 32 | 32 | 0 | 0 |
+| verify_r1_16_check_to_mistake.py | legacy | 33 | 33 | 0 | 0 |
+| verify_r1_18_desktop_service.py | legacy | 36 | 36 | 0 | 0 |
+| verify_r1_19_desktop_check_ui.py | legacy | 182 | 182 | 0 | 0 |
+| verify_r1_22_legacy_bridge.py | legacy | 24 | 24 | 0 | 0 |
+| verify_r1_27_batch_name_collision.py | legacy | 23 | 23 | 0 | 0 |
+| verify_r1_31_image_egress.py | legacy | 17 | 17 | 0 | 0 |
+| verify_r1_counter_examples.py | legacy | 122 | 122 | 0 | 0 |
+| verify_review_160.py | history | 135 | 135 | 0 | 0 |
+
+**合计 2160 项，通过 2160 项，失败 0 项；失败套件 0 个。**

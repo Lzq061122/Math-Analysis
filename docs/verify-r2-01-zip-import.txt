@@ -1,8 +1,8 @@
-时间：2026-11-26T18:55:52+08:00
-命令：python.exe tests\verify_r2_01_zip_import.py
+时间：2026-11-26T19:38:08+08:00
+命令：python.exe E:\Agent\小挑\tests\verify_r2_01_zip_import.py
 目录：E:\Agent\小挑
 环境：Python 3.12.10 / Windows-11-10.0.26300-SP0
-套件：R2-01 压缩包批量导入（R2 契约版本 R2-00.4）
+套件：R2-01 压缩包批量导入（R2 契约版本 R2-00.5）
 
 
 == 一、标准模板与验收夹具 ==

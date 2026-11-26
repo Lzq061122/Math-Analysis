@@ -1,6 +1,6 @@
 R2-05 界面验收（离屏，PySide6）：教学资源库 / 双审核发布 / 建议匹配 / 三级提示 / 任务与 PDF
-时间：2026-11-26T19:06:16+08:00
-命令：python.exe tests\verify_r2_05_ui.py
+时间：2026-11-26T19:38:45+08:00
+命令：python.exe E:\Agent\小挑\tests\verify_r2_05_ui.py
 目录：E:\Agent\小挑
 环境：Python 3.12.10 / Windows-11-10.0.26300-SP0
 PASS  界面：主窗口与 5 个页签建起来（对齐派单 A–E）

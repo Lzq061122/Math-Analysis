@@ -7802,13 +7802,18 @@ class ClassesWindow(QMainWindow):
         tools.addWidget(self.students_button)
         tools.addWidget(self.class_stats_button)
         tools.addWidget(self.check_button)
-        tools.addWidget(self.grading_button)
-        tools.addWidget(self.dashboard_button)
-        tools.addWidget(self.teaching_button)
         tools.addWidget(self.ai_settings_button)
         tools.addWidget(self.ai_trial_button)
         tools.addWidget(self.refresh_button)
         tools.addWidget(self.status, 1)
+
+        # R2 的三个入口单独一行：塞进上一行会把班级列表窗口撑到 1366 像素以外
+        # （125% 缩放下实测 1387px，直接违反「适配 1366×768」这条验收）。
+        r2_tools = QHBoxLayout()
+        r2_tools.addWidget(self.grading_button)
+        r2_tools.addWidget(self.dashboard_button)
+        r2_tools.addWidget(self.teaching_button)
+        r2_tools.addStretch(1)
 
         self.table = QTableWidget(0, 4)
         self.table.setObjectName("classTable")
@@ -7836,6 +7841,7 @@ class ClassesWindow(QMainWindow):
         layout.setSpacing(12)
         layout.addLayout(top)
         layout.addLayout(tools)
+        layout.addLayout(r2_tools)
         layout.addWidget(self.body, 1)
 
         self.data_dir_label = QLabel("")

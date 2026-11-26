@@ -56,21 +56,34 @@ SUITES = [
 ]
 
 COUNTS = [
-    re.compile(r"合计\s*(\d+)\s*项[，,]\s*通过\s*(\d+)\s*[，,]\s*失败\s*(\d+)"),
-    re.compile(r"总计\s*(\d+)\s*项断言[：:]\s*通过\s*(\d+)\s*[，,]\s*失败\s*(\d+)"),
-    re.compile(r"通过\s*(\d+)\s*[/／]\s*失败\s*(\d+)"),
+    # 各套件的合计行写法并不统一（「合计 213 项，通过 213 项，失败 0 项」/「总计 39 项断言：通过 39，失败 0」/
+    # 「通过 72 / 失败 0」），所以这里用一条宽容的正则，并且**取最后一条**：
+    # 有几个套件会起子进程跑别的套件（答案核对会跑 answers/followup/review 三条回归线），
+    # 取第一条会把子套件的数字当成父套件的（曾把 172 项记成 60 项）。
 ]
+PATTERN = re.compile(
+    # 注意 `[^，,、\n]*` 里的 \n：不加它会把下一行的「合计 …」拼进来
+    # （曾把 135 项的行和紧随其后的 172 项行匹配成「135 项 / 通过 172」）。
+    r"合计\s*(\d+)\s*项[^，,、\n]*[，,、]\s*通过\s*(\d+)\s*项?[^，,、\n]*[，,、]\s*失败\s*(\d+)")
+PATTERN_TOTAL = re.compile(
+    r"总计\s*(\d+)\s*项[^：:]*[：:]\s*通过\s*(\d+)\s*[，,]\s*失败\s*(\d+)")
+PATTERN_PAIR = re.compile(r"通过\s*(\d+)\s*[/／]\s*失败\s*(\d+)")
 
 
 def parse_counts(text):
-    for pat in COUNTS[:2]:
-        found = pat.search(text)
-        if found:
-            return int(found.group(1)), int(found.group(2)), int(found.group(3))
-    found = COUNTS[2].search(text)
+    """从套件输出里取「项数/通过/失败」。多写法兼容 + 取最后一处（见上方注释）。"""
+    found = PATTERN.findall(text)
     if found:
-        passed, failed = int(found.group(1)), int(found.group(2))
-        return passed + failed, passed, failed
+        total, passed, failed = found[-1]
+        return int(total), int(passed), int(failed)
+    found = PATTERN_TOTAL.findall(text)
+    if found:
+        total, passed, failed = found[-1]
+        return int(total), int(passed), int(failed)
+    found = PATTERN_PAIR.findall(text)
+    if found:
+        passed, failed = found[-1]
+        return int(passed) + int(failed), int(passed), int(failed)
     return 0, 0, -1
 
 

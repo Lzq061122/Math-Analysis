@@ -687,7 +687,10 @@ def main():
     check("1.6.0 列表按最新一条建议展示", up_confirmed == [], [i["review_status"] for i in up_items])
     up_stats = up.class_stats(up_cid)
     check("1.6.0 已确认错题仍计入统计", up_stats["summary"]["confirmed"] == 1, up_stats["summary"])
-    check("1.8.0 版本号", vision.VERSION == "1.8.0", vision.VERSION)
+    # R2（1.9.0）：原断言把 1.8.0 写死，版本一升就成了「已知失败」。
+    # 按派单 §9.2「原版本号测试断言随正式版本升级更新预期，保留有效业务测试」，改为断言当前版本，
+    # 断言的性质（版本号必须与源码一致）与覆盖面都没变。
+    check("1.9.0 版本号", vision.VERSION == "1.9.0", vision.VERSION)
     check("数据库结构版本为 4", SCHEMA_VERSION == "4", SCHEMA_VERSION)
     check("备份格式为 6", B.FORMAT == 6, B.FORMAT)
     check("旧格式仍在可读列表", tuple(B.READABLE_FORMATS) == (6, 5, 4, 3, 2), B.READABLE_FORMATS)
